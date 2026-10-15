@@ -1,0 +1,223 @@
+name: Release & Quality Gate Pipeline
+
+on:
+  pull_request:
+    branches: [ "main" ]
+  push:
+    branches: [ "main" ]
+  workflow_dispatch:
+    inputs:
+      bump_type:
+        description: 'Version bump level'
+        required: true
+        default: 'patch'
+        type: choice
+        options:
+          - patch
+          - minor
+          - major
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  filter:
+    name: Check Code Changes
+    runs-on: ubuntu-24.04
+    outputs:
+      code: ${{ steps.changes.outputs.code }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Filter Changed Paths
+        uses: dorny/paths-filter@v3
+        id: changes
+        with:
+          filters: |
+            code:
+              - 'src/**'
+              - 'tests/**'
+              - 'pyproject.toml'
+              - 'poetry.lock'
+              - 'Dockerfile'
+              - 'action.yml'
+              - '.github/workflows/**'
+              - '.gitleaks.toml'
+
+  lint:
+    name: Lint & Static Analysis
+    needs: [filter]
+    if: needs.filter.outputs.code == 'true' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+          cache: "pip"
+
+      - name: Install Poetry
+        run: curl -sSL https://install.python-poetry.org | python3 -
+
+      - name: Configure Poetry Path
+        run: echo "$HOME/.local/bin" >> $GITHUB_PATH
+
+      - name: Install dependencies
+        run: poetry install --with dev
+
+      - name: Run Ruff (Lint)
+        run: poetry run ruff check src tests
+
+      - name: Run Ruff (Format Check)
+        run: poetry run ruff format --check src tests
+
+      - name: Run Mypy (Type Check)
+        run: poetry run mypy src tests
+
+  unit-tests:
+    name: Unit Tests
+    needs: [filter]
+    if: needs.filter.outputs.code == 'true' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+          cache: "pip"
+
+      - name: Install Poetry
+        run: curl -sSL https://install.python-poetry.org | python3 -
+
+      - name: Configure Poetry Path
+        run: echo "$HOME/.local/bin" >> $GITHUB_PATH
+
+      - name: Install dependencies
+        run: poetry install --with dev
+
+      - name: Run Unit Tests
+        run: poetry run pytest tests/unit -v
+
+  integration-tests:
+    name: Integration Tests
+    needs: [filter]
+    if: needs.filter.outputs.code == 'true' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+          cache: "pip"
+
+      - name: Install Poetry
+        run: curl -sSL https://install.python-poetry.org | python3 -
+
+      - name: Configure Poetry Path
+        run: echo "$HOME/.local/bin" >> $GITHUB_PATH
+
+      - name: Install dependencies
+        run: poetry install --with dev
+
+      - name: Run Integration Tests
+        run: poetry run pytest tests/integration -v
+
+  release:
+    name: Bump Version, Tag & Create GitHub Release
+    needs: [filter, lint, unit-tests, integration-tests]
+    if: >-
+      always() &&
+      needs.filter.outputs.code == 'true' &&
+      (needs.lint.result == 'success' || needs.lint.result == 'skipped') &&
+      (needs.unit-tests.result == 'success' || needs.unit-tests.result == 'skipped') &&
+      (needs.integration-tests.result == 'success' || needs.integration-tests.result == 'skipped') &&
+      ((github.event_name == 'push' && github.ref == 'refs/heads/main' && !contains(github.event.head_commit.message, '[skip ci]')) ||
+       (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main'))
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - name: Generate App Token
+        id: generate-token
+        uses: actions/create-github-app-token@v1
+        with:
+          app-id: ${{ vars.GH_APP_ID }}
+          private-key: ${{ secrets.SYNC_BOT_PRIVATE_KEY }}
+
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ steps.generate-token.outputs.token }}
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+          cache: "pip"
+
+      - name: Install Poetry
+        run: curl -sSL https://install.python-poetry.org | python3 -
+
+      - name: Configure Poetry Path
+        run: echo "$HOME/.local/bin" >> $GITHUB_PATH
+
+      - name: Install dependencies
+        run: poetry install --with dev
+
+      - name: Configure Git Identity for GitHub App
+        run: |
+          git config user.name "gh-sync-bot[bot]"
+          git config user.email "${{ vars.GH_APP_ID }}+gh-sync-bot[bot]@users.noreply.github.com"
+
+      - name: Bump Version in pyproject.toml and Commit
+        id: bump
+        run: |
+          BUMP_TYPE="${{ inputs.bump_type }}"
+          if [ -z "$BUMP_TYPE" ]; then
+            BUMP_TYPE="patch"
+          fi
+          echo "Bumping version using type: $BUMP_TYPE"
+
+          poetry version "$BUMP_TYPE"
+          NEW_VERSION=$(poetry version --short)
+          TAG_NAME="v${NEW_VERSION}"
+          echo "version=${NEW_VERSION}" >> "$GITHUB_OUTPUT"
+          echo "tag=${TAG_NAME}" >> "$GITHUB_OUTPUT"
+
+          git add pyproject.toml
+          git commit -m "chore(release): bump version to ${NEW_VERSION} [skip ci]"
+          git push origin HEAD:main
+
+      - name: Generate Release Notes
+        run: |
+          poetry run python -m src.release_notes --output RELEASE_NOTES.md
+          echo "Generated release notes:"
+          cat RELEASE_NOTES.md
+
+      - name: Create Git Tag and GitHub Release
+        env:
+          GH_TOKEN: ${{ steps.generate-token.outputs.token }}
+        run: |
+          TAG_NAME="${{ steps.bump.outputs.tag }}"
+          gh release create "$TAG_NAME" \
+            --title "Release ${TAG_NAME}" \
+            --notes-file RELEASE_NOTES.md \
+            --target main
+
+      - name: Update Floating Major Version Tag
+        run: |
+          MAJOR_TAG="v$(echo "${{ steps.bump.outputs.version }}" | cut -d. -f1)"
+          git tag -fa "$MAJOR_TAG" -m "Update floating major tag $MAJOR_TAG to ${{ steps.bump.outputs.tag }}"
+          git push origin "$MAJOR_TAG" --force
