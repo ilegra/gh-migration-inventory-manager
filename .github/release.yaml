@@ -1,0 +1,32 @@
+changelog:
+  exclude:
+    labels:
+      - "ignore-for-release"
+  categories:
+    - title: "🚀 Features"
+      labels:
+        - "feature"
+        - "enhancement"
+        - "feat"
+    - title: "🐛 Bug Fixes"
+      labels:
+        - "bug"
+        - "fix"
+    - title: "⚡ Performance & Improvements"
+      labels:
+        - "refactor"
+        - "perf"
+        - "performance"
+    - title: "🧰 Maintenance & Dependencies"
+      labels:
+        - "chore"
+        - "dependencies"
+        - "deps"
+        - "style"
+    - title: "🧪 Testing & CI"
+      labels:
+        - "test"
+        - "tests"
+        - "ci"
+        - "documentation"
+        - "docs"
