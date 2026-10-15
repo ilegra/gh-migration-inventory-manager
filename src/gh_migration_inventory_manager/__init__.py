@@ -1,13 +1,18 @@
 """GitHub Migration Inventory Manager library.
 
-Provides a public interface to track, catalog, and query migration inventory
-records across organizations and repositories.
+Provides a clean interface to track, catalog, and update repository migration
+records backed by Google Sheets.
 """
 
-from gh_migration_inventory_manager.core import InventoryManager
+from gh_migration_inventory_manager.core import Inventory, Iventory
+from gh_migration_inventory_manager.google import (
+    Credentials,
+    Row,
+    Spreadsheet,
+    Spreadshseet,
+)
 from gh_migration_inventory_manager.models import (
-    InventoryItem,
-    MigrationRecord,
+    InventoryRecord,
     MigrationStatus,
 )
 
@@ -15,8 +20,12 @@ __version__ = "0.1.0"
 
 __all__ = [
     "__version__",
-    "InventoryManager",
-    "InventoryItem",
-    "MigrationRecord",
+    "Inventory",
+    "Iventory",
+    "Spreadsheet",
+    "Spreadshseet",
+    "Row",
+    "Credentials",
+    "InventoryRecord",
     "MigrationStatus",
 ]

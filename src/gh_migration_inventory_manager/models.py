@@ -2,66 +2,97 @@
 
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass, field
-from datetime import datetime, timezone
+from dataclasses import dataclass
+from datetime import datetime
 from enum import Enum
-from typing import Any
+
+_PT_MONTHS: dict[int, str] = {
+    1: "Janeiro",
+    2: "Fevereiro",
+    3: "Março",
+    4: "Abril",
+    5: "Maio",
+    6: "Junho",
+    7: "Julho",
+    8: "Agosto",
+    9: "Setembro",
+    10: "Outubro",
+    11: "Novembro",
+    12: "Dezembro",
+}
 
 
 class MigrationStatus(str, Enum):
     """Status representing the state of an inventory item during migration."""
 
-    PENDING = "pending"
-    IN_PROGRESS = "in_progress"
-    COMPLETED = "completed"
-    FAILED = "failed"
+    WAITTING = "waitting"
+    WAITING = "waitting"
+    ACTIVE_IN_BOTH = "active_in_both"
+    MIGRATED = "migrated"
     SKIPPED = "skipped"
 
-
-@dataclass
-class InventoryItem:
-    """Represents an individual resource in the migration inventory."""
-
-    identifier: str
-    source_url: str
-    target_url: str | None = None
-    status: MigrationStatus = MigrationStatus.PENDING
-    item_type: str = "repository"
-    metadata: dict[str, Any] = field(default_factory=dict)
-    created_at: str = field(
-        default_factory=lambda: datetime.now(timezone.utc).isoformat()
-    )
-
-    def to_dict(self) -> dict[str, Any]:
-        """Convert inventory item to a JSON-serializable dictionary."""
-        data = asdict(self)
-        data["status"] = self.status.value
-        return data
+    def to_sheet_label(self) -> str:
+        """Map the status enum to the localized spreadsheet display string."""
+        match self:
+            case MigrationStatus.MIGRATED:
+                return "Migrados (Somente GitHub)"
+            case MigrationStatus.ACTIVE_IN_BOTH:
+                return "Migrando (Ativos em Ambas)"
+            case MigrationStatus.SKIPPED:
+                return "Ignorado"
+            case _:
+                return "Aguardando Migração"
 
     @classmethod
-    def from_dict(cls, data: dict[str, Any]) -> InventoryItem:
-        """Create an InventoryItem from a dictionary."""
-        item_data = dict(data)
-        if "status" in item_data and isinstance(item_data["status"], str):
-            item_data["status"] = MigrationStatus(item_data["status"])
-        return cls(**item_data)
+    def from_sheet_label(cls, label: str) -> MigrationStatus:
+        """Parse spreadsheet label into the corresponding MigrationStatus."""
+        clean = (label or "").strip().lower()
+        if not clean:
+            return cls.WAITTING
+        if "somente github" in clean or clean == "migrated" or clean == "migrados":
+            return cls.MIGRATED
+        if (
+            "ativos em ambas" in clean
+            or "migrando" in clean
+            or clean == "active_in_both"
+        ):
+            return cls.ACTIVE_IN_BOTH
+        if "ignorado" in clean or "não migrar" in clean or clean == "skipped":
+            return cls.SKIPPED
+        if "aguardando" in clean or clean in ("waitting", "waiting"):
+            return cls.WAITTING
+
+        try:
+            return cls(clean)
+        except ValueError:
+            return cls.WAITTING
 
 
 @dataclass
-class MigrationRecord:
-    """Represents a migration summary record for an inventory batch."""
+class InventoryRecord:
+    """Represents an item in the inventory: a repository migrated or to be migrated."""
 
-    batch_id: str
-    total_items: int = 0
-    completed_items: int = 0
-    failed_items: int = 0
-    items: list[InventoryItem] = field(default_factory=list)
+    name: str
+    stack: str = ""
+    last_commit: datetime | None = None
+    gh_migratation: datetime | None = None
+    origin_deactivation: datetime | None = None
+    migration_status: MigrationStatus = MigrationStatus.WAITTING
 
-    def add_item(self, item: InventoryItem) -> None:
-        """Add an item to the record and update statistics."""
-        self.items.append(item)
-        self.total_items += 1
-        if item.status == MigrationStatus.COMPLETED:
-            self.completed_items += 1
-        elif item.status == MigrationStatus.FAILED:
-            self.failed_items += 1
+    @property
+    def gh_migration(self) -> datetime | None:
+        """Alias for gh_migratation."""
+        return self.gh_migratation
+
+    @gh_migration.setter
+    def gh_migration(self, value: datetime | None) -> None:
+        self.gh_migratation = value
+
+    @property
+    def migration_month(self) -> str:
+        """Return the formatted migration month (e.g. 'Outubro/2026')."""
+        target_date = self.gh_migratation
+        if target_date is None:
+            return ""
+        month_name = _PT_MONTHS.get(target_date.month, "")
+        return f"{month_name}/{target_date.year}" if month_name else ""
