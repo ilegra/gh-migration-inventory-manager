@@ -1,0 +1,19 @@
+# Gitleaks configuration file
+title = "gitleaks config"
+
+[extend]
+# Extend default gitleaks rules when running inside container or binary
+useDefault = true
+
+[allowlist]
+description = "Global allowlist for benign patterns, test tokens and fixtures"
+paths = [
+    '''tests/.*''',
+    '''poetry\.lock''',
+    '''\.venv/.*''',
+]
+regexes = [
+    '''(?i)example[_-]?token''',
+    '''(?i)mock[_-]?token''',
+    '''(?i)test[_-]?secret''',
+]

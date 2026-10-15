@@ -1,0 +1,236 @@
+name: CI Quality & Security Gate
+
+on:
+  pull_request:
+    branches: [ "main" ]
+  push:
+    branches: [ "main" ]
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  filter:
+    name: Check Code Changes
+    runs-on: ubuntu-24.04
+    outputs:
+      code: ${{ steps.changes.outputs.code }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Filter Changed Paths
+        uses: dorny/paths-filter@v3
+        id: changes
+        with:
+          filters: |
+            code:
+              - 'src/**'
+              - 'tests/**'
+              - 'pyproject.toml'
+              - 'poetry.lock'
+              - 'poetry.toml'
+              - '.pre-commit-config.yaml'
+              - '.gitleaks.toml'
+              - '.github/workflows/ci.yaml'
+
+  lint-and-format:
+    name: Lint & Type Check (Ruff & Mypy)
+    needs: [filter]
+    if: needs.filter.outputs.code == 'true' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+          cache: "pip"
+
+      - name: Install Poetry
+        run: curl -sSL https://install.python-poetry.org | python3 -
+
+      - name: Configure Poetry Path
+        run: echo "$HOME/.local/bin" >> $GITHUB_PATH
+
+      - name: Install dependencies
+        run: poetry install --with dev
+
+      - name: Run Ruff (Lint)
+        run: poetry run ruff check src tests
+
+      - name: Run Ruff (Format Check)
+        run: poetry run ruff format --check src tests
+
+      - name: Run Mypy (Type Check)
+        run: poetry run mypy src tests
+
+  unit-tests:
+    name: Unit Tests
+    needs: [filter]
+    if: needs.filter.outputs.code == 'true' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+          cache: "pip"
+
+      - name: Install Poetry
+        run: curl -sSL https://install.python-poetry.org | python3 -
+
+      - name: Configure Poetry Path
+        run: echo "$HOME/.local/bin" >> $GITHUB_PATH
+
+      - name: Install dependencies
+        run: poetry install --with dev
+
+      - name: Run Unit Tests
+        run: poetry run pytest tests/unit -v --cov=gh_migration_inventory_manager --cov-report=term-missing
+
+  integration-tests:
+    name: Integration Tests
+    needs: [filter]
+    if: needs.filter.outputs.code == 'true' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+          cache: "pip"
+
+      - name: Install Poetry
+        run: curl -sSL https://install.python-poetry.org | python3 -
+
+      - name: Configure Poetry Path
+        run: echo "$HOME/.local/bin" >> $GITHUB_PATH
+
+      - name: Install dependencies
+        run: poetry install --with dev
+
+      - name: Run Integration Tests
+        run: poetry run pytest tests/integration -v
+
+  security-gitleaks:
+    name: Security - Gitleaks Secret Scan
+    needs: [filter]
+    if: needs.filter.outputs.code == 'true' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Run Gitleaks (Pull Request Delta)
+        if: github.event_name == 'pull_request'
+        run: |
+          docker run --rm \
+            -v "$GITHUB_WORKSPACE:/workspace" \
+            -w /workspace \
+            ghcr.io/gitleaks/gitleaks:latest \
+            detect \
+            --source=/workspace \
+            --log-opts="${{ github.event.pull_request.base.sha }}...${{ github.event.pull_request.head.sha }}" \
+            --config=/workspace/.gitleaks.toml \
+            --verbose \
+            --redact
+
+      - name: Run Gitleaks (Full Repository History)
+        if: github.event_name != 'pull_request'
+        run: |
+          docker run --rm \
+            -v "$GITHUB_WORKSPACE:/workspace" \
+            -w /workspace \
+            ghcr.io/gitleaks/gitleaks:latest \
+            detect \
+            --source=/workspace \
+            --log-opts="--all" \
+            --config=/workspace/.gitleaks.toml \
+            --verbose \
+            --redact
+
+  security-sast:
+    name: Security - Bandit SAST
+    needs: [filter]
+    if: needs.filter.outputs.code == 'true' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+          cache: "pip"
+
+      - name: Install Poetry
+        run: curl -sSL https://install.python-poetry.org | python3 -
+
+      - name: Configure Poetry Path
+        run: echo "$HOME/.local/bin" >> $GITHUB_PATH
+
+      - name: Install dependencies
+        run: poetry install --with dev
+
+      - name: Run Bandit
+        run: poetry run bandit -r src
+
+  security-codeql:
+    name: Security - CodeQL SAST Analysis
+    needs: [filter]
+    if: needs.filter.outputs.code == 'true' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-24.04
+    permissions:
+      actions: read
+      contents: read
+      security-events: write
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@v3
+        with:
+          languages: python
+          queries: security-extended,security-and-quality
+
+      - name: Perform CodeQL Analysis
+        uses: github/codeql-action/analyze@v3
+        with:
+          category: "/language:python"
+
+  ci-gate:
+    name: CI Quality & Security Gate Summary
+    needs: [filter, lint-and-format, unit-tests, integration-tests, security-gitleaks, security-sast, security-codeql]
+    if: always()
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Evaluate Gates
+        run: |
+          echo "Checking gate results..."
+          for RESULT in "${{ needs.lint-and-format.result }}" \
+                        "${{ needs.unit-tests.result }}" \
+                        "${{ needs.integration-tests.result }}" \
+                        "${{ needs.security-gitleaks.result }}" \
+                        "${{ needs.security-sast.result }}" \
+                        "${{ needs.security-codeql.result }}"; do
+            if [ "$RESULT" = "failure" ] || [ "$RESULT" = "cancelled" ]; then
+              echo "Gate check failed with status: $RESULT"
+              exit 1
+            fi
+          done
+          echo "All quality and security gates passed successfully!"
