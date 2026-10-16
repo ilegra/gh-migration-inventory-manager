@@ -17,6 +17,17 @@ from gh_migration_inventory_manager.inventory import (
     Iventory,
     MigrationStatus,
 )
+from gh_migration_inventory_manager.scraper import (
+    AuthCredentials,
+    Authenticator,
+    Repository,
+    RepositoryScraper,
+    ScraperAuthenticationError,
+    ScraperConnectionError,
+    ScraperError,
+    Stack,
+    TokenAuthenticator,
+)
 
 __version__ = "0.1.0"
 
@@ -31,4 +42,13 @@ __all__ = [
     "Credentials",
     "InventoryRecord",
     "MigrationStatus",
+    "Stack",
+    "Repository",
+    "RepositoryScraper",
+    "ScraperError",
+    "ScraperAuthenticationError",
+    "ScraperConnectionError",
+    "AuthCredentials",
+    "Authenticator",
+    "TokenAuthenticator",
 ]
