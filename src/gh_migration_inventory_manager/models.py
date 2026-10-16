@@ -72,8 +72,8 @@ class MigrationStatus(str, Enum):
 
         try:
             return cls(clean)
-        except ValueError:
-            return cls.WAITTING
+        except ValueError as err:
+            raise ValueError(f"Invalid migration status label: '{label}'.") from err
 
 
 @dataclass

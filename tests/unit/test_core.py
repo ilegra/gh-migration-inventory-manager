@@ -170,3 +170,101 @@ def test_iventory_alias_and_initialization() -> None:
 
     with pytest.raises(ValueError, match="A Spreadsheet instance must be provided"):
         Inventory()
+
+
+@pytest.mark.parametrize(
+    "invalid_status",
+    [
+        "invalid_status",
+        "completed",
+        "in_progress",
+        "pending",
+        "failed",
+        "unknown",
+    ],
+)
+def test_update_progress_invalid_status_string_raises(
+    invalid_status: str,
+) -> None:
+    """Test that providing an invalid status string raises ValueError."""
+    mock_spreadsheet = MagicMock(spec=Spreadsheet)
+    inventory = Inventory(spreadsheet=mock_spreadsheet)
+
+    with pytest.raises(ValueError) as exc_info:
+        inventory.update_progress("org/repo", invalid_status)
+
+    err_msg = str(exc_info.value)
+    assert f"Invalid migration status: '{invalid_status}'" in err_msg
+    assert "Expected a valid MigrationStatus or one of:" in err_msg
+    assert "active_in_both" in err_msg
+    assert "migrated" in err_msg
+    assert "skipped" in err_msg
+    assert "waitting" in err_msg
+
+
+@pytest.mark.parametrize("empty_status", ["", "   "])
+def test_update_progress_empty_status_string_raises(empty_status: str) -> None:
+    """Test that empty or whitespace status string raises ValueError."""
+    mock_spreadsheet = MagicMock(spec=Spreadsheet)
+    inventory = Inventory(spreadsheet=mock_spreadsheet)
+
+    with pytest.raises(ValueError) as exc_info:
+        inventory.update_progress("org/repo", empty_status)
+
+    assert "status cannot be empty" in str(exc_info.value)
+
+
+def test_update_progress_none_status_raises() -> None:
+    """Test that passing None as status raises ValueError."""
+    mock_spreadsheet = MagicMock(spec=Spreadsheet)
+    inventory = Inventory(spreadsheet=mock_spreadsheet)
+
+    with pytest.raises(ValueError) as exc_info:
+        inventory.update_progress("org/repo", None)  # type: ignore[arg-type]
+
+    assert "Status cannot be None" in str(exc_info.value)
+
+
+@pytest.mark.parametrize(
+    "invalid_type_status",
+    [123, 45.6, ["migrated"], {"status": "migrated"}],
+)
+def test_update_progress_invalid_status_type_raises(
+    invalid_type_status: object,
+) -> None:
+    """Test that passing a non-string, non-enum object raises ValueError."""
+    mock_spreadsheet = MagicMock(spec=Spreadsheet)
+    inventory = Inventory(spreadsheet=mock_spreadsheet)
+
+    with pytest.raises(ValueError) as exc_info:
+        inventory.update_progress("org/repo", invalid_type_status)  # type: ignore[arg-type]
+
+    assert "Invalid migration status type" in str(exc_info.value)
+
+
+@pytest.mark.parametrize(
+    ("status_input", "expected_enum"),
+    [
+        ("migrated", MigrationStatus.MIGRATED),
+        ("MIGRATED", MigrationStatus.MIGRATED),
+        ("active_in_both", MigrationStatus.ACTIVE_IN_BOTH),
+        ("ACTIVE_IN_BOTH", MigrationStatus.ACTIVE_IN_BOTH),
+        ("waitting", MigrationStatus.WAITTING),
+        ("waiting", MigrationStatus.WAITTING),
+        ("WAITING", MigrationStatus.WAITTING),
+        ("skipped", MigrationStatus.SKIPPED),
+        ("SKIPPED", MigrationStatus.SKIPPED),
+    ],
+)
+def test_update_progress_accepts_valid_string_status(
+    status_input: str, expected_enum: MigrationStatus
+) -> None:
+    """Test that valid status strings are properly parsed and handled."""
+    mock_spreadsheet = MagicMock(spec=Spreadsheet)
+    mock_spreadsheet.find_by.return_value = []
+    mock_spreadsheet.add.side_effect = lambda row: row
+
+    inventory = Inventory(spreadsheet=mock_spreadsheet)
+    record = inventory.update_progress("org/repo", status_input)
+
+    assert record.migration_status == expected_enum
