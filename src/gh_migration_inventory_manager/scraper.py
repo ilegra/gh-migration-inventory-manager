@@ -23,11 +23,23 @@ class Stack(str, Enum):
 
 @dataclass
 class Repository:
-    """Pure data container representing a discovered repository."""
+    """Pure data container representing a discovered repository or project."""
 
     name: str
+    organization: str | None = None
+    project: str | None = None
+    path: str | None = None
+    url: str | None = None
+    default_branch: str | None = None
     last_commit: datetime | None = None
     stacks: list[Stack] = field(default_factory=list)
+    metadata: dict[str, Any] = field(default_factory=dict)
+
+    @property
+    def qualified_name(self) -> str:
+        """Return an unambiguous, fully-qualified name for inventory tracking."""
+        parts = [p for p in (self.organization, self.project, self.name) if p]
+        return "/".join(parts) if parts else self.name
 
 
 @dataclass(frozen=True)
