@@ -7,7 +7,11 @@ authors = [
 ]
 readme = "README.md"
 requires-python = ">=3.10,<3.13"
-dependencies = []
+dependencies = [
+    "google-api-python-client>=2.100.0",
+    "google-auth>=2.20.0",
+    "google-auth-httplib2>=0.2.0",
+]
 
 [tool.poetry]
 packages = [{ include = "gh_migration_inventory_manager", from = "src" }]
@@ -49,6 +53,12 @@ python_version = "3.10"
 strict = true
 warn_return_any = true
 warn_unused_configs = true
+
+[[tool.mypy.overrides]]
+module = ["googleapiclient.*", "google.oauth2.*"]
+ignore_missing_imports = true
+disallow_untyped_calls = false
+
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

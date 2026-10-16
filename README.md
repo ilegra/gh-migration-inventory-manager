@@ -86,25 +86,28 @@ This produces ready-to-distribute wheels and source archives in `dist/`:
 ## Usage as a Python Library
 
 ```python
-from gh_migration_inventory_manager import InventoryManager, InventoryItem, MigrationStatus
+from gh_migration_inventory_manager import Credentials, Inventory, MigrationStatus, Spreadsheet
 
-# Initialize an inventory manager for a batch
-manager = InventoryManager(batch_id="batch-2026-q4")
-
-# Register repositories
-manager.add_item(
-    identifier="source-org/backend-service",
-    source_url="https://github.com/source-org/backend-service",
-    target_url="https://github.com/target-org/backend-service",
+# 1. Initialize credentials and spreadsheet client
+credentials = Credentials(credentials_path="gcp-key.json")
+spreadsheet = Spreadsheet(
+    id="1Z0PAjv8KK6WBrS2356gtR3VE0ulD1-8LM4DPQiG-Nkk",
+    credentials=credentials,
+    sheet_name="Inventario",
 )
 
-# Update migration status
-manager.update_status("source-org/backend-service", MigrationStatus.COMPLETED)
+# 2. Instantiate inventory manager
+inventory = Inventory(spreadsheet=spreadsheet)
 
-# Query inventory summary
-summary = manager.get_summary()
-print(summary)
-# Output: {'batch_id': 'batch-2026-q4', 'total_items': 1, 'completed_items': 1, 'failed_items': 0}
+# 3. Update or create repository progress
+record = inventory.update_progress(
+    repository_name="api-gateway",
+    status=MigrationStatus.ACTIVE_IN_BOTH,
+)
+
+print(f"Repository: {record.name}")
+print(f"Status: {record.migration_status}")
+print(f"Migration Month: {record.migration_month}")
 ```
 
 ---
