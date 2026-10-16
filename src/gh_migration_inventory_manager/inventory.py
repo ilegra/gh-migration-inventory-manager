@@ -5,7 +5,24 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from enum import Enum
-from typing import Any
+from typing import Any, Protocol
+
+
+class SpreadsheetClient(Protocol):
+    """Protocol representing spreadsheet operations required by Inventory."""
+
+    def find_by(
+        self,
+        column_name: str | None = None,
+        content: str = "",
+        *,
+        colName: str | None = None,
+    ) -> list[Any]: ...
+
+    def add(self, row: Any) -> Any: ...
+
+    def update_row(self, row: Any) -> Any: ...
+
 
 _PT_MONTHS: dict[int, str] = {
     1: "Janeiro",
@@ -89,8 +106,8 @@ class Inventory:
 
     def __init__(
         self,
-        spreadsheet: Spreadsheet | None = None,
-        spredsheet: Spreadsheet | None = None,
+        spreadsheet: SpreadsheetClient | Any = None,
+        spredsheet: SpreadsheetClient | Any = None,
     ) -> None:
         target = spreadsheet if spreadsheet is not None else spredsheet
         if target is None:
