@@ -10,7 +10,7 @@ from typing import Any
 from google.oauth2 import service_account
 from googleapiclient.discovery import build
 
-from gh_migration_inventory_manager.models import (
+from gh_migration_inventory_manager.inventory import (
     InventoryRecord,
     MigrationStatus,
     format_migration_month,
@@ -88,7 +88,7 @@ class RowConverter:
         """Convert a Row instance to an InventoryRecord instance."""
         status = row.data.get("migration_status", MigrationStatus.WAITTING)
         if isinstance(status, str):
-            from gh_migration_inventory_manager.core import Inventory
+            from gh_migration_inventory_manager.inventory import Inventory
 
             status = Inventory._from_sheet_label(status)
 
@@ -188,7 +188,7 @@ class Spreadsheet:
         if isinstance(status_val, MigrationStatus):
             status_str = status_val.to_sheet_label()
         else:
-            from gh_migration_inventory_manager.core import Inventory
+            from gh_migration_inventory_manager.inventory import Inventory
 
             status_str = Inventory._from_sheet_label(str(status_val)).to_sheet_label()
 
@@ -208,7 +208,7 @@ class Spreadsheet:
 
     def _from_sheet_row(self, values: list[str], row_index: int | None = None) -> Row:
         """Parse raw sheet cell values into a Row."""
-        from gh_migration_inventory_manager.core import Inventory
+        from gh_migration_inventory_manager.inventory import Inventory
 
         padded = values + [""] * max(0, len(_HEADERS) - len(values))
         data: dict[str, Any] = {

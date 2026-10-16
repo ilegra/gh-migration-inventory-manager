@@ -11,7 +11,10 @@ from gh_migration_inventory_manager.google import (
     RowConverter,
     Spreadsheet,
 )
-from gh_migration_inventory_manager.models import InventoryRecord, MigrationStatus
+from gh_migration_inventory_manager.inventory import (
+    InventoryRecord,
+    MigrationStatus,
+)
 
 
 @pytest.fixture

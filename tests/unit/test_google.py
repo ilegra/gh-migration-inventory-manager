@@ -12,7 +12,10 @@ from gh_migration_inventory_manager.google import (
     Spreadsheet,
     Spreadshseet,
 )
-from gh_migration_inventory_manager.models import InventoryRecord, MigrationStatus
+from gh_migration_inventory_manager.inventory import (
+    InventoryRecord,
+    MigrationStatus,
+)
 
 
 def test_should_add_new_row_when_input_is_valid(

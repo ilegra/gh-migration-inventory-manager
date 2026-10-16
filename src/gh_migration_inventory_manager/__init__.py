@@ -4,7 +4,6 @@ Provides a clean interface to track, catalog, and update repository migration
 records backed by Google Sheets.
 """
 
-from gh_migration_inventory_manager.core import Inventory, Iventory
 from gh_migration_inventory_manager.google import (
     Credentials,
     Row,
@@ -12,8 +11,10 @@ from gh_migration_inventory_manager.google import (
     Spreadsheet,
     Spreadshseet,
 )
-from gh_migration_inventory_manager.models import (
+from gh_migration_inventory_manager.inventory import (
+    Inventory,
     InventoryRecord,
+    Iventory,
     MigrationStatus,
 )
 
