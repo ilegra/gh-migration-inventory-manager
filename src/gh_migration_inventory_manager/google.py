@@ -10,9 +10,14 @@ from typing import Any
 from google.oauth2 import service_account
 from googleapiclient.discovery import build
 
-from gh_migration_inventory_manager.models import InventoryRecord, MigrationStatus
+from gh_migration_inventory_manager.models import (
+    InventoryRecord,
+    MigrationStatus,
+    format_migration_month,
+)
 
 _DATE_FORMAT = "%d/%m/%Y"
+_RANGE_PATTERN = re.compile(r"[A-Za-z]+(\d+):[A-Za-z]+(\d+)")
 _HEADERS = [
     "Nome do Repositório",
     "Tecnologia",
@@ -60,10 +65,10 @@ def _parse_date(value: str | None) -> datetime | None:
     return None
 
 
-def _format_date(dt: datetime | None) -> str:
-    if dt is None:
-        return ""
-    return dt.strftime(_DATE_FORMAT)
+def _format_date(dt: datetime | str | None) -> str:
+    if isinstance(dt, datetime):
+        return dt.strftime(_DATE_FORMAT)
+    return str(dt or "")
 
 
 @dataclass
@@ -125,25 +130,11 @@ class Row:
         """Convert data to an ordered list of cell string values for Google Sheets."""
         name = str(self.data.get("name", ""))
         stack = str(self.data.get("stack", ""))
-
-        last_commit = self.data.get("last_commit")
-        last_commit_str = (
-            _format_date(last_commit)
-            if isinstance(last_commit, datetime)
-            else str(last_commit or "")
-        )
+        last_commit_str = _format_date(self.data.get("last_commit"))
 
         gh_mig = self.data.get("gh_migratation") or self.data.get("gh_migration")
-        gh_mig_str = (
-            _format_date(gh_mig) if isinstance(gh_mig, datetime) else str(gh_mig or "")
-        )
-
-        origin_deact = self.data.get("origin_deactivation")
-        origin_deact_str = (
-            _format_date(origin_deact)
-            if isinstance(origin_deact, datetime)
-            else str(origin_deact or "")
-        )
+        gh_mig_str = _format_date(gh_mig)
+        origin_deact_str = _format_date(self.data.get("origin_deactivation"))
 
         status_val = self.data.get("migration_status", MigrationStatus.WAITTING)
         if isinstance(status_val, MigrationStatus):
@@ -155,8 +146,7 @@ class Row:
 
         month_str = str(self.data.get("migration_month", ""))
         if not month_str and gh_mig and isinstance(gh_mig, datetime):
-            temp_rec = InventoryRecord(name=name, gh_migratation=gh_mig)
-            month_str = temp_rec.migration_month
+            month_str = format_migration_month(gh_mig)
 
         return [
             name,
@@ -171,7 +161,7 @@ class Row:
     @classmethod
     def from_sheet_row(cls, values: list[str], row_index: int | None = None) -> Row:
         """Parse raw sheet cell values into a Row."""
-        padded = values + [""] * max(0, 7 - len(values))
+        padded = values + [""] * max(0, len(_HEADERS) - len(values))
         data: dict[str, Any] = {
             "name": padded[0],
             "stack": padded[1],
@@ -231,13 +221,6 @@ class Spreadsheet:
         col_idx = _COLUMN_ALIAS_MAP.get(clean_col)
 
         if col_idx is None:
-            # Fallback to direct header search
-            for idx, h in enumerate(_HEADERS):
-                if h.strip().lower() == clean_col:
-                    col_idx = idx
-                    break
-
-        if col_idx is None:
             raise ValueError(f"Unknown column identifier: '{colName}'")
 
         read_range = f"{self.sheet_name}!A2:G"
@@ -283,8 +266,7 @@ class Spreadsheet:
         )
 
         updated_range = res.get("updates", {}).get("updatedRange", "")
-        # e.g., 'Inventario!A10:G10' -> extract 10
-        match = re.search(r"[A-Za-z]+(\d+):[A-Za-z]+(\d+)", updated_range)
+        match = _RANGE_PATTERN.search(updated_range)
         if match:
             row.row_index = int(match.group(1))
 

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
-from gh_migration_inventory_manager.google import Spreadsheet
+from gh_migration_inventory_manager.google import Row, Spreadsheet
 from gh_migration_inventory_manager.models import InventoryRecord, MigrationStatus
 
 
@@ -29,37 +29,17 @@ class Inventory:
         if not repo_name:
             raise ValueError("Repository name cannot be empty.")
 
-        # 1. Check if repository exists in the inventory
         matching_rows = self.spreadsheet.find_by("name", repo_name)
-
         now = datetime.now(timezone.utc)
 
-        # 2. Add a new entry if repository is not there
         if not matching_rows:
-            record = InventoryRecord(
-                name=repo_name,
-                migration_status=status,
-            )
-            if status == MigrationStatus.ACTIVE_IN_BOTH:
-                record.gh_migratation = now
-                record.origin_deactivation = None
-            elif status == MigrationStatus.MIGRATED:
-                record.gh_migratation = now
-                record.origin_deactivation = now
-            elif status in (MigrationStatus.WAITTING, MigrationStatus.SKIPPED):
-                record.gh_migratation = None
-                record.origin_deactivation = None
-
-            from gh_migration_inventory_manager.google import Row
-
-            new_row = Row.from_inventory_record(record)
-            saved_row = self.spreadsheet.add(new_row)
-            return saved_row.to_inventory_record()
-
-        # 3. Update the current entry if record exists
-        existing_row = matching_rows[0]
-        record = existing_row.to_inventory_record()
-        record.migration_status = status
+            record = InventoryRecord(name=repo_name, migration_status=status)
+            row_index = None
+        else:
+            existing_row = matching_rows[0]
+            record = existing_row.to_inventory_record()
+            record.migration_status = status
+            row_index = existing_row.row_index
 
         if status == MigrationStatus.ACTIVE_IN_BOTH:
             if record.gh_migratation is None:
@@ -73,12 +53,12 @@ class Inventory:
             record.gh_migratation = None
             record.origin_deactivation = None
 
-        from gh_migration_inventory_manager.google import Row
-
-        updated_row = Row.from_inventory_record(
-            record, row_index=existing_row.row_index
+        row = Row.from_inventory_record(record, row_index=row_index)
+        saved_row = (
+            self.spreadsheet.update_row(row)
+            if row_index is not None
+            else self.spreadsheet.add(row)
         )
-        saved_row = self.spreadsheet.update_row(updated_row)
         return saved_row.to_inventory_record()
 
 
