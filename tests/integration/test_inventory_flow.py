@@ -12,6 +12,7 @@ from gh_migration_inventory_manager import (
     Iventory,
     MigrationStatus,
     Row,
+    RowConverter,
     Spreadsheet,
     Spreadshseet,
     __version__,
@@ -40,6 +41,7 @@ def test_public_api_exports() -> None:
     assert Spreadsheet is not None
     assert Spreadshseet is not None
     assert Row is not None
+    assert RowConverter is not None
     assert Credentials is not None
     assert InventoryRecord is not None
     assert MigrationStatus is not None
@@ -62,7 +64,7 @@ def test_live_google_sheets_integration_flow() -> None:
     # 1. Validate read of existing inventory records
     api_gateway_rows = spreadsheet.find_by("name", "api-gateway")
     assert len(api_gateway_rows) >= 1
-    existing_record = api_gateway_rows[0].to_inventory_record()
+    existing_record = RowConverter.to_inventory_record(api_gateway_rows[0])
     assert existing_record.name == "api-gateway"
     assert existing_record.stack == "Java"
 
