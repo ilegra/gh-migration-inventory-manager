@@ -23,6 +23,30 @@ class Inventory:
         self.spreadsheet = target
 
     @staticmethod
+    def _from_sheet_label(label: str) -> MigrationStatus:
+        """Parse spreadsheet label into the corresponding MigrationStatus."""
+        clean = (label or "").strip().lower()
+        if not clean:
+            return MigrationStatus.WAITTING
+        if "somente github" in clean or clean in ("migrated", "migrados"):
+            return MigrationStatus.MIGRATED
+        if (
+            "ativos em ambas" in clean
+            or "migrando" in clean
+            or clean == "active_in_both"
+        ):
+            return MigrationStatus.ACTIVE_IN_BOTH
+        if "ignorado" in clean or "não migrar" in clean or clean == "skipped":
+            return MigrationStatus.SKIPPED
+        if "aguardando" in clean or clean in ("waitting", "waiting"):
+            return MigrationStatus.WAITTING
+
+        try:
+            return MigrationStatus(clean)
+        except ValueError as err:
+            raise ValueError(f"Invalid migration status label: '{label}'.") from err
+
+    @staticmethod
     def _validate_status(status: Any) -> MigrationStatus:
         """Validate that status is a valid MigrationStatus or valid status string.
 

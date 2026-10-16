@@ -83,7 +83,9 @@ class Row:
         """Convert row data to an InventoryRecord instance."""
         status = self.data.get("migration_status", MigrationStatus.WAITTING)
         if isinstance(status, str):
-            status = MigrationStatus.from_sheet_label(status)
+            from gh_migration_inventory_manager.core import Inventory
+
+            status = Inventory._from_sheet_label(status)
 
         last_commit = self.data.get("last_commit")
         if isinstance(last_commit, str):
@@ -140,9 +142,9 @@ class Row:
         if isinstance(status_val, MigrationStatus):
             status_str = status_val.to_sheet_label()
         else:
-            status_str = MigrationStatus.from_sheet_label(
-                str(status_val)
-            ).to_sheet_label()
+            from gh_migration_inventory_manager.core import Inventory
+
+            status_str = Inventory._from_sheet_label(str(status_val)).to_sheet_label()
 
         month_str = str(self.data.get("migration_month", ""))
         if not month_str and gh_mig and isinstance(gh_mig, datetime):
@@ -161,6 +163,8 @@ class Row:
     @classmethod
     def from_sheet_row(cls, values: list[str], row_index: int | None = None) -> Row:
         """Parse raw sheet cell values into a Row."""
+        from gh_migration_inventory_manager.core import Inventory
+
         padded = values + [""] * max(0, len(_HEADERS) - len(values))
         data: dict[str, Any] = {
             "name": padded[0],
@@ -168,7 +172,7 @@ class Row:
             "last_commit": _parse_date(padded[2]),
             "gh_migratation": _parse_date(padded[3]),
             "origin_deactivation": _parse_date(padded[4]),
-            "migration_status": MigrationStatus.from_sheet_label(padded[5]),
+            "migration_status": Inventory._from_sheet_label(padded[5]),
             "migration_month": padded[6],
         }
         return cls(row_index=row_index, data=data, values=values)

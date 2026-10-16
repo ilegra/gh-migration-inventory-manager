@@ -1,54 +1,53 @@
 """Unit tests for models and MigrationStatus."""
 
+from datetime import datetime, timezone
+
 import pytest
 
-from gh_migration_inventory_manager.models import MigrationStatus
+from gh_migration_inventory_manager.models import (
+    InventoryRecord,
+    MigrationStatus,
+    format_migration_month,
+)
+
+
+def test_models_do_not_contain_from_sheet_label() -> None:
+    """Ensure business rule from_sheet_label is not in models."""
+    assert not hasattr(MigrationStatus, "from_sheet_label")
 
 
 @pytest.mark.parametrize(
-    ("label", "expected_status"),
+    ("status", "expected_label"),
     [
-        ("Migrados (Somente GitHub)", MigrationStatus.MIGRATED),
-        ("somente github", MigrationStatus.MIGRATED),
-        ("migrated", MigrationStatus.MIGRATED),
-        ("migrados", MigrationStatus.MIGRATED),
-        ("Migrando (Ativos em Ambas)", MigrationStatus.ACTIVE_IN_BOTH),
-        ("ativos em ambas", MigrationStatus.ACTIVE_IN_BOTH),
-        ("migrando", MigrationStatus.ACTIVE_IN_BOTH),
-        ("active_in_both", MigrationStatus.ACTIVE_IN_BOTH),
-        ("Ignorado", MigrationStatus.SKIPPED),
-        ("ignorado", MigrationStatus.SKIPPED),
-        ("não migrar", MigrationStatus.SKIPPED),
-        ("skipped", MigrationStatus.SKIPPED),
-        ("Aguardando Migração", MigrationStatus.WAITTING),
-        ("aguardando", MigrationStatus.WAITTING),
-        ("waitting", MigrationStatus.WAITTING),
-        ("waiting", MigrationStatus.WAITTING),
-        ("", MigrationStatus.WAITTING),
-        ("   ", MigrationStatus.WAITTING),
+        (MigrationStatus.MIGRATED, "Migrados (Somente GitHub)"),
+        (MigrationStatus.ACTIVE_IN_BOTH, "Migrando (Ativos em Ambas)"),
+        (MigrationStatus.SKIPPED, "Ignorado"),
+        (MigrationStatus.WAITTING, "Aguardando Migração"),
+        (MigrationStatus.WAITING, "Aguardando Migração"),
     ],
 )
-def test_from_sheet_label_valid_labels(
-    label: str, expected_status: MigrationStatus
+def test_migration_status_to_sheet_label(
+    status: MigrationStatus, expected_label: str
 ) -> None:
-    """Test that recognized spreadsheet labels map to the correct MigrationStatus."""
-    assert MigrationStatus.from_sheet_label(label) == expected_status
+    """Test mapping MigrationStatus to sheet display label."""
+    assert status.to_sheet_label() == expected_label
 
 
-@pytest.mark.parametrize(
-    "invalid_label",
-    [
-        "unknown_status",
-        "invalid",
-        "completed",
-        "pending",
-        "random string",
-    ],
-)
-def test_from_sheet_label_invalid_labels_raise_value_error(
-    invalid_label: str,
-) -> None:
-    """Test that unrecognized spreadsheet labels raise ValueError."""
-    expected_match = f"Invalid migration status label: '{invalid_label}'"
-    with pytest.raises(ValueError, match=expected_match):
-        MigrationStatus.from_sheet_label(invalid_label)
+def test_inventory_record_properties() -> None:
+    """Test InventoryRecord properties and aliases."""
+    record = InventoryRecord(
+        name="org/repo",
+        gh_migratation=datetime(2026, 10, 15, tzinfo=timezone.utc),
+    )
+    assert record.gh_migration == record.gh_migratation
+    assert record.migration_month == "Outubro/2026"
+
+    record.gh_migration = datetime(2026, 11, 1, tzinfo=timezone.utc)
+    assert record.gh_migratation == datetime(2026, 11, 1, tzinfo=timezone.utc)
+
+
+def test_format_migration_month() -> None:
+    """Test format_migration_month formatting."""
+    assert format_migration_month(None) == ""
+    assert format_migration_month(datetime(2026, 1, 1)) == "Janeiro/2026"
+    assert format_migration_month(datetime(2026, 12, 31)) == "Dezembro/2026"

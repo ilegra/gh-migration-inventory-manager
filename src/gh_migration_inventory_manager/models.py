@@ -51,30 +51,6 @@ class MigrationStatus(str, Enum):
             case _:
                 return "Aguardando Migração"
 
-    @classmethod
-    def from_sheet_label(cls, label: str) -> MigrationStatus:
-        """Parse spreadsheet label into the corresponding MigrationStatus."""
-        clean = (label or "").strip().lower()
-        if not clean:
-            return cls.WAITTING
-        if "somente github" in clean or clean == "migrated" or clean == "migrados":
-            return cls.MIGRATED
-        if (
-            "ativos em ambas" in clean
-            or "migrando" in clean
-            or clean == "active_in_both"
-        ):
-            return cls.ACTIVE_IN_BOTH
-        if "ignorado" in clean or "não migrar" in clean or clean == "skipped":
-            return cls.SKIPPED
-        if "aguardando" in clean or clean in ("waitting", "waiting"):
-            return cls.WAITTING
-
-        try:
-            return cls(clean)
-        except ValueError as err:
-            raise ValueError(f"Invalid migration status label: '{label}'.") from err
-
 
 @dataclass
 class InventoryRecord:

@@ -268,3 +268,50 @@ def test_update_progress_accepts_valid_string_status(
     record = inventory.update_progress("org/repo", status_input)
 
     assert record.migration_status == expected_enum
+
+
+@pytest.mark.parametrize(
+    ("label", "expected_status"),
+    [
+        ("Migrados (Somente GitHub)", MigrationStatus.MIGRATED),
+        ("somente github", MigrationStatus.MIGRATED),
+        ("migrated", MigrationStatus.MIGRATED),
+        ("migrados", MigrationStatus.MIGRATED),
+        ("Migrando (Ativos em Ambas)", MigrationStatus.ACTIVE_IN_BOTH),
+        ("ativos em ambas", MigrationStatus.ACTIVE_IN_BOTH),
+        ("migrando", MigrationStatus.ACTIVE_IN_BOTH),
+        ("active_in_both", MigrationStatus.ACTIVE_IN_BOTH),
+        ("Ignorado", MigrationStatus.SKIPPED),
+        ("ignorado", MigrationStatus.SKIPPED),
+        ("não migrar", MigrationStatus.SKIPPED),
+        ("skipped", MigrationStatus.SKIPPED),
+        ("Aguardando Migração", MigrationStatus.WAITTING),
+        ("aguardando", MigrationStatus.WAITTING),
+        ("waitting", MigrationStatus.WAITTING),
+        ("waiting", MigrationStatus.WAITTING),
+        ("", MigrationStatus.WAITTING),
+        ("   ", MigrationStatus.WAITTING),
+    ],
+)
+def test_inventory_from_sheet_label_valid(
+    label: str, expected_status: MigrationStatus
+) -> None:
+    """Test Inventory._from_sheet_label with valid labels."""
+    assert Inventory._from_sheet_label(label) == expected_status
+
+
+@pytest.mark.parametrize(
+    "invalid_label",
+    [
+        "unknown_status",
+        "invalid",
+        "completed",
+        "pending",
+        "random string",
+    ],
+)
+def test_inventory_from_sheet_label_invalid_raises(invalid_label: str) -> None:
+    """Test Inventory._from_sheet_label raises ValueError for invalid labels."""
+    expected_match = f"Invalid migration status label: '{invalid_label}'"
+    with pytest.raises(ValueError, match=expected_match):
+        Inventory._from_sheet_label(invalid_label)
