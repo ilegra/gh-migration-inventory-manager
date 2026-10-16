@@ -6,7 +6,7 @@ from unittest.mock import MagicMock
 import pytest
 
 from gh_migration_inventory_manager.core import Inventory, Iventory
-from gh_migration_inventory_manager.google import Row, Spreadsheet
+from gh_migration_inventory_manager.google import Row, RowConverter, Spreadsheet
 from gh_migration_inventory_manager.models import InventoryRecord, MigrationStatus
 
 
@@ -84,7 +84,7 @@ def test_update_progress_updates_existing_record_to_migrated() -> None:
         origin_deactivation=None,
         migration_status=MigrationStatus.ACTIVE_IN_BOTH,
     )
-    existing_row = Row.from_inventory_record(existing_record, row_index=4)
+    existing_row = RowConverter.from_inventory_record(existing_record, row_index=4)
     mock_spreadsheet.find_by.return_value = [existing_row]
 
     def fake_update(row: Row) -> Row:
@@ -120,7 +120,7 @@ def test_update_progress_resets_dates_when_reverted_to_waiting() -> None:
         migration_status=MigrationStatus.MIGRATED,
     )
     mock_spreadsheet.find_by.return_value = [
-        Row.from_inventory_record(existing_record, row_index=6)
+        RowConverter.from_inventory_record(existing_record, row_index=6)
     ]
     mock_spreadsheet.update_row.side_effect = lambda row: row
 

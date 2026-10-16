@@ -8,6 +8,7 @@ import pytest
 from gh_migration_inventory_manager.google import (
     Credentials,
     Row,
+    RowConverter,
     Spreadsheet,
     Spreadshseet,
 )
@@ -33,7 +34,7 @@ def test_should_add_new_row_when_input_is_valid(
         origin_deactivation=None,
         migration_status=MigrationStatus.ACTIVE_IN_BOTH,
     )
-    row = Row.from_inventory_record(record)
+    row = RowConverter.from_inventory_record(record)
 
     added_row = mock_spreadsheet.add(row)
 
@@ -68,7 +69,7 @@ def test_should_update_current_row_when_input_is_valid(
         origin_deactivation=datetime(2026, 10, 12, tzinfo=timezone.utc),
         migration_status=MigrationStatus.MIGRATED,
     )
-    row = Row.from_inventory_record(record, row_index=5)
+    row = RowConverter.from_inventory_record(record, row_index=5)
 
     updated = mock_spreadsheet.update_row(row)
 
@@ -173,17 +174,141 @@ def test_should_clear_row(
     mock_clear.assert_called_once()
 
 
-def test_row_to_and_from_inventory_record(sample_record: InventoryRecord) -> None:
-    """Test Row conversions to and from InventoryRecord."""
-    row = Row.from_inventory_record(sample_record, row_index=3)
+def test_row_converter_roundtrip(sample_record: InventoryRecord) -> None:
+    """Test roundtrip conversion between InventoryRecord and Row via RowConverter."""
+    row = RowConverter.from_inventory_record(sample_record, row_index=3)
     assert row.row_index == 3
     assert row.data["name"] == sample_record.name
 
-    restored = row.to_inventory_record()
+    restored = RowConverter.to_inventory_record(row)
     assert restored.name == sample_record.name
     assert restored.stack == sample_record.stack
     assert restored.migration_status == sample_record.migration_status
     assert restored.gh_migration == sample_record.gh_migration
+    assert restored.last_commit == sample_record.last_commit
+    assert restored.origin_deactivation == sample_record.origin_deactivation
+
+
+def test_row_converter_from_inventory_record_maps_all_fields() -> None:
+    """Test RowConverter.from_inventory_record maps every record field into Row."""
+    record = InventoryRecord(
+        name="full-repo",
+        stack="Rust",
+        last_commit=datetime(2026, 8, 1, tzinfo=timezone.utc),
+        gh_migratation=datetime(2026, 8, 15, tzinfo=timezone.utc),
+        origin_deactivation=datetime(2026, 8, 20, tzinfo=timezone.utc),
+        migration_status=MigrationStatus.MIGRATED,
+    )
+    row = RowConverter.from_inventory_record(record, row_index=42)
+    assert row.row_index == 42
+    assert row.data["name"] == "full-repo"
+    assert row.data["stack"] == "Rust"
+    assert row.data["last_commit"] == datetime(2026, 8, 1, tzinfo=timezone.utc)
+    assert row.data["gh_migratation"] == datetime(2026, 8, 15, tzinfo=timezone.utc)
+    assert row.data["origin_deactivation"] == datetime(2026, 8, 20, tzinfo=timezone.utc)
+    assert row.data["migration_status"] == MigrationStatus.MIGRATED
+    assert row.data["migration_month"] == "Agosto/2026"
+    assert row.values == []
+
+
+def test_row_converter_from_inventory_record_default_row_index() -> None:
+    """Test RowConverter.from_inventory_record defaults row_index to None."""
+    record = InventoryRecord(name="repo-no-index")
+    row = RowConverter.from_inventory_record(record)
+    assert row.row_index is None
+
+
+def test_row_converter_to_inventory_record_maps_all_fields() -> None:
+    """Test RowConverter.to_inventory_record correctly builds InventoryRecord."""
+    now = datetime(2026, 10, 15, tzinfo=timezone.utc)
+    row = Row(
+        row_index=1,
+        data={
+            "name": "sample-service",
+            "stack": "Go",
+            "last_commit": now,
+            "gh_migratation": now,
+            "origin_deactivation": now,
+            "migration_status": MigrationStatus.MIGRATED,
+        },
+    )
+    record = RowConverter.to_inventory_record(row)
+    assert record.name == "sample-service"
+    assert record.stack == "Go"
+    assert record.last_commit == now
+    assert record.gh_migratation == now
+    assert record.origin_deactivation == now
+    assert record.migration_status == MigrationStatus.MIGRATED
+
+
+@pytest.mark.parametrize(
+    ("raw_status", "expected_enum"),
+    [
+        ("Migrados (Somente GitHub)", MigrationStatus.MIGRATED),
+        ("Migrando (Ativos em Ambas)", MigrationStatus.ACTIVE_IN_BOTH),
+        ("Ignorado", MigrationStatus.SKIPPED),
+        ("Aguardando Migração", MigrationStatus.WAITTING),
+        ("migrated", MigrationStatus.MIGRATED),
+        ("active_in_both", MigrationStatus.ACTIVE_IN_BOTH),
+        ("skipped", MigrationStatus.SKIPPED),
+        ("waitting", MigrationStatus.WAITTING),
+        ("", MigrationStatus.WAITTING),
+    ],
+)
+def test_row_converter_to_inventory_record_with_string_migration_status(
+    raw_status: str, expected_enum: MigrationStatus
+) -> None:
+    """Test RowConverter.to_inventory_record converts string status to enum."""
+    row = Row(data={"name": "test-repo", "migration_status": raw_status})
+    record = RowConverter.to_inventory_record(row)
+    assert record.migration_status == expected_enum
+
+
+@pytest.mark.parametrize(
+    ("date_str", "expected_dt"),
+    [
+        ("15/10/2026", datetime(2026, 10, 15)),
+        ("2026-10-15", datetime(2026, 10, 15)),
+        ("2026-10-15T08:30:00", datetime(2026, 10, 15, 8, 30, 0)),
+    ],
+)
+def test_row_converter_to_inventory_record_with_string_dates(
+    date_str: str, expected_dt: datetime
+) -> None:
+    """Test RowConverter.to_inventory_record parses string date formats."""
+    row = Row(
+        data={
+            "name": "dates-repo",
+            "last_commit": date_str,
+            "gh_migratation": date_str,
+            "origin_deactivation": date_str,
+        }
+    )
+    record = RowConverter.to_inventory_record(row)
+    assert record.last_commit == expected_dt
+    assert record.gh_migratation == expected_dt
+    assert record.origin_deactivation == expected_dt
+
+
+def test_row_converter_to_inventory_record_with_gh_migration_alias() -> None:
+    """Test RowConverter.to_inventory_record resolves gh_migration key alias."""
+    dt = datetime(2026, 9, 1, tzinfo=timezone.utc)
+    row = Row(data={"name": "alias-repo", "gh_migration": dt})
+    record = RowConverter.to_inventory_record(row)
+    assert record.gh_migratation == dt
+    assert record.gh_migration == dt
+
+
+def test_row_converter_to_inventory_record_defaults_missing_fields() -> None:
+    """Test RowConverter.to_inventory_record applies clean defaults when empty."""
+    row = Row()
+    record = RowConverter.to_inventory_record(row)
+    assert record.name == ""
+    assert record.stack == ""
+    assert record.last_commit is None
+    assert record.gh_migratation is None
+    assert record.origin_deactivation is None
+    assert record.migration_status == MigrationStatus.WAITTING
 
 
 def test_credentials_configuration() -> None:
@@ -204,9 +329,11 @@ def test_spreadsheet_alias_and_initialization_error() -> None:
 
 
 def test_dataclasses_do_not_contain_business_rules() -> None:
-    """Ensure dataclasses Row and Credentials do not contain business rules methods."""
+    """Ensure dataclasses do not contain business rules or conversion methods."""
     assert not hasattr(Row, "to_sheet_row")
     assert not hasattr(Row, "from_sheet_row")
+    assert not hasattr(Row, "to_inventory_record")
+    assert not hasattr(Row, "from_inventory_record")
     assert not hasattr(Credentials, "get_google_credentials")
 
 

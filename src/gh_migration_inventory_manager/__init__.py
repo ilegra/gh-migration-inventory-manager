@@ -8,6 +8,7 @@ from gh_migration_inventory_manager.core import Inventory, Iventory
 from gh_migration_inventory_manager.google import (
     Credentials,
     Row,
+    RowConverter,
     Spreadsheet,
     Spreadshseet,
 )
@@ -25,6 +26,7 @@ __all__ = [
     "Spreadsheet",
     "Spreadshseet",
     "Row",
+    "RowConverter",
     "Credentials",
     "InventoryRecord",
     "MigrationStatus",

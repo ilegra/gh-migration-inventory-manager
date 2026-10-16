@@ -79,40 +79,43 @@ class Row:
     data: dict[str, Any] = field(default_factory=dict)
     values: list[str] = field(default_factory=list)
 
-    def to_inventory_record(self) -> InventoryRecord:
-        """Convert row data to an InventoryRecord instance."""
-        status = self.data.get("migration_status", MigrationStatus.WAITTING)
+
+class RowConverter:
+    """Conversion utility between Row and InventoryRecord instances."""
+
+    @staticmethod
+    def to_inventory_record(row: Row) -> InventoryRecord:
+        """Convert a Row instance to an InventoryRecord instance."""
+        status = row.data.get("migration_status", MigrationStatus.WAITTING)
         if isinstance(status, str):
             from gh_migration_inventory_manager.core import Inventory
 
             status = Inventory._from_sheet_label(status)
 
-        last_commit = self.data.get("last_commit")
+        last_commit = row.data.get("last_commit")
         if isinstance(last_commit, str):
             last_commit = _parse_date(last_commit)
 
-        gh_migratation = self.data.get("gh_migratation") or self.data.get(
-            "gh_migration"
-        )
+        gh_migratation = row.data.get("gh_migratation") or row.data.get("gh_migration")
         if isinstance(gh_migratation, str):
             gh_migratation = _parse_date(gh_migratation)
 
-        origin_deactivation = self.data.get("origin_deactivation")
+        origin_deactivation = row.data.get("origin_deactivation")
         if isinstance(origin_deactivation, str):
             origin_deactivation = _parse_date(origin_deactivation)
 
         return InventoryRecord(
-            name=str(self.data.get("name", "")),
-            stack=str(self.data.get("stack", "")),
+            name=str(row.data.get("name", "")),
+            stack=str(row.data.get("stack", "")),
             last_commit=last_commit,
             gh_migratation=gh_migratation,
             origin_deactivation=origin_deactivation,
             migration_status=status,
         )
 
-    @classmethod
+    @staticmethod
     def from_inventory_record(
-        cls, record: InventoryRecord, row_index: int | None = None
+        record: InventoryRecord, row_index: int | None = None
     ) -> Row:
         """Construct a Row instance from an InventoryRecord."""
         data: dict[str, Any] = {
@@ -124,8 +127,7 @@ class Row:
             "migration_status": record.migration_status,
             "migration_month": record.migration_month,
         }
-        row = cls(row_index=row_index, data=data)
-        return row
+        return Row(row_index=row_index, data=data)
 
 
 @dataclass

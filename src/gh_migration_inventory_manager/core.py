@@ -5,7 +5,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from typing import Any
 
-from gh_migration_inventory_manager.google import Row, Spreadsheet
+from gh_migration_inventory_manager.google import RowConverter, Spreadsheet
 from gh_migration_inventory_manager.models import InventoryRecord, MigrationStatus
 
 
@@ -114,7 +114,7 @@ class Inventory:
             row_index = None
         else:
             existing_row = matching_rows[0]
-            record = existing_row.to_inventory_record()
+            record = RowConverter.to_inventory_record(existing_row)
             record.migration_status = valid_status
             row_index = existing_row.row_index
 
@@ -133,13 +133,13 @@ class Inventory:
             record.gh_migratation = None
             record.origin_deactivation = None
 
-        row = Row.from_inventory_record(record, row_index=row_index)
+        row = RowConverter.from_inventory_record(record, row_index=row_index)
         saved_row = (
             self.spreadsheet.update_row(row)
             if row_index is not None
             else self.spreadsheet.add(row)
         )
-        return saved_row.to_inventory_record()
+        return RowConverter.to_inventory_record(saved_row)
 
 
 # Compatibility alias for skeleton typo

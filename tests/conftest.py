@@ -5,7 +5,12 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from gh_migration_inventory_manager.google import Credentials, Row, Spreadsheet
+from gh_migration_inventory_manager.google import (
+    Credentials,
+    Row,
+    RowConverter,
+    Spreadsheet,
+)
 from gh_migration_inventory_manager.models import InventoryRecord, MigrationStatus
 
 
@@ -25,7 +30,7 @@ def sample_record() -> InventoryRecord:
 @pytest.fixture
 def sample_row(sample_record: InventoryRecord) -> Row:
     """Fixture providing a sample Row derived from sample_record."""
-    return Row.from_inventory_record(sample_record, row_index=2)
+    return RowConverter.from_inventory_record(sample_record, row_index=2)
 
 
 @pytest.fixture
