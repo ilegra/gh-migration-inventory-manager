@@ -42,6 +42,7 @@ class MigrationStatus(str, Enum):
                 return "Ignorado"
             case _:
                 return "Aguardando Migração"
+        return "Aguardando Migração"
 
     @classmethod
     def from_sheet_label(cls, label: str) -> MigrationStatus:
