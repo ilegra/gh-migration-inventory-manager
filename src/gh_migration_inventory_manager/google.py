@@ -125,57 +125,7 @@ class Row:
             "migration_month": record.migration_month,
         }
         row = cls(row_index=row_index, data=data)
-        row.values = row.to_sheet_row()
         return row
-
-    def to_sheet_row(self) -> list[str]:
-        """Convert data to an ordered list of cell string values for Google Sheets."""
-        name = str(self.data.get("name", ""))
-        stack = str(self.data.get("stack", ""))
-        last_commit_str = _format_date(self.data.get("last_commit"))
-
-        gh_mig = self.data.get("gh_migratation") or self.data.get("gh_migration")
-        gh_mig_str = _format_date(gh_mig)
-        origin_deact_str = _format_date(self.data.get("origin_deactivation"))
-
-        status_val = self.data.get("migration_status", MigrationStatus.WAITTING)
-        if isinstance(status_val, MigrationStatus):
-            status_str = status_val.to_sheet_label()
-        else:
-            from gh_migration_inventory_manager.core import Inventory
-
-            status_str = Inventory._from_sheet_label(str(status_val)).to_sheet_label()
-
-        month_str = str(self.data.get("migration_month", ""))
-        if not month_str and gh_mig and isinstance(gh_mig, datetime):
-            month_str = format_migration_month(gh_mig)
-
-        return [
-            name,
-            stack,
-            last_commit_str,
-            gh_mig_str,
-            origin_deact_str,
-            status_str,
-            month_str,
-        ]
-
-    @classmethod
-    def from_sheet_row(cls, values: list[str], row_index: int | None = None) -> Row:
-        """Parse raw sheet cell values into a Row."""
-        from gh_migration_inventory_manager.core import Inventory
-
-        padded = values + [""] * max(0, len(_HEADERS) - len(values))
-        data: dict[str, Any] = {
-            "name": padded[0],
-            "stack": padded[1],
-            "last_commit": _parse_date(padded[2]),
-            "gh_migratation": _parse_date(padded[3]),
-            "origin_deactivation": _parse_date(padded[4]),
-            "migration_status": Inventory._from_sheet_label(padded[5]),
-            "migration_month": padded[6],
-        }
-        return cls(row_index=row_index, data=data, values=values)
 
 
 @dataclass
@@ -186,11 +136,6 @@ class Credentials:
     scopes: list[str] = field(
         default_factory=lambda: ["https://www.googleapis.com/auth/spreadsheets"]
     )
-
-    def get_google_credentials(self) -> Any:
-        """Load service account credentials from the configured path."""
-        loader: Any = service_account.Credentials.from_service_account_file
-        return loader(self.credentials_path, scopes=self.scopes)
 
 
 class Spreadsheet:
@@ -210,7 +155,7 @@ class Spreadsheet:
         if service is not None:
             self._service = service
         elif credentials is not None:
-            google_creds = credentials.get_google_credentials()
+            google_creds = self._get_google_credentials(credentials)
             self._service = build(
                 "sheets", "v4", credentials=google_creds, cache_discovery=False
             )
@@ -218,6 +163,62 @@ class Spreadsheet:
             raise ValueError(
                 "Either credentials or a service instance must be provided."
             )
+
+    def _get_google_credentials(self, credentials: Credentials) -> Any:
+        """Load service account credentials from credentials configuration."""
+        loader: Any = service_account.Credentials.from_service_account_file
+        return loader(credentials.credentials_path, scopes=credentials.scopes)
+
+    def _to_sheet_row(self, row: Row) -> list[str]:
+        """Convert row data to an ordered list of cell string values.
+
+        Values are formatted for Google Sheets columns.
+        """
+        name = str(row.data.get("name", ""))
+        stack = str(row.data.get("stack", ""))
+        last_commit_str = _format_date(row.data.get("last_commit"))
+
+        gh_mig = row.data.get("gh_migratation") or row.data.get("gh_migration")
+        gh_mig_str = _format_date(gh_mig)
+        origin_deact_str = _format_date(row.data.get("origin_deactivation"))
+
+        status_val = row.data.get("migration_status", MigrationStatus.WAITTING)
+        if isinstance(status_val, MigrationStatus):
+            status_str = status_val.to_sheet_label()
+        else:
+            from gh_migration_inventory_manager.core import Inventory
+
+            status_str = Inventory._from_sheet_label(str(status_val)).to_sheet_label()
+
+        month_str = str(row.data.get("migration_month", ""))
+        if not month_str and gh_mig and isinstance(gh_mig, datetime):
+            month_str = format_migration_month(gh_mig)
+
+        return [
+            name,
+            stack,
+            last_commit_str,
+            gh_mig_str,
+            origin_deact_str,
+            status_str,
+            month_str,
+        ]
+
+    def _from_sheet_row(self, values: list[str], row_index: int | None = None) -> Row:
+        """Parse raw sheet cell values into a Row."""
+        from gh_migration_inventory_manager.core import Inventory
+
+        padded = values + [""] * max(0, len(_HEADERS) - len(values))
+        data: dict[str, Any] = {
+            "name": padded[0],
+            "stack": padded[1],
+            "last_commit": _parse_date(padded[2]),
+            "gh_migratation": _parse_date(padded[3]),
+            "origin_deactivation": _parse_date(padded[4]),
+            "migration_status": Inventory._from_sheet_label(padded[5]),
+            "migration_month": padded[6],
+        }
+        return Row(row_index=row_index, data=data, values=values)
 
     def find_by(self, colName: str, content: str) -> list[Row]:
         """Find rows where the specified column matches content."""
@@ -245,14 +246,14 @@ class Spreadsheet:
                 val = row_vals[col_idx].strip().lower()
                 if val == target:
                     matched.append(
-                        Row.from_sheet_row(row_vals, row_index=actual_row_number)
+                        self._from_sheet_row(row_vals, row_index=actual_row_number)
                     )
 
         return matched
 
     def add(self, row: Row) -> Row:
         """Append a new row to the spreadsheet and update its row_index."""
-        values = row.to_sheet_row()
+        values = self._to_sheet_row(row)
         append_range = f"{self.sheet_name}!A:G"
         body = {"values": [values]}
 
@@ -282,7 +283,7 @@ class Spreadsheet:
         if row.row_index is None:
             raise ValueError("Cannot update row without a valid row_index.")
 
-        values = row.to_sheet_row()
+        values = self._to_sheet_row(row)
         target_range = f"{self.sheet_name}!A{row.row_index}:G{row.row_index}"
         body = {"values": [values]}
 

@@ -201,3 +201,186 @@ def test_spreadsheet_alias_and_initialization_error() -> None:
         ValueError, match="Either credentials or a service instance must be provided"
     ):
         Spreadsheet(id="test-id")
+
+
+def test_dataclasses_do_not_contain_business_rules() -> None:
+    """Ensure dataclasses Row and Credentials do not contain business rules methods."""
+    assert not hasattr(Row, "to_sheet_row")
+    assert not hasattr(Row, "from_sheet_row")
+    assert not hasattr(Credentials, "get_google_credentials")
+
+
+@pytest.mark.parametrize(
+    ("status_input", "expected_sheet_label"),
+    [
+        (MigrationStatus.MIGRATED, "Migrados (Somente GitHub)"),
+        (MigrationStatus.ACTIVE_IN_BOTH, "Migrando (Ativos em Ambas)"),
+        (MigrationStatus.SKIPPED, "Ignorado"),
+        (MigrationStatus.WAITTING, "Aguardando Migração"),
+        (MigrationStatus.WAITING, "Aguardando Migração"),
+        ("somente github", "Migrados (Somente GitHub)"),
+        ("migrando", "Migrando (Ativos em Ambas)"),
+        ("ignorado", "Ignorado"),
+        ("", "Aguardando Migração"),
+    ],
+)
+def test_should_format_migration_status_when_adding_row(
+    mock_spreadsheet: Spreadsheet,
+    mock_sheets_service: MagicMock,
+    status_input: object,
+    expected_sheet_label: str,
+) -> None:
+    """Test converting migration status to sheet label via public add method."""
+    mock_append = (
+        mock_sheets_service.spreadsheets.return_value.values.return_value.append
+    )
+    mock_append.return_value.execute.return_value = {
+        "updates": {"updatedRange": "Inventario!A10:G10"}
+    }
+    row = Row(data={"name": "test-repo", "migration_status": status_input})
+    added = mock_spreadsheet.add(row)
+    assert added.values[5] == expected_sheet_label
+
+
+def test_should_format_dates_and_empty_values_when_adding_row(
+    mock_spreadsheet: Spreadsheet, mock_sheets_service: MagicMock
+) -> None:
+    """Test formatting dates and empty values via public add method."""
+    mock_append = (
+        mock_sheets_service.spreadsheets.return_value.values.return_value.append
+    )
+    mock_append.return_value.execute.return_value = {
+        "updates": {"updatedRange": "Inventario!A10:G10"}
+    }
+    row = Row(
+        data={
+            "name": "date-repo",
+            "last_commit": datetime(2026, 5, 20, tzinfo=timezone.utc),
+            "gh_migration": datetime(2026, 6, 15, tzinfo=timezone.utc),
+            "origin_deactivation": None,
+        }
+    )
+    added = mock_spreadsheet.add(row)
+    assert added.values[2] == "20/05/2026"
+    assert added.values[3] == "15/06/2026"
+    assert added.values[4] == ""
+    assert added.values[6] == "Junho/2026"
+
+
+def test_should_preserve_explicit_migration_month_when_adding_row(
+    mock_spreadsheet: Spreadsheet, mock_sheets_service: MagicMock
+) -> None:
+    """Test explicit migration_month is preserved via public add method."""
+    mock_append = (
+        mock_sheets_service.spreadsheets.return_value.values.return_value.append
+    )
+    mock_append.return_value.execute.return_value = {
+        "updates": {"updatedRange": "Inventario!A10:G10"}
+    }
+    row = Row(
+        data={
+            "name": "custom-month-repo",
+            "gh_migration": datetime(2026, 6, 15, tzinfo=timezone.utc),
+            "migration_month": "Personalizado/2026",
+        }
+    )
+    added = mock_spreadsheet.add(row)
+    assert added.values[6] == "Personalizado/2026"
+
+
+@pytest.mark.parametrize(
+    ("date_str", "expected_date"),
+    [
+        ("20/10/2026", datetime(2026, 10, 20)),
+        ("2026-10-20", datetime(2026, 10, 20)),
+        ("2026-10-20T14:30:00", datetime(2026, 10, 20, 14, 30, 0)),
+        ("", None),
+        ("   ", None),
+        ("not-a-valid-date", None),
+    ],
+)
+def test_should_parse_dates_when_finding_row(
+    mock_spreadsheet: Spreadsheet,
+    mock_sheets_service: MagicMock,
+    date_str: str,
+    expected_date: datetime | None,
+) -> None:
+    """Test date parsing rules via public find_by method."""
+    mock_get = mock_sheets_service.spreadsheets.return_value.values.return_value.get
+    mock_get.return_value.execute.return_value = {
+        "values": [["repo-date", "Python", date_str, "", "", "Aguardando Migração", ""]]
+    }
+    results = mock_spreadsheet.find_by("name", "repo-date")
+    assert len(results) == 1
+    assert results[0].data["last_commit"] == expected_date
+
+
+def test_should_pad_short_row_when_finding_row(
+    mock_spreadsheet: Spreadsheet, mock_sheets_service: MagicMock
+) -> None:
+    """Test padding rows with fewer columns via public find_by method."""
+    mock_get = mock_sheets_service.spreadsheets.return_value.values.return_value.get
+    mock_get.return_value.execute.return_value = {"values": [["short-repo", "Python"]]}
+    results = mock_spreadsheet.find_by("name", "short-repo")
+    assert len(results) == 1
+    row = results[0]
+    assert row.data["name"] == "short-repo"
+    assert row.data["stack"] == "Python"
+    assert row.data["last_commit"] is None
+    assert row.data["gh_migratation"] is None
+    assert row.data["origin_deactivation"] is None
+    assert row.data["migration_status"] == MigrationStatus.WAITTING
+    assert row.data["migration_month"] == ""
+
+
+@pytest.mark.parametrize(
+    ("sheet_label", "expected_status"),
+    [
+        ("Migrados (Somente GitHub)", MigrationStatus.MIGRATED),
+        ("Migrando (Ativos em Ambas)", MigrationStatus.ACTIVE_IN_BOTH),
+        ("Ignorado", MigrationStatus.SKIPPED),
+        ("Aguardando Migração", MigrationStatus.WAITTING),
+        ("", MigrationStatus.WAITTING),
+    ],
+)
+def test_should_parse_migration_status_labels_when_finding_row(
+    mock_spreadsheet: Spreadsheet,
+    mock_sheets_service: MagicMock,
+    sheet_label: str,
+    expected_status: MigrationStatus,
+) -> None:
+    """Test parsing sheet status labels via public find_by method."""
+    mock_get = mock_sheets_service.spreadsheets.return_value.values.return_value.get
+    mock_get.return_value.execute.return_value = {
+        "values": [["status-repo", "Java", "", "", "", sheet_label, ""]]
+    }
+    results = mock_spreadsheet.find_by("name", "status-repo")
+    assert len(results) == 1
+    assert results[0].data["migration_status"] == expected_status
+
+
+def test_spreadsheet_loads_credentials_via_service_account(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Test Spreadsheet initialization loads credentials via service account."""
+    mock_from_file = MagicMock()
+    mock_build = MagicMock()
+    monkeypatch.setattr(
+        "gh_migration_inventory_manager.google.service_account.Credentials.from_service_account_file",
+        mock_from_file,
+    )
+    monkeypatch.setattr("gh_migration_inventory_manager.google.build", mock_build)
+
+    creds = Credentials(
+        credentials_path="/fake/creds.json",
+        scopes=["https://www.googleapis.com/auth/spreadsheets"],
+    )
+    sheet = Spreadsheet(id="my-sheet-id", credentials=creds)
+
+    mock_from_file.assert_called_once_with(
+        "/fake/creds.json", scopes=["https://www.googleapis.com/auth/spreadsheets"]
+    )
+    mock_build.assert_called_once_with(
+        "sheets", "v4", credentials=mock_from_file.return_value, cache_discovery=False
+    )
+    assert sheet.id == "my-sheet-id"
