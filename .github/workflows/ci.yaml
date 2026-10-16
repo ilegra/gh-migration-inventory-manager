@@ -120,8 +120,20 @@ jobs:
       - name: Install dependencies
         run: poetry install --with dev
 
+      - name: Set up GCP Credentials from Secret
+        env:
+          GCP_SA_KEY: ${{ secrets.GCP_SA_KEY }}
+        run: |
+          if [ -n "$GCP_SA_KEY" ]; then
+            echo "$GCP_SA_KEY" > gcp-key.json
+          fi
+
       - name: Run Integration Tests
         run: poetry run pytest tests/integration -v
+
+      - name: Clean up GCP Credentials
+        if: always()
+        run: rm -f gcp-key.json
 
   security-gitleaks:
     name: Security - Gitleaks Secret Scan
