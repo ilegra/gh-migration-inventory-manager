@@ -73,8 +73,11 @@ def test_live_google_sheets_integration_flow() -> None:
     created_row_index: int | None = None
 
     try:
-        record = inventory.update_progress(canary_id, MigrationStatus.ACTIVE_IN_BOTH)
+        record = inventory.update_progress(
+            canary_id, MigrationStatus.ACTIVE_IN_BOTH, project="test-project"
+        )
         assert record.name == canary_id
+        assert record.project == "test-project"
         assert record.migration_status == MigrationStatus.ACTIVE_IN_BOTH
         assert record.gh_migratation is not None
         assert record.origin_deactivation is None
@@ -83,10 +86,16 @@ def test_live_google_sheets_integration_flow() -> None:
         found_rows = spreadsheet.find_by("name", canary_id)
         assert len(found_rows) == 1
         created_row_index = found_rows[0].row_index
+        assert found_rows[0].data["project"] == "test-project"
+
+        # Verify it can also be retrieved by project column
+        found_by_project = spreadsheet.find_by("project", "test-project")
+        assert any(r.data["name"] == canary_id for r in found_by_project)
 
         # 3. Update canary entry to MIGRATED
         migrated_record = inventory.update_progress(canary_id, MigrationStatus.MIGRATED)
         assert migrated_record.name == canary_id
+        assert migrated_record.project == "test-project"
         assert migrated_record.migration_status == MigrationStatus.MIGRATED
         assert migrated_record.origin_deactivation is not None
 

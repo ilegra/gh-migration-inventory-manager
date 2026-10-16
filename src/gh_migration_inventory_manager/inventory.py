@@ -80,6 +80,7 @@ class InventoryRecord:
     """Represents an item in the inventory: a repository migrated or to be migrated."""
 
     name: str
+    project: str = ""
     stack: str = ""
     last_commit: datetime | None = None
     gh_migratation: datetime | None = None
@@ -185,7 +186,10 @@ class Inventory:
         )
 
     def update_progress(
-        self, repository_name: str, status: MigrationStatus | str
+        self,
+        repository_name: str,
+        status: MigrationStatus | str,
+        project: str | None = None,
     ) -> InventoryRecord:
         """Update migration progress for a repository in the inventory."""
         from gh_migration_inventory_manager.google import RowConverter
@@ -199,11 +203,17 @@ class Inventory:
         matching_rows = self.spreadsheet.find_by("name", repo_name)
 
         if not matching_rows:
-            record = InventoryRecord(name=repo_name, migration_status=valid_status)
+            record = InventoryRecord(
+                name=repo_name,
+                project=project or "",
+                migration_status=valid_status,
+            )
             row_index = None
         else:
             existing_row = matching_rows[0]
             record = RowConverter.to_inventory_record(existing_row)
+            if project is not None:
+                record.project = project
             record.migration_status = valid_status
             row_index = existing_row.row_index
 
