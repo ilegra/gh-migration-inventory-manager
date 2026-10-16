@@ -22,6 +22,14 @@ _PT_MONTHS: dict[int, str] = {
 }
 
 
+def format_migration_month(dt: datetime | None) -> str:
+    """Format a datetime into a localized month/year string (e.g. 'Outubro/2026')."""
+    if dt is None:
+        return ""
+    month_name = _PT_MONTHS.get(dt.month, "")
+    return f"{month_name}/{dt.year}" if month_name else ""
+
+
 class MigrationStatus(str, Enum):
     """Status representing the state of an inventory item during migration."""
 
@@ -42,7 +50,6 @@ class MigrationStatus(str, Enum):
                 return "Ignorado"
             case _:
                 return "Aguardando Migração"
-        return "Aguardando Migração"
 
     @classmethod
     def from_sheet_label(cls, label: str) -> MigrationStatus:
@@ -92,8 +99,4 @@ class InventoryRecord:
     @property
     def migration_month(self) -> str:
         """Return the formatted migration month (e.g. 'Outubro/2026')."""
-        target_date = self.gh_migratation
-        if target_date is None:
-            return ""
-        month_name = _PT_MONTHS.get(target_date.month, "")
-        return f"{month_name}/{target_date.year}" if month_name else ""
+        return format_migration_month(self.gh_migratation)
