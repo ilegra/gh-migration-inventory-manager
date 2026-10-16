@@ -94,6 +94,24 @@ def test_update_progress_creates_new_record_when_not_in_inventory() -> None:
     mock_spreadsheet.add.assert_called_once()
 
 
+def test_update_progress_creates_new_record_with_project() -> None:
+    """Test adding a new entry with an explicit project."""
+    mock_spreadsheet = MagicMock(spec=Spreadsheet)
+    mock_spreadsheet.find_by.return_value = []
+    mock_spreadsheet.add.side_effect = lambda row: row
+
+    inventory = Inventory(spreadsheet=mock_spreadsheet)
+    record = inventory.update_progress(
+        "org/project-service",
+        MigrationStatus.ACTIVE_IN_BOTH,
+        project="platform-core",
+    )
+
+    assert record.name == "org/project-service"
+    assert record.project == "platform-core"
+    assert record.migration_status == MigrationStatus.ACTIVE_IN_BOTH
+
+
 def test_update_progress_creates_new_record_waiting_status() -> None:
     """Test adding a new entry with WAITTING status assumes empty dates."""
     mock_spreadsheet = MagicMock(spec=Spreadsheet)
@@ -133,6 +151,7 @@ def test_update_progress_updates_existing_record_to_migrated() -> None:
     original_migration_date = datetime(2026, 9, 15, tzinfo=timezone.utc)
     existing_record = InventoryRecord(
         name="org/existing-service",
+        project="billing-app",
         stack="Python",
         last_commit=datetime(2026, 9, 10, tzinfo=timezone.utc),
         gh_migratation=original_migration_date,
@@ -153,6 +172,7 @@ def test_update_progress_updates_existing_record_to_migrated() -> None:
     )
 
     assert updated_record.name == "org/existing-service"
+    assert updated_record.project == "billing-app"
     assert updated_record.stack == "Python"
     assert updated_record.migration_status == MigrationStatus.MIGRATED
     assert updated_record.gh_migratation == original_migration_date
@@ -160,6 +180,12 @@ def test_update_progress_updates_existing_record_to_migrated() -> None:
     assert updated_record.migration_month == "Setembro/2026"
 
     mock_spreadsheet.update_row.assert_called_once()
+
+    # Also test updating project on existing record
+    updated_with_new_project = inventory.update_progress(
+        "org/existing-service", MigrationStatus.MIGRATED, project="billing-core"
+    )
+    assert updated_with_new_project.project == "billing-core"
 
 
 def test_update_progress_resets_dates_when_reverted_to_waiting() -> None:

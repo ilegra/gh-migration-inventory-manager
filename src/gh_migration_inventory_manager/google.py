@@ -25,6 +25,7 @@ _SUPPORTED_DATE_FORMATS: tuple[str, ...] = (
 )
 _RANGE_PATTERN = re.compile(r"[A-Za-z]+(\d+):[A-Za-z]+(\d+)")
 _HEADERS = [
+    "Projeto",
     "Nome do Repositório",
     "Tecnologia",
     "Data do Último Commit",
@@ -35,27 +36,29 @@ _HEADERS = [
 ]
 
 _COLUMN_ALIAS_MAP: dict[str, int] = {
-    "name": 0,
-    "nome": 0,
-    "nome do repositório": 0,
-    "repositório": 0,
-    "repository": 0,
-    "stack": 1,
-    "tecnologia": 1,
-    "tech": 1,
-    "last_commit": 2,
-    "data do último commit": 2,
-    "gh_migration": 3,
-    "gh_migratation": 3,
-    "data de migração (github)": 3,
-    "origin_deactivation": 4,
-    "data de desativação (origem)": 4,
-    "migration_status": 5,
-    "status": 5,
-    "status da migração": 5,
-    "migration_month": 6,
-    "mês de migração": 6,
-    "month": 6,
+    "project": 0,
+    "projeto": 0,
+    "name": 1,
+    "nome": 1,
+    "nome do repositório": 1,
+    "repositório": 1,
+    "repository": 1,
+    "stack": 2,
+    "tecnologia": 2,
+    "tech": 2,
+    "last_commit": 3,
+    "data do último commit": 3,
+    "gh_migration": 4,
+    "gh_migratation": 4,
+    "data de migração (github)": 4,
+    "origin_deactivation": 5,
+    "data de desativação (origem)": 5,
+    "migration_status": 6,
+    "status": 6,
+    "status da migração": 6,
+    "migration_month": 7,
+    "mês de migração": 7,
+    "month": 7,
 }
 
 
@@ -100,6 +103,7 @@ class RowConverter:
 
         return InventoryRecord(
             name=str(row.data.get("name", "")),
+            project=str(row.data.get("project", "")),
             stack=str(row.data.get("stack", "")),
             last_commit=_parse_date(row.data.get("last_commit")),
             gh_migratation=_parse_date(
@@ -115,6 +119,7 @@ class RowConverter:
     ) -> Row:
         """Construct a Row instance from an InventoryRecord."""
         data: dict[str, Any] = {
+            "project": record.project,
             "name": record.name,
             "stack": record.stack,
             "last_commit": record.last_commit,
@@ -172,6 +177,7 @@ class Spreadsheet:
 
         Values are formatted for Google Sheets columns.
         """
+        project = str(row.data.get("project", ""))
         name = str(row.data.get("name", ""))
         stack = str(row.data.get("stack", ""))
         last_commit_str = _format_date(row.data.get("last_commit"))
@@ -191,6 +197,7 @@ class Spreadsheet:
             month_str = format_migration_month(gh_mig)
 
         return [
+            project,
             name,
             stack,
             last_commit_str,
@@ -204,13 +211,14 @@ class Spreadsheet:
         """Parse raw sheet cell values into a Row."""
         padded = values + [""] * max(0, len(_HEADERS) - len(values))
         data: dict[str, Any] = {
-            "name": padded[0],
-            "stack": padded[1],
-            "last_commit": _parse_date(padded[2]),
-            "gh_migratation": _parse_date(padded[3]),
-            "origin_deactivation": _parse_date(padded[4]),
-            "migration_status": Inventory._from_sheet_label(padded[5]),
-            "migration_month": padded[6],
+            "project": padded[0],
+            "name": padded[1],
+            "stack": padded[2],
+            "last_commit": _parse_date(padded[3]),
+            "gh_migratation": _parse_date(padded[4]),
+            "origin_deactivation": _parse_date(padded[5]),
+            "migration_status": Inventory._from_sheet_label(padded[6]),
+            "migration_month": padded[7],
         }
         return Row(row_index=row_index, data=data, values=values)
 
@@ -231,7 +239,7 @@ class Spreadsheet:
         if col_idx is None:
             raise ValueError(f"Unknown column identifier: '{target_col}'")
 
-        read_range = f"{self.sheet_name}!A2:G"
+        read_range = f"{self.sheet_name}!A2:H"
         resp = (
             self._service.spreadsheets()
             .values()
@@ -257,7 +265,7 @@ class Spreadsheet:
     def add(self, row: Row) -> Row:
         """Append a new row to the spreadsheet and update its row_index."""
         values = self._to_sheet_row(row)
-        append_range = f"{self.sheet_name}!A:G"
+        append_range = f"{self.sheet_name}!A:H"
         body = {"values": [values]}
 
         res = (
@@ -287,7 +295,7 @@ class Spreadsheet:
             raise ValueError("Cannot update row without a valid row_index.")
 
         values = self._to_sheet_row(row)
-        target_range = f"{self.sheet_name}!A{row.row_index}:G{row.row_index}"
+        target_range = f"{self.sheet_name}!A{row.row_index}:H{row.row_index}"
         body = {"values": [values]}
 
         self._service.spreadsheets().values().update(
@@ -302,7 +310,7 @@ class Spreadsheet:
 
     def clear_row(self, row_index: int) -> None:
         """Clear all cell values in the specified row."""
-        target_range = f"{self.sheet_name}!A{row_index}:G{row_index}"
+        target_range = f"{self.sheet_name}!A{row_index}:H{row_index}"
         self._service.spreadsheets().values().clear(
             spreadsheetId=self.id, range=target_range, body={}
         ).execute()

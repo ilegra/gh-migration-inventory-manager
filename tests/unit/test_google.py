@@ -26,11 +26,12 @@ def test_should_add_new_row_when_input_is_valid(
         mock_sheets_service.spreadsheets.return_value.values.return_value.append
     )
     mock_append.return_value.execute.return_value = {
-        "updates": {"updatedRange": "Inventario!A10:G10"}
+        "updates": {"updatedRange": "Inventario!A10:H10"}
     }
 
     record = InventoryRecord(
         name="backend-service",
+        project="core-platform",
         stack="Go",
         last_commit=datetime(2026, 10, 15, tzinfo=timezone.utc),
         gh_migratation=datetime(2026, 10, 1, tzinfo=timezone.utc),
@@ -42,14 +43,16 @@ def test_should_add_new_row_when_input_is_valid(
     added_row = mock_spreadsheet.add(row)
 
     assert added_row.row_index == 10
+    assert added_row.data["project"] == "core-platform"
     assert added_row.data["name"] == "backend-service"
     assert added_row.data["stack"] == "Go"
     assert added_row.data["migration_status"] == MigrationStatus.ACTIVE_IN_BOTH
     assert added_row.data["migration_month"] == "Outubro/2026"
-    assert added_row.values[0] == "backend-service"
-    assert added_row.values[1] == "Go"
-    assert added_row.values[5] == "Migrando (Ativos em Ambas)"
-    assert added_row.values[6] == "Outubro/2026"
+    assert added_row.values[0] == "core-platform"
+    assert added_row.values[1] == "backend-service"
+    assert added_row.values[2] == "Go"
+    assert added_row.values[6] == "Migrando (Ativos em Ambas)"
+    assert added_row.values[7] == "Outubro/2026"
 
     mock_append.assert_called_once()
 
@@ -61,10 +64,11 @@ def test_should_update_current_row_when_input_is_valid(
     mock_update = (
         mock_sheets_service.spreadsheets.return_value.values.return_value.update
     )
-    mock_update.return_value.execute.return_value = {"updatedRange": "Inventario!A5:G5"}
+    mock_update.return_value.execute.return_value = {"updatedRange": "Inventario!A5:H5"}
 
     record = InventoryRecord(
         name="frontend-app",
+        project="web-portal",
         stack="TypeScript",
         last_commit=datetime(2026, 10, 12, tzinfo=timezone.utc),
         gh_migratation=datetime(2026, 10, 5, tzinfo=timezone.utc),
@@ -76,11 +80,13 @@ def test_should_update_current_row_when_input_is_valid(
     updated = mock_spreadsheet.update_row(row)
 
     assert updated.row_index == 5
+    assert updated.data["project"] == "web-portal"
     assert updated.data["name"] == "frontend-app"
     assert updated.data["stack"] == "TypeScript"
     assert updated.data["migration_status"] == MigrationStatus.MIGRATED
-    assert updated.values[0] == "frontend-app"
-    assert updated.values[5] == "Migrados (Somente GitHub)"
+    assert updated.values[0] == "web-portal"
+    assert updated.values[1] == "frontend-app"
+    assert updated.values[6] == "Migrados (Somente GitHub)"
 
     mock_update.assert_called_once()
 
@@ -93,6 +99,7 @@ def test_should_return_empty_object_when_row_is_not_found(
     mock_get.return_value.execute.return_value = {
         "values": [
             [
+                "portal",
                 "existing-repo",
                 "Java",
                 "10/10/2026",
@@ -116,6 +123,7 @@ def test_should_find_row_when_exists(
     mock_get.return_value.execute.return_value = {
         "values": [
             [
+                "core-team",
                 "api-gateway",
                 "Java",
                 "10/10/2026",
@@ -125,6 +133,7 @@ def test_should_find_row_when_exists(
                 "Outubro/2026",
             ],
             [
+                "web-team",
                 "frontend-web",
                 "React",
                 "12/10/2026",
@@ -141,10 +150,16 @@ def test_should_find_row_when_exists(
     assert len(results) == 1
     row = results[0]
     assert row.row_index == 2  # Row 1 is header
+    assert row.data["project"] == "core-team"
     assert row.data["name"] == "api-gateway"
     assert row.data["stack"] == "Java"
     assert row.data["migration_status"] == MigrationStatus.MIGRATED
     assert row.data["migration_month"] == "Outubro/2026"
+
+    # Also verify find by project column
+    project_results = mock_spreadsheet.find_by("project", "core-team")
+    assert len(project_results) == 1
+    assert project_results[0].data["name"] == "api-gateway"
 
 
 def test_should_raise_when_updating_row_without_index(
@@ -180,9 +195,11 @@ def test_row_converter_roundtrip(sample_record: InventoryRecord) -> None:
     row = RowConverter.from_inventory_record(sample_record, row_index=3)
     assert row.row_index == 3
     assert row.data["name"] == sample_record.name
+    assert row.data["project"] == sample_record.project
 
     restored = RowConverter.to_inventory_record(row)
     assert restored.name == sample_record.name
+    assert restored.project == sample_record.project
     assert restored.stack == sample_record.stack
     assert restored.migration_status == sample_record.migration_status
     assert restored.gh_migration == sample_record.gh_migration
@@ -194,6 +211,7 @@ def test_row_converter_from_inventory_record_maps_all_fields() -> None:
     """Test RowConverter.from_inventory_record maps every record field into Row."""
     record = InventoryRecord(
         name="full-repo",
+        project="full-project",
         stack="Rust",
         last_commit=datetime(2026, 8, 1, tzinfo=timezone.utc),
         gh_migratation=datetime(2026, 8, 15, tzinfo=timezone.utc),
@@ -202,6 +220,7 @@ def test_row_converter_from_inventory_record_maps_all_fields() -> None:
     )
     row = RowConverter.from_inventory_record(record, row_index=42)
     assert row.row_index == 42
+    assert row.data["project"] == "full-project"
     assert row.data["name"] == "full-repo"
     assert row.data["stack"] == "Rust"
     assert row.data["last_commit"] == datetime(2026, 8, 1, tzinfo=timezone.utc)
@@ -225,6 +244,7 @@ def test_row_converter_to_inventory_record_maps_all_fields() -> None:
     row = Row(
         row_index=1,
         data={
+            "project": "sample-project",
             "name": "sample-service",
             "stack": "Go",
             "last_commit": now,
@@ -234,6 +254,7 @@ def test_row_converter_to_inventory_record_maps_all_fields() -> None:
         },
     )
     record = RowConverter.to_inventory_record(row)
+    assert record.project == "sample-project"
     assert record.name == "sample-service"
     assert record.stack == "Go"
     assert record.last_commit == now
@@ -363,11 +384,11 @@ def test_should_format_migration_status_when_adding_row(
         mock_sheets_service.spreadsheets.return_value.values.return_value.append
     )
     mock_append.return_value.execute.return_value = {
-        "updates": {"updatedRange": "Inventario!A10:G10"}
+        "updates": {"updatedRange": "Inventario!A10:H10"}
     }
     row = Row(data={"name": "test-repo", "migration_status": status_input})
     added = mock_spreadsheet.add(row)
-    assert added.values[5] == expected_sheet_label
+    assert added.values[6] == expected_sheet_label
 
 
 def test_should_format_dates_and_empty_values_when_adding_row(
@@ -378,7 +399,7 @@ def test_should_format_dates_and_empty_values_when_adding_row(
         mock_sheets_service.spreadsheets.return_value.values.return_value.append
     )
     mock_append.return_value.execute.return_value = {
-        "updates": {"updatedRange": "Inventario!A10:G10"}
+        "updates": {"updatedRange": "Inventario!A10:H10"}
     }
     row = Row(
         data={
@@ -389,10 +410,10 @@ def test_should_format_dates_and_empty_values_when_adding_row(
         }
     )
     added = mock_spreadsheet.add(row)
-    assert added.values[2] == "20/05/2026"
-    assert added.values[3] == "15/06/2026"
-    assert added.values[4] == ""
-    assert added.values[6] == "Junho/2026"
+    assert added.values[3] == "20/05/2026"
+    assert added.values[4] == "15/06/2026"
+    assert added.values[5] == ""
+    assert added.values[7] == "Junho/2026"
 
 
 def test_should_preserve_explicit_migration_month_when_adding_row(
@@ -403,7 +424,7 @@ def test_should_preserve_explicit_migration_month_when_adding_row(
         mock_sheets_service.spreadsheets.return_value.values.return_value.append
     )
     mock_append.return_value.execute.return_value = {
-        "updates": {"updatedRange": "Inventario!A10:G10"}
+        "updates": {"updatedRange": "Inventario!A10:H10"}
     }
     row = Row(
         data={
@@ -413,7 +434,7 @@ def test_should_preserve_explicit_migration_month_when_adding_row(
         }
     )
     added = mock_spreadsheet.add(row)
-    assert added.values[6] == "Personalizado/2026"
+    assert added.values[7] == "Personalizado/2026"
 
 
 @pytest.mark.parametrize(
@@ -436,7 +457,9 @@ def test_should_parse_dates_when_finding_row(
     """Test date parsing rules via public find_by method."""
     mock_get = mock_sheets_service.spreadsheets.return_value.values.return_value.get
     mock_get.return_value.execute.return_value = {
-        "values": [["repo-date", "Python", date_str, "", "", "Aguardando Migração", ""]]
+        "values": [
+            ["core", "repo-date", "Python", date_str, "", "", "Aguardando Migração", ""]
+        ]
     }
     results = mock_spreadsheet.find_by("name", "repo-date")
     assert len(results) == 1
@@ -448,10 +471,13 @@ def test_should_pad_short_row_when_finding_row(
 ) -> None:
     """Test padding rows with fewer columns via public find_by method."""
     mock_get = mock_sheets_service.spreadsheets.return_value.values.return_value.get
-    mock_get.return_value.execute.return_value = {"values": [["short-repo", "Python"]]}
+    mock_get.return_value.execute.return_value = {
+        "values": [["my-proj", "short-repo", "Python"]]
+    }
     results = mock_spreadsheet.find_by("name", "short-repo")
     assert len(results) == 1
     row = results[0]
+    assert row.data["project"] == "my-proj"
     assert row.data["name"] == "short-repo"
     assert row.data["stack"] == "Python"
     assert row.data["last_commit"] is None
@@ -480,7 +506,7 @@ def test_should_parse_migration_status_labels_when_finding_row(
     """Test parsing sheet status labels via public find_by method."""
     mock_get = mock_sheets_service.spreadsheets.return_value.values.return_value.get
     mock_get.return_value.execute.return_value = {
-        "values": [["status-repo", "Java", "", "", "", sheet_label, ""]]
+        "values": [["core", "status-repo", "Java", "", "", "", sheet_label, ""]]
     }
     results = mock_spreadsheet.find_by("name", "status-repo")
     assert len(results) == 1

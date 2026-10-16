@@ -22,6 +22,7 @@ def sample_record() -> InventoryRecord:
     """Fixture providing a sample InventoryRecord."""
     return InventoryRecord(
         name="test-org/sample-repo",
+        project="sample-project",
         stack="Python",
         last_commit=datetime(2026, 10, 10, tzinfo=timezone.utc),
         gh_migratation=datetime(2026, 10, 1, tzinfo=timezone.utc),
