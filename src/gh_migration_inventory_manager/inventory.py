@@ -5,10 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from enum import Enum
-from typing import TYPE_CHECKING, Any
-
-if TYPE_CHECKING:
-    from gh_migration_inventory_manager.google import Spreadsheet
+from typing import Any
 
 _PT_MONTHS: dict[int, str] = {
     1: "Janeiro",
