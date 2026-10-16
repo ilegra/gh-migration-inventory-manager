@@ -82,7 +82,6 @@ def test_update_progress_creates_new_record_when_not_in_inventory() -> None:
         "org/new-service", MigrationStatus.ACTIVE_IN_BOTH
     )
 
-    # Assert every returned attribute
     assert record.name == "org/new-service"
     assert record.stack == ""
     assert record.last_commit is None
@@ -153,13 +152,10 @@ def test_update_progress_updates_existing_record_to_migrated() -> None:
         "org/existing-service", MigrationStatus.MIGRATED
     )
 
-    # Assert every returned attribute
     assert updated_record.name == "org/existing-service"
     assert updated_record.stack == "Python"
     assert updated_record.migration_status == MigrationStatus.MIGRATED
-    # Preserves original gh_migration date
     assert updated_record.gh_migratation == original_migration_date
-    # Assumes origin_deactivation date
     assert updated_record.origin_deactivation is not None
     assert updated_record.migration_month == "Setembro/2026"
 
@@ -220,7 +216,6 @@ def test_iventory_alias_and_initialization() -> None:
     inv1 = Inventory(spreadsheet=mock_spreadsheet)
     assert inv1.spreadsheet is mock_spreadsheet
 
-    # Test typo parameter spredsheet
     inv2 = Iventory(spredsheet=mock_spreadsheet)
     assert inv2.spreadsheet is mock_spreadsheet
 

@@ -11,12 +11,18 @@ from google.oauth2 import service_account
 from googleapiclient.discovery import build
 
 from gh_migration_inventory_manager.inventory import (
+    Inventory,
     InventoryRecord,
     MigrationStatus,
     format_migration_month,
 )
 
 _DATE_FORMAT = "%d/%m/%Y"
+_SUPPORTED_DATE_FORMATS: tuple[str, ...] = (
+    _DATE_FORMAT,
+    "%Y-%m-%d",
+    "%Y-%m-%dT%H:%M:%S",
+)
 _RANGE_PATTERN = re.compile(r"[A-Za-z]+(\d+):[A-Za-z]+(\d+)")
 _HEADERS = [
     "Nome do Repositório",
@@ -53,11 +59,13 @@ _COLUMN_ALIAS_MAP: dict[str, int] = {
 }
 
 
-def _parse_date(value: str | None) -> datetime | None:
-    if not value or not value.strip():
+def _parse_date(value: datetime | str | None) -> datetime | None:
+    if isinstance(value, datetime):
+        return value
+    if not isinstance(value, str) or not value.strip():
         return None
     val = value.strip()
-    for fmt in (_DATE_FORMAT, "%Y-%m-%d", "%Y-%m-%dT%H:%M:%S"):
+    for fmt in _SUPPORTED_DATE_FORMATS:
         try:
             return datetime.strptime(val, fmt)
         except ValueError:
@@ -88,28 +96,16 @@ class RowConverter:
         """Convert a Row instance to an InventoryRecord instance."""
         status = row.data.get("migration_status", MigrationStatus.WAITTING)
         if isinstance(status, str):
-            from gh_migration_inventory_manager.inventory import Inventory
-
             status = Inventory._from_sheet_label(status)
-
-        last_commit = row.data.get("last_commit")
-        if isinstance(last_commit, str):
-            last_commit = _parse_date(last_commit)
-
-        gh_migratation = row.data.get("gh_migratation") or row.data.get("gh_migration")
-        if isinstance(gh_migratation, str):
-            gh_migratation = _parse_date(gh_migratation)
-
-        origin_deactivation = row.data.get("origin_deactivation")
-        if isinstance(origin_deactivation, str):
-            origin_deactivation = _parse_date(origin_deactivation)
 
         return InventoryRecord(
             name=str(row.data.get("name", "")),
             stack=str(row.data.get("stack", "")),
-            last_commit=last_commit,
-            gh_migratation=gh_migratation,
-            origin_deactivation=origin_deactivation,
+            last_commit=_parse_date(row.data.get("last_commit")),
+            gh_migratation=_parse_date(
+                row.data.get("gh_migratation") or row.data.get("gh_migration")
+            ),
+            origin_deactivation=_parse_date(row.data.get("origin_deactivation")),
             migration_status=status,
         )
 
@@ -188,8 +184,6 @@ class Spreadsheet:
         if isinstance(status_val, MigrationStatus):
             status_str = status_val.to_sheet_label()
         else:
-            from gh_migration_inventory_manager.inventory import Inventory
-
             status_str = Inventory._from_sheet_label(str(status_val)).to_sheet_label()
 
         month_str = str(row.data.get("migration_month", ""))
@@ -208,8 +202,6 @@ class Spreadsheet:
 
     def _from_sheet_row(self, values: list[str], row_index: int | None = None) -> Row:
         """Parse raw sheet cell values into a Row."""
-        from gh_migration_inventory_manager.inventory import Inventory
-
         padded = values + [""] * max(0, len(_HEADERS) - len(values))
         data: dict[str, Any] = {
             "name": padded[0],
@@ -222,13 +214,22 @@ class Spreadsheet:
         }
         return Row(row_index=row_index, data=data, values=values)
 
-    def find_by(self, colName: str, content: str) -> list[Row]:
+    def find_by(
+        self,
+        column_name: str | None = None,
+        content: str = "",
+        *,
+        colName: str | None = None,
+    ) -> list[Row]:
         """Find rows where the specified column matches content."""
-        clean_col = colName.strip().lower()
+        target_col = column_name if column_name is not None else colName
+        if target_col is None:
+            raise ValueError("Column name cannot be None.")
+        clean_col = target_col.strip().lower()
         col_idx = _COLUMN_ALIAS_MAP.get(clean_col)
 
         if col_idx is None:
-            raise ValueError(f"Unknown column identifier: '{colName}'")
+            raise ValueError(f"Unknown column identifier: '{target_col}'")
 
         read_range = f"{self.sheet_name}!A2:G"
         resp = (
@@ -307,5 +308,4 @@ class Spreadsheet:
         ).execute()
 
 
-# Compatibility alias for skeleton typo
 Spreadshseet = Spreadsheet

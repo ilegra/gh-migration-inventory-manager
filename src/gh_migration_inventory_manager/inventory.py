@@ -56,6 +56,11 @@ class MigrationStatus(str, Enum):
                 return "Aguardando Migração"
 
 
+_VALID_STATUS_DISPLAY: str = ", ".join(
+    f"'{v}'" for v in sorted({s.value for s in MigrationStatus})
+)
+
+
 @dataclass
 class InventoryRecord:
     """Represents an item in the inventory: a repository migrated or to be migrated."""
@@ -130,30 +135,26 @@ class Inventory:
         if isinstance(status, MigrationStatus):
             return status
 
-        valid_values = sorted({s.value for s in MigrationStatus})
-        valid_display = ", ".join(f"'{v}'" for v in valid_values)
-
         if status is None:
             raise ValueError(
-                f"Invalid migration status: None. Status cannot be None. "
-                f"Expected a valid MigrationStatus or one of: {valid_display}."
+                "Invalid migration status: None. Status cannot be None. "
+                f"Expected a valid MigrationStatus or one of: {_VALID_STATUS_DISPLAY}."
             )
 
         if isinstance(status, str):
             clean = status.strip()
             if not clean:
                 raise ValueError(
-                    f"Invalid migration status: status cannot be empty. "
-                    f"Expected a valid MigrationStatus or one of: {valid_display}."
+                    "Invalid migration status: status cannot be empty. "
+                    "Expected a valid MigrationStatus or one of: "
+                    f"{_VALID_STATUS_DISPLAY}."
                 )
 
-            # Match against enum values (e.g. "waitting", "migrated", etc.)
             try:
                 return MigrationStatus(clean.lower())
             except ValueError:
                 pass
 
-            # Match against enum member names (e.g. "WAITING", "MIGRATED", etc.)
             try:
                 return MigrationStatus[clean.upper()]
             except KeyError:
@@ -161,12 +162,12 @@ class Inventory:
 
             raise ValueError(
                 f"Invalid migration status: '{status}'. "
-                f"Expected a valid MigrationStatus or one of: {valid_display}."
+                f"Expected a valid MigrationStatus or one of: {_VALID_STATUS_DISPLAY}."
             )
 
         raise ValueError(
             f"Invalid migration status type: '{type(status).__name__}'. "
-            f"Expected MigrationStatus or one of: {valid_display}."
+            f"Expected MigrationStatus or one of: {_VALID_STATUS_DISPLAY}."
         )
 
     def update_progress(
@@ -182,7 +183,6 @@ class Inventory:
         valid_status = self._validate_status(status)
 
         matching_rows = self.spreadsheet.find_by("name", repo_name)
-        now = datetime.now(timezone.utc)
 
         if not matching_rows:
             record = InventoryRecord(name=repo_name, migration_status=valid_status)
@@ -193,18 +193,16 @@ class Inventory:
             record.migration_status = valid_status
             row_index = existing_row.row_index
 
-        if valid_status == MigrationStatus.ACTIVE_IN_BOTH:
+        if valid_status in (MigrationStatus.ACTIVE_IN_BOTH, MigrationStatus.MIGRATED):
+            now = datetime.now(timezone.utc)
             if record.gh_migratation is None:
                 record.gh_migratation = now
-        elif valid_status == MigrationStatus.MIGRATED:
-            if record.gh_migratation is None:
-                record.gh_migratation = now
-            if record.origin_deactivation is None:
+            if (
+                valid_status == MigrationStatus.MIGRATED
+                and record.origin_deactivation is None
+            ):
                 record.origin_deactivation = now
-        elif valid_status in (MigrationStatus.WAITTING, MigrationStatus.WAITING):
-            record.gh_migratation = None
-            record.origin_deactivation = None
-        elif valid_status == MigrationStatus.SKIPPED:
+        elif valid_status in (MigrationStatus.WAITTING, MigrationStatus.SKIPPED):
             record.gh_migratation = None
             record.origin_deactivation = None
 
@@ -217,5 +215,4 @@ class Inventory:
         return RowConverter.to_inventory_record(saved_row)
 
 
-# Compatibility alias for skeleton typo
 Iventory = Inventory

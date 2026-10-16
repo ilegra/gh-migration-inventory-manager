@@ -39,8 +39,7 @@ def sample_row(sample_record: InventoryRecord) -> Row:
 @pytest.fixture
 def mock_sheets_service() -> MagicMock:
     """Fixture providing a mocked Google Sheets API service."""
-    service = MagicMock()
-    return service
+    return MagicMock()
 
 
 @pytest.fixture

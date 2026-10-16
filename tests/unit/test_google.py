@@ -41,7 +41,6 @@ def test_should_add_new_row_when_input_is_valid(
 
     added_row = mock_spreadsheet.add(row)
 
-    # Assert every returned attribute
     assert added_row.row_index == 10
     assert added_row.data["name"] == "backend-service"
     assert added_row.data["stack"] == "Go"
@@ -76,7 +75,6 @@ def test_should_update_current_row_when_input_is_valid(
 
     updated = mock_spreadsheet.update_row(row)
 
-    # Assert every returned attribute
     assert updated.row_index == 5
     assert updated.data["name"] == "frontend-app"
     assert updated.data["stack"] == "TypeScript"
