@@ -78,7 +78,7 @@ class Authenticator(Protocol):
         Raises:
             ScraperAuthenticationError: If credentials cannot be resolved.
         """
-        ...
+        raise NotImplementedError
 
 
 class TokenAuthenticator:
@@ -88,10 +88,28 @@ class TokenAuthenticator:
         if not token or not token.strip():
             raise ValueError("Token cannot be empty.")
         self.token = token.strip()
+        self._credentials = AuthCredentials(token=self.token)
 
     def resolve_credentials(self) -> AuthCredentials:
         """Return credentials with the configured token."""
-        return AuthCredentials(token=self.token)
+        return self._credentials
+
+
+class BasicAuthenticator:
+    """Authenticator providing username and password credentials."""
+
+    def __init__(self, username: str, password: str) -> None:
+        if not username or not username.strip():
+            raise ValueError("Username cannot be empty.")
+        self.username = username.strip()
+        self.password = password
+        self._credentials = AuthCredentials(
+            username=self.username, password=self.password
+        )
+
+    def resolve_credentials(self) -> AuthCredentials:
+        """Return credentials with the configured username and password."""
+        return self._credentials
 
 
 @runtime_checkable
@@ -107,4 +125,18 @@ class RepositoryScraper(Protocol):
         Raises:
             ScraperError: If an error occurs communicating with downstream API.
         """
-        ...
+        raise NotImplementedError
+
+
+__all__ = [
+    "AuthCredentials",
+    "Authenticator",
+    "BasicAuthenticator",
+    "Repository",
+    "RepositoryScraper",
+    "ScraperAuthenticationError",
+    "ScraperConnectionError",
+    "ScraperError",
+    "Stack",
+    "TokenAuthenticator",
+]
