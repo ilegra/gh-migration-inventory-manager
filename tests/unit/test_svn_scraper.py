@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import urllib.error
 from datetime import datetime, timezone
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -13,29 +15,24 @@ from gh_migration_inventory_manager import (
     ScraperAuthenticationError,
     ScraperConnectionError,
     Stack,
+    SvnClient,
     SvnEntry,
     SvnLayoutType,
     SvnRepositoryScraper,
     SvnWebDavClient,
+    TokenAuthenticator,
 )
 
 
 class MockSvnClient:
-    """Mock SVN client providing predetermined directory listings and file content."""
+    """Mock SVN client providing predetermined directory listings."""
 
     def __init__(self, directory_tree: dict[str, list[SvnEntry]] | None = None) -> None:
         self.directory_tree: dict[str, list[SvnEntry]] = directory_tree or {}
-        self.file_contents: dict[str, bytes] = {}
 
     def list_dir(self, url: str) -> list[SvnEntry]:
         clean_url = url.rstrip("/")
-        if clean_url in self.directory_tree:
-            return self.directory_tree[clean_url]
-        # Return empty list if not found
-        return []
-
-    def get_file_content(self, url: str) -> bytes | None:
-        return self.file_contents.get(url.rstrip("/"))
+        return self.directory_tree.get(clean_url, [])
 
 
 class TestBasicAuthenticator:
@@ -511,57 +508,32 @@ class TestSvnScraperCornerCasesAndErrors:
         assert repos[0].stacks == [Stack.UNKNOWN]
 
     def test_authentication_error_is_propagated(self) -> None:
-        class FailingAuthClient:
-            def list_dir(self, url: str) -> list[SvnEntry]:
-                raise ScraperAuthenticationError("SVN authentication failed (401)")
-
-            def get_file_content(self, url: str) -> bytes | None:
-                return None
-
+        client = MagicMock(spec=SvnClient)
+        client.list_dir.side_effect = ScraperAuthenticationError(
+            "SVN authentication failed (401)"
+        )
         scraper = SvnRepositoryScraper(
             url="http://svn.example.com/svn/repo",
-            client=FailingAuthClient(),
+            client=client,
         )
         with pytest.raises(ScraperAuthenticationError):
             scraper.scrape()
 
     def test_connection_error_is_propagated(self) -> None:
-        class FailingConnectionClient:
-            def list_dir(self, url: str) -> list[SvnEntry]:
-                raise ScraperConnectionError("Cannot connect to SVN")
-
-            def get_file_content(self, url: str) -> bytes | None:
-                return None
-
+        client = MagicMock(spec=SvnClient)
+        client.list_dir.side_effect = ScraperConnectionError("Cannot connect to SVN")
         scraper = SvnRepositoryScraper(
             url="http://svn.example.com/svn/repo",
-            client=FailingConnectionClient(),
+            client=client,
         )
         with pytest.raises(ScraperConnectionError):
             scraper.scrape()
 
 
 class TestSvnWebDavClientUnit:
-    """Unit tests for SvnWebDavClient parsing and date utilities."""
+    """Unit tests for SvnWebDavClient public methods and HTTP integrations."""
 
-    def test_parse_date_rfc2822(self) -> None:
-        parsed = SvnWebDavClient._parse_date("Fri, 16 Oct 2026 19:54:01 GMT")
-        assert parsed is not None
-        assert parsed.year == 2026
-        assert parsed.month == 10
-        assert parsed.day == 16
-
-    def test_parse_date_iso(self) -> None:
-        parsed = SvnWebDavClient._parse_date("2026-10-16T19:54:01.296022Z")
-        assert parsed is not None
-        assert parsed.year == 2026
-        assert parsed.minute == 54
-
-    def test_parse_date_invalid_returns_none(self) -> None:
-        assert SvnWebDavClient._parse_date("not-a-date") is None
-        assert SvnWebDavClient._parse_date(None) is None
-
-    def test_parse_propfind_xml(self) -> None:
+    def test_list_dir_propfind_parsing(self) -> None:
         xml_data = b"""<?xml version="1.0" encoding="utf-8"?>
 <D:multistatus xmlns:D="DAV:" xmlns:lp1="DAV:" xmlns:lp3="http://subversion.tigris.org/xmlns/dav/">
 <D:response>
@@ -584,7 +556,7 @@ class TestSvnWebDavClientUnit:
 <D:href>/svn/my-repo/trunk/pom.xml</D:href>
 <D:propstat>
 <D:prop>
-<lp1:getlastmodified>Fri, 16 Oct 2026 19:54:01 GMT</lp1:getlastmodified>
+<lp1:getlastmodified>2026-10-16T19:54:01.296022Z</lp1:getlastmodified>
 <lp1:version-name>12</lp1:version-name>
 <lp1:getcontentlength>512</lp1:getcontentlength>
 </D:prop>
@@ -593,49 +565,105 @@ class TestSvnWebDavClientUnit:
 </D:response>
 </D:multistatus>"""
         client = SvnWebDavClient()
-        entries = client._parse_propfind_xml(
-            xml_data, "http://svn.example.com/svn/my-repo/"
-        )
+        mock_resp = MagicMock()
+        mock_resp.read.return_value = xml_data
+        mock_resp.__enter__.return_value = mock_resp
+        mock_resp.__exit__.return_value = None
+
+        with patch("urllib.request.urlopen", return_value=mock_resp):
+            entries = client.list_dir("http://svn.example.com/svn/my-repo/")
+
         assert len(entries) == 2
 
         trunk_entry = next(e for e in entries if e.name == "trunk")
         assert trunk_entry.is_directory
         assert trunk_entry.revision == 12
         assert trunk_entry.author == "jackson"
+        assert trunk_entry.last_modified is not None
+        assert trunk_entry.last_modified.year == 2026
 
         pom_entry = next(e for e in entries if e.name == "pom.xml")
         assert not pom_entry.is_directory
         assert pom_entry.size == 512
+        assert pom_entry.last_modified is not None
+        assert pom_entry.last_modified.minute == 54
 
-    def test_token_authenticator_and_request_builder(self) -> None:
-        from gh_migration_inventory_manager import TokenAuthenticator
+    def test_list_dir_handles_invalid_date(self) -> None:
+        xml_data = b"""<?xml version="1.0" encoding="utf-8"?>
+<D:multistatus xmlns:D="DAV:" xmlns:lp1="DAV:">
+<D:response>
+<D:href>/svn/my-repo/test.txt</D:href>
+<D:propstat><D:prop><lp1:getlastmodified>not-a-date</lp1:getlastmodified></D:prop></D:propstat>
+</D:response>
+</D:multistatus>"""
+        client = SvnWebDavClient()
+        mock_resp = MagicMock()
+        mock_resp.read.return_value = xml_data
+        mock_resp.__enter__.return_value = mock_resp
+        mock_resp.__exit__.return_value = None
 
-        auth = TokenAuthenticator("secret-pat")
-        client = SvnWebDavClient(auth=auth)
-        req = client._build_request("http://svn.example.com/svn/repo")
-        assert req.get_header("Authorization") == "Bearer secret-pat"
+        with patch("urllib.request.urlopen", return_value=mock_resp):
+            entries = client.list_dir("http://svn.example.com/svn/my-repo/")
 
-    def test_basic_authenticator_request_builder(self) -> None:
+        assert len(entries) == 1
+        assert entries[0].last_modified is None
+
+    def test_list_dir_sends_basic_auth_header(self) -> None:
         auth = BasicAuthenticator("myuser", "mypass")
         client = SvnWebDavClient(auth=auth)
-        req = client._build_request("http://svn.example.com/svn/repo")
-        auth_header = req.get_header("Authorization")
-        assert auth_header is not None and auth_header.startswith("Basic ")
+        mock_resp = MagicMock()
+        mock_resp.read.return_value = b'<D:multistatus xmlns:D="DAV:"></D:multistatus>'
+        mock_resp.__enter__.return_value = mock_resp
+        mock_resp.__exit__.return_value = None
 
-    def test_html_parser_collection_listing(self) -> None:
-        from gh_migration_inventory_manager.svn_scrap import _SvnHtmlParser
+        with patch("urllib.request.urlopen", return_value=mock_resp) as mock_urlopen:
+            client.list_dir("http://svn.example.com/svn/my-repo")
+            req = mock_urlopen.call_args[0][0]
+            auth_header = req.get_header("Authorization")
+            assert auth_header is not None and auth_header.startswith("Basic ")
 
-        html_content = """
+    def test_list_dir_sends_token_bearer_auth_header(self) -> None:
+        auth = TokenAuthenticator("secret-pat")
+        client = SvnWebDavClient(auth=auth)
+        mock_resp = MagicMock()
+        mock_resp.read.return_value = b'<D:multistatus xmlns:D="DAV:"></D:multistatus>'
+        mock_resp.__enter__.return_value = mock_resp
+        mock_resp.__exit__.return_value = None
+
+        with patch("urllib.request.urlopen", return_value=mock_resp) as mock_urlopen:
+            client.list_dir("http://svn.example.com/svn/my-repo")
+            req = mock_urlopen.call_args[0][0]
+            assert req.get_header("Authorization") == "Bearer secret-pat"
+
+    def test_list_dir_html_fallback_on_405(self) -> None:
+        html_data = b"""
         <html><body>
         <h2>Collection of Repositories</h2>
         <ul>
           <li><a href="../">..</a></li>
           <li><a href="repo1/">repo1/</a></li>
-          <li><a href="repo2/">repo2/</a></li>
+          <li><a href="file2.txt">file2.txt</a></li>
         </ul>
         </body></html>
         """
-        parser = _SvnHtmlParser()
-        parser.feed(html_content)
-        assert parser.is_collection_listing
-        assert parser.entries == ["repo1/", "repo2/"]
+        client = SvnWebDavClient()
+        mock_err = urllib.error.HTTPError(
+            url="http://svn.example.com/svn/",
+            code=405,
+            msg="Method Not Allowed",
+            hdrs={},  # type: ignore[arg-type]
+            fp=None,
+        )
+        mock_html_resp = MagicMock()
+        mock_html_resp.read.return_value = html_data
+        mock_html_resp.__enter__.return_value = mock_html_resp
+        mock_html_resp.__exit__.return_value = None
+
+        with patch("urllib.request.urlopen", side_effect=[mock_err, mock_html_resp]):
+            entries = client.list_dir("http://svn.example.com/svn/")
+
+        assert len(entries) == 2
+        assert entries[0].name == "repo1"
+        assert entries[0].is_directory
+        assert entries[1].name == "file2.txt"
+        assert not entries[1].is_directory

@@ -88,10 +88,11 @@ class TokenAuthenticator:
         if not token or not token.strip():
             raise ValueError("Token cannot be empty.")
         self.token = token.strip()
+        self._credentials = AuthCredentials(token=self.token)
 
     def resolve_credentials(self) -> AuthCredentials:
         """Return credentials with the configured token."""
-        return AuthCredentials(token=self.token)
+        return self._credentials
 
 
 class BasicAuthenticator:
@@ -102,10 +103,13 @@ class BasicAuthenticator:
             raise ValueError("Username cannot be empty.")
         self.username = username.strip()
         self.password = password
+        self._credentials = AuthCredentials(
+            username=self.username, password=self.password
+        )
 
     def resolve_credentials(self) -> AuthCredentials:
         """Return credentials with the configured username and password."""
-        return AuthCredentials(username=self.username, password=self.password)
+        return self._credentials
 
 
 @runtime_checkable

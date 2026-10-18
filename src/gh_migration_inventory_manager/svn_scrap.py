@@ -55,10 +55,6 @@ class SvnClient(Protocol):
         """List entries (files and directories) in an SVN path."""
         ...
 
-    def get_file_content(self, url: str) -> bytes | None:
-        """Fetch raw content of an SVN file."""
-        ...
-
 
 class _SvnHtmlParser(html.parser.HTMLParser):
     """Parser for HTML directory listings served by SVN HTTP servers."""
@@ -66,11 +62,6 @@ class _SvnHtmlParser(html.parser.HTMLParser):
     def __init__(self) -> None:
         super().__init__()
         self.entries: list[str] = []
-        self.is_collection_listing: bool = False
-
-    def handle_data(self, data: str) -> None:
-        if "Collection of Repositories" in data:
-            self.is_collection_listing = True
 
     def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
         if tag.lower() == "a":
@@ -97,6 +88,19 @@ class SvnWebDavClient:
     ) -> None:
         self.auth = auth
         self.timeout = timeout
+        self._auth_header = self._build_auth_header()
+
+    def _build_auth_header(self) -> str | None:
+        if not self.auth:
+            return None
+        creds = self.auth.resolve_credentials()
+        if creds.username and creds.password is not None:
+            raw = f"{creds.username}:{creds.password}".encode()
+            token = base64.b64encode(raw).decode("ascii")
+            return f"Basic {token}"
+        if creds.token:
+            return f"Bearer {creds.token}"
+        return None
 
     def _build_request(
         self,
@@ -110,14 +114,8 @@ class SvnWebDavClient:
             for k, v in headers.items():
                 req.add_header(k, v)
 
-        if self.auth:
-            creds = self.auth.resolve_credentials()
-            if creds.username and creds.password is not None:
-                raw = f"{creds.username}:{creds.password}".encode()
-                token = base64.b64encode(raw).decode("ascii")
-                req.add_header("Authorization", f"Basic {token}")
-            elif creds.token:
-                req.add_header("Authorization", f"Bearer {creds.token}")
+        if self._auth_header:
+            req.add_header("Authorization", self._auth_header)
 
         return req
 
@@ -126,13 +124,14 @@ class SvnWebDavClient:
         if not date_str or not date_str.strip():
             return None
         clean = date_str.strip()
+        if "T" in clean:
+            try:
+                return datetime.fromisoformat(clean.replace("Z", "+00:00"))
+            except (ValueError, TypeError):  # nosec B110
+                pass
         try:
             return email.utils.parsedate_to_datetime(clean)
         except (ValueError, TypeError, IndexError):  # nosec B110
-            pass
-        try:
-            return datetime.fromisoformat(clean.replace("Z", "+00:00"))
-        except (ValueError, TypeError):  # nosec B110
             pass
         return None
 
@@ -222,38 +221,15 @@ class SvnWebDavClient:
         base_path = base_parsed.path.rstrip("/") + "/"
 
         entries: list[SvnEntry] = []
-        for resp in root:
-            if resp.tag.split("}")[-1] != "response":
+        for resp in root.findall(".//{*}response"):
+            href_elem = resp.findtext(".//{*}href")
+            if not href_elem:
                 continue
 
-            href_elem = None
-            prop_elems: dict[str, str] = {}
-            is_dir = False
-
-            for child in resp:
-                tag = child.tag.split("}")[-1]
-                if tag == "href":
-                    href_elem = child
-                elif tag == "propstat":
-                    for propstat_child in child:
-                        if propstat_child.tag.split("}")[-1] == "prop":
-                            for prop in propstat_child:
-                                ptag = prop.tag.split("}")[-1]
-                                if ptag == "resourcetype":
-                                    for rt in prop:
-                                        if rt.tag.split("}")[-1] == "collection":
-                                            is_dir = True
-                                elif prop.text:
-                                    prop_elems[ptag] = prop.text
-
-            if href_elem is None or not href_elem.text:
-                continue
-
-            raw_href = href_elem.text.strip()
+            raw_href = href_elem.strip()
             item_parsed = urllib.parse.urlparse(raw_href)
             item_path = item_parsed.path
 
-            # Skip the root container itself
             clean_item_path = item_path.rstrip("/") + "/"
             if clean_item_path == base_path or item_path.rstrip(
                 "/"
@@ -261,7 +237,7 @@ class SvnWebDavClient:
                 continue
 
             rel_path = (
-                item_path[len(base_path) :]
+                item_path.removeprefix(base_path)
                 if item_path.startswith(base_path)
                 else item_path
             )
@@ -269,13 +245,16 @@ class SvnWebDavClient:
             if not name:
                 continue
 
-            last_mod = self._parse_date(
-                prop_elems.get("getlastmodified") or prop_elems.get("creationdate")
+            is_dir = resp.find(".//{*}collection") is not None
+            last_mod_str = resp.findtext(".//{*}getlastmodified") or resp.findtext(
+                ".//{*}creationdate"
             )
-            rev_str = prop_elems.get("version-name")
+            last_mod = self._parse_date(last_mod_str)
+
+            rev_str = resp.findtext(".//{*}version-name")
             rev = int(rev_str) if rev_str and rev_str.isdigit() else None
-            author = prop_elems.get("creator-displayname")
-            size_str = prop_elems.get("getcontentlength")
+            author = resp.findtext(".//{*}creator-displayname")
+            size_str = resp.findtext(".//{*}getcontentlength")
             size = int(size_str) if size_str and size_str.isdigit() else None
 
             entries.append(
@@ -291,25 +270,6 @@ class SvnWebDavClient:
             )
 
         return entries
-
-    def get_file_content(self, url: str) -> bytes | None:
-        """Fetch raw content of an SVN file."""
-        try:
-            req = self._build_request(url, method="GET")
-            with urllib.request.urlopen(req, timeout=self.timeout) as resp:  # nosec B310
-                return bytes(resp.read())
-        except urllib.error.HTTPError as e:
-            if e.code in (401, 403):
-                raise ScraperAuthenticationError(
-                    f"SVN authentication failed ({e.code}) for {url}: {e.reason}"
-                ) from e
-            if e.code == 404:
-                return None
-            raise ScraperError(
-                f"SVN HTTP error ({e.code}) fetching {url}: {e.reason}"
-            ) from e
-        except (urllib.error.URLError, TimeoutError) as e:
-            raise ScraperConnectionError(f"Cannot connect to SVN at {url}: {e}") from e
 
 
 class SvnRepositoryScraper:
@@ -372,7 +332,7 @@ class SvnRepositoryScraper:
             if name.endswith((".tf", ".tfvars")):
                 detected.add(Stack.TERRAFORM)
 
-        return sorted(detected, key=lambda s: s.value) if detected else [Stack.UNKNOWN]
+        return sorted(detected) if detected else [Stack.UNKNOWN]
 
     def _extract_repo_name(self) -> str:
         parts = self.url.rstrip("/").split("/")
@@ -380,12 +340,11 @@ class SvnRepositoryScraper:
 
     def _scrape_standard(
         self,
-        url: str,
         repo_name: str,
         root_entries: list[SvnEntry],
     ) -> list[Repository]:
         trunk_entry = next((e for e in root_entries if e.name.lower() == "trunk"), None)
-        trunk_url = f"{url}/trunk"
+        trunk_url = f"{self.url}/trunk"
         trunk_files: list[SvnEntry] = []
         try:
             trunk_files = self.client.list_dir(trunk_url)
@@ -395,9 +354,10 @@ class SvnRepositoryScraper:
         stacks = self._detect_stacks(trunk_files)
         last_commit = trunk_entry.last_modified if trunk_entry else None
         if not last_commit and trunk_files:
-            dates = [f.last_modified for f in trunk_files if f.last_modified]
-            if dates:
-                last_commit = max(dates)
+            last_commit = max(
+                (f.last_modified for f in trunk_files if f.last_modified),
+                default=None,
+            )
 
         revision = trunk_entry.revision if trunk_entry else None
 
@@ -420,7 +380,6 @@ class SvnRepositoryScraper:
 
     def _scrape_multi_project(
         self,
-        url: str,
         repo_name: str,
         root_entries: list[SvnEntry],
     ) -> list[Repository]:
@@ -432,7 +391,7 @@ class SvnRepositoryScraper:
 
         repositories: list[Repository] = []
         for sub in sub_dirs:
-            sub_url = f"{url}/{sub.name}"
+            sub_url = f"{self.url}/{sub.name}"
             sub_entries: list[SvnEntry] = []
             try:
                 sub_entries = self.client.list_dir(sub_url)
@@ -479,15 +438,18 @@ class SvnRepositoryScraper:
 
     def _scrape_flat(
         self,
-        url: str,
         repo_name: str,
         root_entries: list[SvnEntry],
     ) -> list[Repository]:
         stacks = self._detect_stacks(root_entries)
-        dates = [e.last_modified for e in root_entries if e.last_modified]
-        last_commit = max(dates) if dates else None
-        revs = [e.revision for e in root_entries if e.revision is not None]
-        revision = max(revs) if revs else None
+        last_commit = max(
+            (e.last_modified for e in root_entries if e.last_modified),
+            default=None,
+        )
+        revision = max(
+            (e.revision for e in root_entries if e.revision is not None),
+            default=None,
+        )
 
         return [
             Repository(
@@ -495,7 +457,7 @@ class SvnRepositoryScraper:
                 organization=self.organization,
                 project=self.project or repo_name,
                 path="",
-                url=url,
+                url=self.url,
                 default_branch=None,
                 last_commit=last_commit,
                 stacks=stacks,
@@ -503,14 +465,12 @@ class SvnRepositoryScraper:
             )
         ]
 
-    def _scrape_collection(
-        self, url: str, root_entries: list[SvnEntry]
-    ) -> list[Repository]:
+    def _scrape_collection(self, root_entries: list[SvnEntry]) -> list[Repository]:
         repositories: list[Repository] = []
         for entry in root_entries:
             if not entry.is_directory:
                 continue
-            child_url = f"{url}/{entry.name}"
+            child_url = f"{self.url}/{entry.name}"
             try:
                 child_scraper = SvnRepositoryScraper(
                     url=child_url,
@@ -530,7 +490,6 @@ class SvnRepositoryScraper:
         root_entries = self.client.list_dir(self.url)
         repo_name = self._extract_repo_name()
 
-        # Check if the root corresponds to an SVN collection of multiple repositories
         if self.layout == SvnLayoutType.COLLECTION or (
             self.layout == SvnLayoutType.AUTO
             and (
@@ -549,21 +508,20 @@ class SvnRepositoryScraper:
                     "svn",
                     "subversion",
                 ):
-                    return self._scrape_collection(self.url, root_entries)
+                    return self._scrape_collection(root_entries)
 
         if self.layout == SvnLayoutType.STANDARD:
-            return self._scrape_standard(self.url, repo_name, root_entries)
+            return self._scrape_standard(repo_name, root_entries)
 
         if self.layout == SvnLayoutType.MULTI_PROJECT:
-            return self._scrape_multi_project(self.url, repo_name, root_entries)
+            return self._scrape_multi_project(repo_name, root_entries)
 
         if self.layout == SvnLayoutType.FLAT:
-            return self._scrape_flat(self.url, repo_name, root_entries)
+            return self._scrape_flat(repo_name, root_entries)
 
-        # AUTO layout resolution
         has_trunk = any(e.name.lower() == "trunk" for e in root_entries)
         if has_trunk:
-            return self._scrape_standard(self.url, repo_name, root_entries)
+            return self._scrape_standard(repo_name, root_entries)
 
         sub_dirs = [
             e
@@ -571,7 +529,6 @@ class SvnRepositoryScraper:
             if e.is_directory and e.name.lower() not in ("branches", "tags")
         ]
         if sub_dirs:
-            # Check if any sub-directory contains a trunk (multi-project layout)
             is_multi = False
             for sub in sub_dirs:
                 try:
@@ -582,6 +539,6 @@ class SvnRepositoryScraper:
                 except ScraperError:
                     continue
             if is_multi:
-                return self._scrape_multi_project(self.url, repo_name, root_entries)
+                return self._scrape_multi_project(repo_name, root_entries)
 
-        return self._scrape_flat(self.url, repo_name, root_entries)
+        return self._scrape_flat(repo_name, root_entries)

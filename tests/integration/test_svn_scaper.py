@@ -255,14 +255,21 @@ def svn_server() -> Generator[dict[str, Any], None, None]:
         )
 
 
-def test_live_standard_layout_scraping(svn_server: dict[str, Any]) -> None:
+@pytest.fixture(scope="module")
+def svn_auth(svn_server: dict[str, Any]) -> BasicAuthenticator:
+    """Fixture providing BasicAuthenticator configured for test SVN server."""
+    return BasicAuthenticator(svn_server["username"], svn_server["password"])
+
+
+def test_live_standard_layout_scraping(
+    svn_server: dict[str, Any], svn_auth: BasicAuthenticator
+) -> None:
     """Verify live scraping of standard SVN layout (trunk, branches, tags)."""
-    auth = BasicAuthenticator(svn_server["username"], svn_server["password"])
     repo_url = f"{svn_server['url']}/standard-app"
 
     scraper = SvnRepositoryScraper(
         url=repo_url,
-        auth=auth,
+        auth=svn_auth,
         organization="org-corp",
         project="platform-proj",
         layout=SvnLayoutType.STANDARD,
@@ -284,14 +291,15 @@ def test_live_standard_layout_scraping(svn_server: dict[str, Any]) -> None:
     assert repo.qualified_name == "org-corp/platform-proj/standard-app"
 
 
-def test_live_multi_project_layout_scraping(svn_server: dict[str, Any]) -> None:
+def test_live_multi_project_layout_scraping(
+    svn_server: dict[str, Any], svn_auth: BasicAuthenticator
+) -> None:
     """Verify live scraping of multi-project SVN repository layout."""
-    auth = BasicAuthenticator(svn_server["username"], svn_server["password"])
     repo_url = f"{svn_server['url']}/multi-app"
 
     scraper = SvnRepositoryScraper(
         url=repo_url,
-        auth=auth,
+        auth=svn_auth,
         organization="org-corp",
         project="cloud-suite",
         layout=SvnLayoutType.MULTI_PROJECT,
@@ -317,14 +325,15 @@ def test_live_multi_project_layout_scraping(svn_server: dict[str, Any]) -> None:
     assert billing_service.qualified_name == "org-corp/cloud-suite/billing-service"
 
 
-def test_live_flat_layout_scraping(svn_server: dict[str, Any]) -> None:
+def test_live_flat_layout_scraping(
+    svn_server: dict[str, Any], svn_auth: BasicAuthenticator
+) -> None:
     """Verify live scraping of flat SVN repository layout."""
-    auth = BasicAuthenticator(svn_server["username"], svn_server["password"])
     repo_url = f"{svn_server['url']}/flat-app"
 
     scraper = SvnRepositoryScraper(
         url=repo_url,
-        auth=auth,
+        auth=svn_auth,
         organization="org-corp",
         layout=SvnLayoutType.FLAT,
     )
@@ -342,14 +351,15 @@ def test_live_flat_layout_scraping(svn_server: dict[str, Any]) -> None:
     assert repo.metadata["layout"] == "flat"
 
 
-def test_live_collection_parent_scraping(svn_server: dict[str, Any]) -> None:
+def test_live_collection_parent_scraping(
+    svn_server: dict[str, Any], svn_auth: BasicAuthenticator
+) -> None:
     """Verify live scraping of SVN collection parent discovering repositories."""
-    auth = BasicAuthenticator(svn_server["username"], svn_server["password"])
     collection_url = svn_server["url"]
 
     scraper = SvnRepositoryScraper(
         url=collection_url,
-        auth=auth,
+        auth=svn_auth,
         layout=SvnLayoutType.COLLECTION,
     )
 
@@ -371,25 +381,25 @@ def test_live_authentication_failure(svn_server: dict[str, Any]) -> None:
 
 
 def test_live_not_found_repository_raises_scraper_error(
-    svn_server: dict[str, Any],
+    svn_server: dict[str, Any], svn_auth: BasicAuthenticator
 ) -> None:
     """Verify scraping non-existent repository raises ScraperError."""
-    auth = BasicAuthenticator(svn_server["username"], svn_server["password"])
     invalid_repo_url = f"{svn_server['url']}/non-existent-repository-xyz"
 
-    scraper = SvnRepositoryScraper(url=invalid_repo_url, auth=auth)
+    scraper = SvnRepositoryScraper(url=invalid_repo_url, auth=svn_auth)
     with pytest.raises(ScraperError):
         scraper.scrape()
 
 
-def test_live_inventory_integration_flow(svn_server: dict[str, Any]) -> None:
+def test_live_inventory_integration_flow(
+    svn_server: dict[str, Any], svn_auth: BasicAuthenticator
+) -> None:
     """Verify scraped SVN repositories bridge into Inventory tracking."""
-    auth = BasicAuthenticator(svn_server["username"], svn_server["password"])
     repo_url = f"{svn_server['url']}/standard-app"
 
     scraper = SvnRepositoryScraper(
         url=repo_url,
-        auth=auth,
+        auth=svn_auth,
         organization="corp",
         project="core-banking",
     )
