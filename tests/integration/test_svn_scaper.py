@@ -62,6 +62,7 @@ def svn_server() -> Generator[dict[str, Any], None, None]:
         "0:3690",
         "elleflorio/svn-server:latest",
     ]
+    container_id: str | None = None
     try:
         proc = subprocess.run(run_cmd, capture_output=True, text=True, check=True)  # nosec B603
         container_id = proc.stdout.strip()
@@ -247,12 +248,13 @@ def svn_server() -> Generator[dict[str, Any], None, None]:
         }
 
     finally:
-        subprocess.run(  # nosec B603
-            ["docker", "rm", "-f", container_id],
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            check=False,
-        )
+        if container_id is not None:
+            subprocess.run(  # nosec B603
+                ["docker", "rm", "-f", container_id],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                check=False,
+            )
 
 
 @pytest.fixture(scope="module")
