@@ -48,7 +48,7 @@ def test_registry(mock_provider: MagicMock) -> ScraperRegistry:
     return registry
 
 
-def test_build_parser_registers_platform_subcommands(
+def test_given_registered_scraper_provider_when_building_parser_then_registers_platform_subcommands(
     test_registry: ScraperRegistry,
 ) -> None:
     """Test build_parser dynamically creates subparsers from registry providers."""
@@ -77,7 +77,9 @@ def test_build_parser_registers_platform_subcommands(
     assert args.format == "table"
 
 
-def test_build_parser_svn_default_arguments() -> None:
+def test_given_default_registry_when_building_parser_then_includes_default_svn_arguments() -> (
+    None
+):
     """Test default build_parser correctly binds built-in SVN provider arguments."""
     parser = build_parser()
     args = parser.parse_args(
@@ -105,7 +107,7 @@ def test_build_parser_svn_default_arguments() -> None:
     assert args.dry_run is True
 
 
-def test_run_cli_dry_run_does_not_access_google_sheets(
+def test_given_dry_run_flag_when_running_cli_then_does_not_access_google_sheets(
     test_registry: ScraperRegistry, mock_provider: MagicMock
 ) -> None:
     """Test running CLI with --dry-run avoids Google Sheets persistence."""
@@ -139,7 +141,7 @@ def test_run_cli_dry_run_does_not_access_google_sheets(
     assert "Total discovered: 1" in output
 
 
-def test_run_cli_json_format_output(
+def test_given_json_format_flag_when_running_cli_then_outputs_valid_json(
     test_registry: ScraperRegistry, mock_provider: MagicMock
 ) -> None:
     """Test running CLI with --format json outputs valid JSON payload."""
@@ -183,7 +185,7 @@ def test_run_cli_json_format_output(
     assert "[DRY RUN]" in err_stream.getvalue()
 
 
-def test_run_cli_synchronizes_repositories_with_google_sheets(
+def test_given_valid_args_and_credentials_when_running_cli_then_synchronizes_repositories_with_google_sheets(
     test_registry: ScraperRegistry, mock_provider: MagicMock, tmp_path: Any
 ) -> None:
     """Test full CLI flow with Google Sheets persistence."""
@@ -237,7 +239,7 @@ def test_run_cli_synchronizes_repositories_with_google_sheets(
         assert "Successfully synchronized 1 repositories" in out_stream.getvalue()
 
 
-def test_run_cli_missing_spreadsheet_id_returns_error(
+def test_given_missing_spreadsheet_id_when_running_cli_sync_then_returns_error_code(
     test_registry: ScraperRegistry, mock_provider: MagicMock
 ) -> None:
     """Test run_cli without spreadsheet ID in non-dry-run mode returns error code 2."""
@@ -264,7 +266,7 @@ def test_run_cli_missing_spreadsheet_id_returns_error(
     assert "Missing Google Spreadsheet ID" in err_stream.getvalue()
 
 
-def test_run_cli_missing_credentials_path_returns_error(
+def test_given_missing_credentials_path_when_running_cli_sync_then_returns_error_code(
     test_registry: ScraperRegistry, mock_provider: MagicMock
 ) -> None:
     """Test run_cli without credentials path in non-dry-run mode returns error."""
@@ -291,7 +293,7 @@ def test_run_cli_missing_credentials_path_returns_error(
     assert "Missing Google credentials path" in err_stream.getvalue()
 
 
-def test_run_cli_non_existent_credentials_path_returns_error(
+def test_given_non_existent_credentials_path_when_running_cli_sync_then_returns_error_code(
     test_registry: ScraperRegistry, mock_provider: MagicMock
 ) -> None:
     """Test run_cli with non-existent credentials path returns error code 2."""
@@ -320,7 +322,9 @@ def test_run_cli_non_existent_credentials_path_returns_error(
     assert "Google credentials file not found" in err_stream.getvalue()
 
 
-def test_main_without_arguments_prints_help(capsys: pytest.CaptureFixture[str]) -> None:
+def test_given_no_cli_arguments_when_invoking_main_then_prints_help_and_exits_successfully(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
     """Test main without arguments prints help message and returns 0."""
     exit_code = main([])
     assert exit_code == 0
@@ -338,7 +342,7 @@ def test_main_without_arguments_prints_help(capsys: pytest.CaptureFixture[str]) 
         (RuntimeError, 1, "Unexpected Error"),
     ],
 )
-def test_main_exception_handling(
+def test_given_scraper_error_when_invoking_main_then_logs_error_and_returns_exit_code_1(
     exception_cls: type[Exception],
     expected_code: int,
     expected_msg: str,
@@ -357,7 +361,9 @@ def test_main_exception_handling(
         assert expected_msg in captured.err
 
 
-def test_main_keyboard_interrupt_returns_130() -> None:
+def test_given_keyboard_interrupt_when_invoking_main_then_returns_exit_code_130() -> (
+    None
+):
     """Test main returns 130 on KeyboardInterrupt."""
     with patch(
         "gh_migration_inventory_manager.cli.run_cli", side_effect=KeyboardInterrupt

@@ -266,7 +266,7 @@ def svn_auth(svn_server: dict[str, Any]) -> BasicAuthenticator:
     return BasicAuthenticator(svn_server["username"], svn_server["password"])
 
 
-def test_live_standard_layout_scraping(
+def test_given_live_svn_standard_repo_when_scraping_then_discovers_trunk_repository(
     svn_server: dict[str, Any], svn_auth: BasicAuthenticator
 ) -> None:
     """Verify live scraping of standard SVN layout (trunk, branches, tags)."""
@@ -296,7 +296,7 @@ def test_live_standard_layout_scraping(
     assert repo.qualified_name == "org-corp/platform-proj/standard-app"
 
 
-def test_live_multi_project_layout_scraping(
+def test_given_live_svn_multi_project_repo_when_scraping_then_discovers_all_subproject_repositories(
     svn_server: dict[str, Any], svn_auth: BasicAuthenticator
 ) -> None:
     """Verify live scraping of multi-project SVN repository layout."""
@@ -330,7 +330,7 @@ def test_live_multi_project_layout_scraping(
     assert billing_service.qualified_name == "org-corp/cloud-suite/billing-service"
 
 
-def test_live_flat_layout_scraping(
+def test_given_live_svn_flat_repo_when_scraping_then_discovers_flat_repository(
     svn_server: dict[str, Any], svn_auth: BasicAuthenticator
 ) -> None:
     """Verify live scraping of flat SVN repository layout."""
@@ -356,7 +356,7 @@ def test_live_flat_layout_scraping(
     assert repo.metadata["layout"] == "flat"
 
 
-def test_live_collection_parent_scraping(
+def test_given_live_svn_server_root_when_scraping_collection_then_discovers_all_nested_repositories(
     svn_server: dict[str, Any], svn_auth: BasicAuthenticator
 ) -> None:
     """Verify live scraping of SVN collection parent discovering repositories."""
@@ -375,7 +375,9 @@ def test_live_collection_parent_scraping(
     assert "flat-app" in discovered_names
 
 
-def test_live_authentication_failure(svn_server: dict[str, Any]) -> None:
+def test_given_invalid_credentials_when_scraping_live_svn_then_raises_scraper_authentication_error(
+    svn_server: dict[str, Any],
+) -> None:
     """Verify that invalid credentials raise ScraperAuthenticationError."""
     invalid_auth = BasicAuthenticator(svn_server["username"], "incorrect_password")
     repo_url = f"{svn_server['url']}/standard-app"
@@ -385,7 +387,7 @@ def test_live_authentication_failure(svn_server: dict[str, Any]) -> None:
         scraper.scrape()
 
 
-def test_live_not_found_repository_raises_scraper_error(
+def test_given_nonexistent_svn_path_when_scraping_live_svn_then_raises_scraper_error(
     svn_server: dict[str, Any], svn_auth: BasicAuthenticator
 ) -> None:
     """Verify scraping non-existent repository raises ScraperError."""
@@ -396,7 +398,7 @@ def test_live_not_found_repository_raises_scraper_error(
         scraper.scrape()
 
 
-def test_live_inventory_integration_flow(
+def test_given_scraped_live_svn_repos_when_syncing_to_inventory_then_registers_and_tracks_progress(
     svn_server: dict[str, Any], svn_auth: BasicAuthenticator
 ) -> None:
     """Verify scraped SVN repositories bridge into Inventory tracking."""

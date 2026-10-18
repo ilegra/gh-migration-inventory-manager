@@ -20,7 +20,9 @@ from gh_migration_inventory_manager.scrap import Repository
 # ============================================================================
 
 
-def test_models_do_not_contain_from_sheet_label() -> None:
+def test_given_migration_status_enum_when_inspecting_attributes_then_does_not_contain_sheet_label_methods() -> (
+    None
+):
     """Ensure business rule from_sheet_label is not in models."""
     assert not hasattr(MigrationStatus, "from_sheet_label")
 
@@ -35,14 +37,16 @@ def test_models_do_not_contain_from_sheet_label() -> None:
         (MigrationStatus.WAITING, "Aguardando Migração"),
     ],
 )
-def test_migration_status_to_sheet_label(
+def test_given_migration_status_when_calling_to_sheet_label_then_returns_expected_display_string(
     status: MigrationStatus, expected_label: str
 ) -> None:
     """Test mapping MigrationStatus to sheet display label."""
     assert status.to_sheet_label() == expected_label
 
 
-def test_inventory_record_properties() -> None:
+def test_given_inventory_record_when_accessing_migration_month_then_computes_formatted_date_string() -> (
+    None
+):
     """Test InventoryRecord properties and aliases."""
     record = InventoryRecord(
         name="org/repo",
@@ -55,7 +59,9 @@ def test_inventory_record_properties() -> None:
     assert record.gh_migratation == datetime(2026, 11, 1, tzinfo=timezone.utc)
 
 
-def test_format_migration_month() -> None:
+def test_given_none_or_datetime_when_formatting_migration_month_then_returns_formatted_string() -> (
+    None
+):
     """Test format_migration_month formatting."""
     assert format_migration_month(None) == ""
     assert format_migration_month(datetime(2026, 1, 1)) == "Janeiro/2026"
@@ -67,7 +73,9 @@ def test_format_migration_month() -> None:
 # ============================================================================
 
 
-def test_update_progress_creates_new_record_when_not_in_inventory() -> None:
+def test_given_unregistered_repository_when_updating_progress_then_creates_new_record_with_defaults() -> (
+    None
+):
     """Test adding a new entry in repository when it is not in the inventory."""
     mock_spreadsheet = MagicMock(spec=Spreadsheet)
     mock_spreadsheet.find_by.return_value = []
@@ -95,7 +103,9 @@ def test_update_progress_creates_new_record_when_not_in_inventory() -> None:
     mock_spreadsheet.add.assert_called_once()
 
 
-def test_update_progress_creates_new_record_with_project() -> None:
+def test_given_repository_with_project_when_updating_progress_then_creates_record_scoped_to_project() -> (
+    None
+):
     """Test adding a new entry with an explicit project."""
     mock_spreadsheet = MagicMock(spec=Spreadsheet)
     mock_spreadsheet.find_by.return_value = []
@@ -113,7 +123,9 @@ def test_update_progress_creates_new_record_with_project() -> None:
     assert record.migration_status == MigrationStatus.ACTIVE_IN_BOTH
 
 
-def test_update_progress_creates_new_record_waiting_status() -> None:
+def test_given_waiting_status_when_updating_progress_then_creates_record_without_migration_date() -> (
+    None
+):
     """Test adding a new entry with WAITTING status assumes empty dates."""
     mock_spreadsheet = MagicMock(spec=Spreadsheet)
     mock_spreadsheet.find_by.return_value = []
@@ -129,7 +141,9 @@ def test_update_progress_creates_new_record_waiting_status() -> None:
     assert record.migration_month == ""
 
 
-def test_update_progress_creates_new_record_migrated_status() -> None:
+def test_given_migrated_status_when_updating_progress_then_sets_migration_date() -> (
+    None
+):
     """Test adding a new entry directly with MIGRATED status assumes both dates."""
     mock_spreadsheet = MagicMock(spec=Spreadsheet)
     mock_spreadsheet.find_by.return_value = []
@@ -145,7 +159,9 @@ def test_update_progress_creates_new_record_migrated_status() -> None:
     assert record.migration_month != ""
 
 
-def test_update_progress_updates_existing_record_to_migrated() -> None:
+def test_given_existing_waiting_record_when_updating_to_migrated_then_sets_migration_date() -> (
+    None
+):
     """Test updating existing entry: changes status and assumes origin_deactivation."""
     mock_spreadsheet = MagicMock(spec=Spreadsheet)
 
@@ -189,7 +205,9 @@ def test_update_progress_updates_existing_record_to_migrated() -> None:
     assert updated_with_new_project.project == "billing-core"
 
 
-def test_update_progress_resets_dates_when_reverted_to_waiting() -> None:
+def test_given_migrated_record_when_reverting_to_waiting_then_resets_dates_to_none() -> (
+    None
+):
     """Test updating existing record back to WAITTING clears migration dates."""
     mock_spreadsheet = MagicMock(spec=Spreadsheet)
     existing_record = InventoryRecord(
@@ -211,7 +229,9 @@ def test_update_progress_resets_dates_when_reverted_to_waiting() -> None:
     assert record.origin_deactivation is None
 
 
-def test_update_progress_skipped_status() -> None:
+def test_given_skipped_status_when_updating_progress_then_preserves_status_without_dates() -> (
+    None
+):
     """Test updating status to SKIPPED."""
     mock_spreadsheet = MagicMock(spec=Spreadsheet)
     mock_spreadsheet.find_by.return_value = []
@@ -226,7 +246,9 @@ def test_update_progress_skipped_status() -> None:
     assert record.origin_deactivation is None
 
 
-def test_update_progress_empty_repository_name_raises() -> None:
+def test_given_empty_repository_name_when_updating_progress_then_raises_value_error() -> (
+    None
+):
     """Test empty repository name raises ValueError."""
     mock_spreadsheet = MagicMock(spec=Spreadsheet)
     inventory = Inventory(spreadsheet=mock_spreadsheet)
@@ -235,7 +257,9 @@ def test_update_progress_empty_repository_name_raises() -> None:
         inventory.update_progress("   ", MigrationStatus.ACTIVE_IN_BOTH)
 
 
-def test_iventory_alias_and_initialization() -> None:
+def test_given_custom_backend_when_initializing_inventory_then_binds_backend_correctly() -> (
+    None
+):
     """Test Iventory class alias and spredsheet parameter compatibility."""
     assert Iventory is Inventory
 
@@ -261,7 +285,7 @@ def test_iventory_alias_and_initialization() -> None:
         "unknown",
     ],
 )
-def test_update_progress_invalid_status_string_raises(
+def test_given_invalid_status_string_when_updating_progress_then_raises_value_error(
     invalid_status: str,
 ) -> None:
     """Test that providing an invalid status string raises ValueError."""
@@ -281,7 +305,9 @@ def test_update_progress_invalid_status_string_raises(
 
 
 @pytest.mark.parametrize("empty_status", ["", "   "])
-def test_update_progress_empty_status_string_raises(empty_status: str) -> None:
+def test_given_empty_status_string_when_updating_progress_then_raises_value_error(
+    empty_status: str,
+) -> None:
     """Test that empty or whitespace status string raises ValueError."""
     mock_spreadsheet = MagicMock(spec=Spreadsheet)
     inventory = Inventory(spreadsheet=mock_spreadsheet)
@@ -292,7 +318,7 @@ def test_update_progress_empty_status_string_raises(empty_status: str) -> None:
     assert "status cannot be empty" in str(exc_info.value)
 
 
-def test_update_progress_none_status_raises() -> None:
+def test_given_none_status_when_updating_progress_then_raises_value_error() -> None:
     """Test that passing None as status raises ValueError."""
     mock_spreadsheet = MagicMock(spec=Spreadsheet)
     inventory = Inventory(spreadsheet=mock_spreadsheet)
@@ -307,7 +333,7 @@ def test_update_progress_none_status_raises() -> None:
     "invalid_type_status",
     [123, 45.6, ["migrated"], {"status": "migrated"}],
 )
-def test_update_progress_invalid_status_type_raises(
+def test_given_invalid_status_type_when_updating_progress_then_raises_type_error(
     invalid_type_status: object,
 ) -> None:
     """Test that passing a non-string, non-enum object raises ValueError."""
@@ -334,7 +360,7 @@ def test_update_progress_invalid_status_type_raises(
         ("SKIPPED", MigrationStatus.SKIPPED),
     ],
 )
-def test_update_progress_accepts_valid_string_status(
+def test_given_valid_string_status_when_updating_progress_then_normalizes_to_migration_status(
     status_input: str, expected_enum: MigrationStatus
 ) -> None:
     """Test that valid status strings are properly parsed and handled."""
@@ -371,7 +397,7 @@ def test_update_progress_accepts_valid_string_status(
         ("   ", MigrationStatus.WAITTING),
     ],
 )
-def test_inventory_from_sheet_label_valid(
+def test_given_localized_sheet_label_when_parsing_status_then_returns_correct_migration_status(
     label: str, expected_status: MigrationStatus
 ) -> None:
     """Test Inventory._from_sheet_label with valid labels."""
@@ -388,7 +414,9 @@ def test_inventory_from_sheet_label_valid(
         "random string",
     ],
 )
-def test_inventory_from_sheet_label_invalid_raises(invalid_label: str) -> None:
+def test_given_invalid_sheet_label_when_parsing_status_then_raises_value_error(
+    invalid_label: str,
+) -> None:
     """Test Inventory._from_sheet_label raises ValueError for invalid labels."""
     expected_match = f"Invalid migration status label: '{invalid_label}'"
     with pytest.raises(ValueError, match=expected_match):
@@ -400,7 +428,9 @@ def test_inventory_from_sheet_label_invalid_raises(invalid_label: str) -> None:
 # ============================================================================
 
 
-def test_get_repository_returns_record_when_found() -> None:
+def test_given_existing_repository_in_backend_when_getting_repository_then_returns_inventory_record() -> (
+    None
+):
     """Test get_repository returns converted InventoryRecord when row exists."""
     mock_spreadsheet = MagicMock(spec=Spreadsheet)
     existing_row = Row(
@@ -425,7 +455,9 @@ def test_get_repository_returns_record_when_found() -> None:
     mock_spreadsheet.find_by.assert_called_once_with("name", "found-repo")
 
 
-def test_get_repository_filters_by_project() -> None:
+def test_given_project_filter_when_getting_repository_then_matches_exact_project() -> (
+    None
+):
     """Test get_repository selects row matching specified project."""
     mock_spreadsheet = MagicMock(spec=Spreadsheet)
     row_proj_a = Row(
@@ -447,7 +479,7 @@ def test_get_repository_filters_by_project() -> None:
     assert record.stack == "Python"
 
 
-def test_get_repository_returns_none_when_not_found() -> None:
+def test_given_missing_repository_when_getting_repository_then_returns_none() -> None:
     """Test get_repository returns None when repository does not exist."""
     mock_spreadsheet = MagicMock(spec=Spreadsheet)
     mock_spreadsheet.find_by.return_value = []
@@ -456,7 +488,9 @@ def test_get_repository_returns_none_when_not_found() -> None:
     assert inventory.get_repository("missing-repo") is None
 
 
-def test_get_repository_empty_name_raises() -> None:
+def test_given_empty_repository_name_when_getting_repository_then_raises_value_error() -> (
+    None
+):
     """Test get_repository raises ValueError when name is empty."""
     mock_spreadsheet = MagicMock(spec=Spreadsheet)
     inventory = Inventory(spreadsheet=mock_spreadsheet)
@@ -465,7 +499,9 @@ def test_get_repository_empty_name_raises() -> None:
         inventory.get_repository("   ")
 
 
-def test_register_repository_creates_new_record_with_primitives() -> None:
+def test_given_repository_primitives_when_registering_repository_then_creates_new_record() -> (
+    None
+):
     """Test register_repository creates a new row with provided primitive values."""
     mock_spreadsheet = MagicMock(spec=Spreadsheet)
     mock_spreadsheet.find_by.return_value = []
@@ -492,7 +528,9 @@ def test_register_repository_creates_new_record_with_primitives() -> None:
     mock_spreadsheet.add.assert_called_once()
 
 
-def test_register_repository_with_migrated_status_sets_dates() -> None:
+def test_given_migrated_status_when_registering_repository_then_sets_migration_date() -> (
+    None
+):
     """Test register_repository with MIGRATED status automatically sets dates."""
     mock_spreadsheet = MagicMock(spec=Spreadsheet)
     mock_spreadsheet.find_by.return_value = []
@@ -511,7 +549,9 @@ def test_register_repository_with_migrated_status_sets_dates() -> None:
     assert record.origin_deactivation is not None
 
 
-def test_register_repository_preserves_existing_status_and_migration_dates() -> None:
+def test_given_existing_repository_when_registering_then_preserves_status_and_migration_dates() -> (
+    None
+):
     """Test register_repository strictly preserves migration status and dates."""
     mock_spreadsheet = MagicMock(spec=Spreadsheet)
 
@@ -555,7 +595,9 @@ def test_register_repository_preserves_existing_status_and_migration_dates() -> 
     mock_spreadsheet.add.assert_not_called()
 
 
-def test_register_repository_accepts_repository_like_object() -> None:
+def test_given_repository_domain_object_when_registering_then_creates_matching_record() -> (
+    None
+):
     """Test register_repository duck-types repository-like objects."""
     mock_spreadsheet = MagicMock(spec=Spreadsheet)
     mock_spreadsheet.find_by.return_value = []
@@ -582,7 +624,9 @@ def test_register_repository_accepts_repository_like_object() -> None:
     assert record.migration_status == MigrationStatus.WAITTING
 
 
-def test_sync_repositories_processes_batch() -> None:
+def test_given_batch_of_repositories_when_syncing_then_registers_all_in_inventory() -> (
+    None
+):
     """Test sync_repositories synchronizes an iterable of repositories."""
     mock_spreadsheet = MagicMock(spec=Spreadsheet)
     mock_spreadsheet.find_by.return_value = []

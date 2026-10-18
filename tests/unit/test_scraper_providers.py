@@ -17,7 +17,9 @@ from gh_migration_inventory_manager.scrap import (
 )
 
 
-def test_format_stacks_various_combinations() -> None:
+def test_given_stack_combinations_when_formatting_stacks_then_returns_delimited_string() -> (
+    None
+):
     """Test format_stacks converts lists of Stack enum into readable strings."""
     assert format_stacks([Stack.JAVA]) == "Java"
     assert format_stacks([Stack.PYTHON, Stack.TYPESCRIPT]) == "Python, TypeScript"
@@ -28,7 +30,9 @@ def test_format_stacks_various_combinations() -> None:
     assert format_stacks([]) == ""
 
 
-def test_scraper_registry_register_and_retrieve() -> None:
+def test_given_registered_scraper_provider_when_getting_by_name_then_returns_provider() -> (
+    None
+):
     """Test registering and retrieving a provider by platform name."""
     registry = ScraperRegistry()
 
@@ -42,7 +46,9 @@ def test_scraper_registry_register_and_retrieve() -> None:
     assert registry.list_platforms() == ["test-platform"]
 
 
-def test_scraper_registry_unknown_platform_raises_key_error() -> None:
+def test_given_unregistered_platform_name_when_getting_provider_then_raises_key_error() -> (
+    None
+):
     """Test querying an unknown platform raises KeyError with available platforms."""
     registry = ScraperRegistry()
 
@@ -58,7 +64,9 @@ def test_scraper_registry_unknown_platform_raises_key_error() -> None:
 
 
 @pytest.mark.parametrize("invalid_name", ["", "   ", None])
-def test_scraper_registry_invalid_platform_name_raises(invalid_name: Any) -> None:
+def test_given_invalid_or_empty_platform_name_when_registering_provider_then_raises_value_error(
+    invalid_name: Any,
+) -> None:
     """Test registering a provider with invalid platform name raises ValueError."""
     registry = ScraperRegistry()
     provider = MagicMock(spec=ScraperProvider)
@@ -68,7 +76,9 @@ def test_scraper_registry_invalid_platform_name_raises(invalid_name: Any) -> Non
         registry.register(provider)
 
 
-def test_custom_provider_conformance_and_mock_execution() -> None:
+def test_given_custom_provider_conforming_to_protocol_when_executed_then_returns_expected_repositories() -> (
+    None
+):
     """Demonstrate how a new platform integrates seamlessly via provider."""
 
     class MockBitbucketScraper:
@@ -112,7 +122,9 @@ def test_custom_provider_conformance_and_mock_execution() -> None:
     assert repos[0].name == "bb-repo"
 
 
-def test_svn_provider_and_scraper_explicit_subtyping() -> None:
+def test_given_svn_scraper_and_provider_when_checking_inheritance_then_subtypes_canonical_contracts() -> (
+    None
+):
     """Verify SvnScraperProvider and SvnRepositoryScraper implement contracts."""
     from gh_migration_inventory_manager.svn_scrap import (
         SvnRepositoryScraper,

@@ -33,7 +33,9 @@ def _get_credentials_path() -> str | None:
     return None
 
 
-def test_public_api_exports() -> None:
+def test_given_public_package_exports_when_imported_then_all_required_symbols_are_accessible() -> (
+    None
+):
     """Verify that all public symbols are accessible from top-level package."""
     assert __version__ == "0.1.0"
     assert Inventory is not None
@@ -47,7 +49,9 @@ def test_public_api_exports() -> None:
     assert MigrationStatus is not None
 
 
-def test_live_google_sheets_integration_flow() -> None:
+def test_given_live_google_sheets_credentials_when_syncing_inventory_then_persists_and_queries_records() -> (
+    None
+):
     """Live integration test against Google Sheets with automated canary cleanup."""
     creds_path = _get_credentials_path()
     if not creds_path:
