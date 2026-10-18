@@ -78,7 +78,7 @@ class Authenticator(Protocol):
         Raises:
             ScraperAuthenticationError: If credentials cannot be resolved.
         """
-        ...
+        raise NotImplementedError
 
 
 class TokenAuthenticator:
@@ -125,7 +125,7 @@ class RepositoryScraper(Protocol):
         Raises:
             ScraperError: If an error occurs communicating with downstream API.
         """
-        ...
+        raise NotImplementedError
 
 
 __all__ = [

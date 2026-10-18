@@ -53,7 +53,7 @@ class SvnClient(Protocol):
 
     def list_dir(self, url: str) -> list[SvnEntry]:
         """List entries (files and directories) in an SVN path."""
-        ...
+        raise NotImplementedError
 
 
 class _SvnHtmlParser(html.parser.HTMLParser):
@@ -349,6 +349,7 @@ class SvnRepositoryScraper:
         try:
             trunk_files = self.client.list_dir(trunk_url)
         except ScraperError:
+            # Trunk directory is empty or inaccessible; fallback to empty entry list
             pass
 
         stacks = self._detect_stacks(trunk_files)
@@ -407,6 +408,7 @@ class SvnRepositoryScraper:
                 try:
                     trunk_files = self.client.list_dir(target_url)
                 except ScraperError:
+                    # Inaccessible or missing trunk; fallback to empty entries
                     pass
                 stacks = self._detect_stacks(trunk_files)
                 last_commit = sub.last_modified

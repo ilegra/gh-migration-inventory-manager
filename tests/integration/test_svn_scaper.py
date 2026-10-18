@@ -69,6 +69,9 @@ def svn_server() -> Generator[dict[str, Any], None, None]:
     except subprocess.CalledProcessError as e:
         pytest.skip(f"Failed to start SVN container: {e.stderr}")
 
+    if not container_id:
+        pytest.skip("Failed to start SVN container: container ID is empty.")
+
     try:
         # 2. Resolve mapped HTTP port
         port_proc = subprocess.run(  # nosec B603
