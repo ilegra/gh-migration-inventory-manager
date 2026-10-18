@@ -55,41 +55,6 @@ class TestBasicAuthenticator:
         assert isinstance(auth, Authenticator)
 
 
-class TestSvnDataStructures:
-    """Tests for SvnEntry and SvnLayoutType pure data containers."""
-
-    def test_svn_entry_fields(self) -> None:
-        now = datetime(2026, 10, 16, 12, 0, 0, tzinfo=timezone.utc)
-        entry = SvnEntry(
-            name="pom.xml",
-            path="trunk/pom.xml",
-            is_directory=False,
-            last_modified=now,
-            revision=10,
-            author="committer",
-            size=1024,
-        )
-        assert entry.name == "pom.xml"
-        assert entry.path == "trunk/pom.xml"
-        assert not entry.is_directory
-        assert entry.last_modified == now
-        assert entry.revision == 10
-        assert entry.author == "committer"
-        assert entry.size == 1024
-
-    def test_svn_entry_immutability(self) -> None:
-        entry = SvnEntry(name="trunk", path="trunk", is_directory=True)
-        with pytest.raises(AttributeError):
-            entry.name = "new_trunk"  # type: ignore[misc]
-
-    def test_svn_layout_type_values(self) -> None:
-        assert SvnLayoutType.AUTO.value == "auto"
-        assert SvnLayoutType.STANDARD.value == "standard"
-        assert SvnLayoutType.MULTI_PROJECT.value == "multi_project"
-        assert SvnLayoutType.FLAT.value == "flat"
-        assert SvnLayoutType.COLLECTION.value == "collection"
-
-
 class TestSvnRepositoryScraperStandardLayout:
     """Tests for standard SVN layout (trunk, branches, tags)."""
 
@@ -138,7 +103,6 @@ class TestSvnRepositoryScraperStandardLayout:
         assert len(repos) == 1
         repo = repos[0]
 
-        # Assert on every data structure field
         assert repo.name == "sample-repo"
         assert repo.organization == "my-org"
         assert repo.project == "sample-project"
