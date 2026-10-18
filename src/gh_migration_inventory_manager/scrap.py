@@ -94,6 +94,20 @@ class TokenAuthenticator:
         return AuthCredentials(token=self.token)
 
 
+class BasicAuthenticator:
+    """Authenticator providing username and password credentials."""
+
+    def __init__(self, username: str, password: str) -> None:
+        if not username or not username.strip():
+            raise ValueError("Username cannot be empty.")
+        self.username = username.strip()
+        self.password = password
+
+    def resolve_credentials(self) -> AuthCredentials:
+        """Return credentials with the configured username and password."""
+        return AuthCredentials(username=self.username, password=self.password)
+
+
 @runtime_checkable
 class RepositoryScraper(Protocol):
     """Protocol defining the repository scraper contract for VCS platforms."""
@@ -108,3 +122,17 @@ class RepositoryScraper(Protocol):
             ScraperError: If an error occurs communicating with downstream API.
         """
         ...
+
+
+__all__ = [
+    "AuthCredentials",
+    "Authenticator",
+    "BasicAuthenticator",
+    "Repository",
+    "RepositoryScraper",
+    "ScraperAuthenticationError",
+    "ScraperConnectionError",
+    "ScraperError",
+    "Stack",
+    "TokenAuthenticator",
+]
