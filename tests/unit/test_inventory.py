@@ -13,6 +13,7 @@ from gh_migration_inventory_manager.inventory import (
     MigrationStatus,
     format_migration_month,
 )
+from gh_migration_inventory_manager.scrap import Repository
 
 # ============================================================================
 # Model & Entity Tests
@@ -392,3 +393,210 @@ def test_inventory_from_sheet_label_invalid_raises(invalid_label: str) -> None:
     expected_match = f"Invalid migration status label: '{invalid_label}'"
     with pytest.raises(ValueError, match=expected_match):
         Inventory._from_sheet_label(invalid_label)
+
+
+# ============================================================================
+# Repository Registration & Synchronization Tests
+# ============================================================================
+
+
+def test_get_repository_returns_record_when_found() -> None:
+    """Test get_repository returns converted InventoryRecord when row exists."""
+    mock_spreadsheet = MagicMock(spec=Spreadsheet)
+    existing_row = Row(
+        row_index=2,
+        data={
+            "name": "found-repo",
+            "project": "core",
+            "stack": "Python",
+            "migration_status": MigrationStatus.MIGRATED,
+        },
+    )
+    mock_spreadsheet.find_by.return_value = [existing_row]
+
+    inventory = Inventory(spreadsheet=mock_spreadsheet)
+    record = inventory.get_repository("found-repo")
+
+    assert record is not None
+    assert record.name == "found-repo"
+    assert record.project == "core"
+    assert record.stack == "Python"
+    assert record.migration_status == MigrationStatus.MIGRATED
+    mock_spreadsheet.find_by.assert_called_once_with("name", "found-repo")
+
+
+def test_get_repository_filters_by_project() -> None:
+    """Test get_repository selects row matching specified project."""
+    mock_spreadsheet = MagicMock(spec=Spreadsheet)
+    row_proj_a = Row(
+        row_index=2,
+        data={"name": "shared-repo", "project": "proj-a", "stack": "Java"},
+    )
+    row_proj_b = Row(
+        row_index=3,
+        data={"name": "shared-repo", "project": "proj-b", "stack": "Python"},
+    )
+    mock_spreadsheet.find_by.return_value = [row_proj_a, row_proj_b]
+
+    inventory = Inventory(spreadsheet=mock_spreadsheet)
+    record = inventory.get_repository("shared-repo", project="proj-b")
+
+    assert record is not None
+    assert record.name == "shared-repo"
+    assert record.project == "proj-b"
+    assert record.stack == "Python"
+
+
+def test_get_repository_returns_none_when_not_found() -> None:
+    """Test get_repository returns None when repository does not exist."""
+    mock_spreadsheet = MagicMock(spec=Spreadsheet)
+    mock_spreadsheet.find_by.return_value = []
+
+    inventory = Inventory(spreadsheet=mock_spreadsheet)
+    assert inventory.get_repository("missing-repo") is None
+
+
+def test_get_repository_empty_name_raises() -> None:
+    """Test get_repository raises ValueError when name is empty."""
+    mock_spreadsheet = MagicMock(spec=Spreadsheet)
+    inventory = Inventory(spreadsheet=mock_spreadsheet)
+
+    with pytest.raises(ValueError, match="Repository name cannot be empty"):
+        inventory.get_repository("   ")
+
+
+def test_register_repository_creates_new_record_with_primitives() -> None:
+    """Test register_repository creates a new row with provided primitive values."""
+    mock_spreadsheet = MagicMock(spec=Spreadsheet)
+    mock_spreadsheet.find_by.return_value = []
+    mock_spreadsheet.add.side_effect = lambda row: row
+
+    commit_time = datetime(2026, 10, 15, tzinfo=timezone.utc)
+    inventory = Inventory(spreadsheet=mock_spreadsheet)
+
+    record = inventory.register_repository(
+        name="library-app",
+        project="platform-suite",
+        stack="Python",
+        last_commit=commit_time,
+        initial_status=MigrationStatus.WAITTING,
+    )
+
+    assert record.name == "library-app"
+    assert record.project == "platform-suite"
+    assert record.stack == "Python"
+    assert record.last_commit == commit_time
+    assert record.migration_status == MigrationStatus.WAITTING
+    assert record.gh_migratation is None
+    assert record.origin_deactivation is None
+    mock_spreadsheet.add.assert_called_once()
+
+
+def test_register_repository_with_migrated_status_sets_dates() -> None:
+    """Test register_repository with MIGRATED status automatically sets dates."""
+    mock_spreadsheet = MagicMock(spec=Spreadsheet)
+    mock_spreadsheet.find_by.return_value = []
+    mock_spreadsheet.add.side_effect = lambda row: row
+
+    inventory = Inventory(spreadsheet=mock_spreadsheet)
+    record = inventory.register_repository(
+        name="already-migrated",
+        project="core",
+        initial_status=MigrationStatus.MIGRATED,
+    )
+
+    assert record.name == "already-migrated"
+    assert record.migration_status == MigrationStatus.MIGRATED
+    assert record.gh_migratation is not None
+    assert record.origin_deactivation is not None
+
+
+def test_register_repository_preserves_existing_status_and_migration_dates() -> None:
+    """Test register_repository strictly preserves migration status and dates."""
+    mock_spreadsheet = MagicMock(spec=Spreadsheet)
+
+    original_migration_date = datetime(2026, 8, 1, tzinfo=timezone.utc)
+    original_deactivation_date = datetime(2026, 8, 15, tzinfo=timezone.utc)
+    existing_row = Row(
+        row_index=7,
+        data={
+            "name": "existing-app",
+            "project": "old-proj",
+            "stack": "Java",
+            "last_commit": datetime(2026, 7, 1, tzinfo=timezone.utc),
+            "gh_migratation": original_migration_date,
+            "origin_deactivation": original_deactivation_date,
+            "migration_status": MigrationStatus.MIGRATED,
+        },
+    )
+    mock_spreadsheet.find_by.return_value = [existing_row]
+    mock_spreadsheet.update_row.side_effect = lambda row: row
+
+    inventory = Inventory(spreadsheet=mock_spreadsheet)
+    new_commit = datetime(2026, 10, 18, tzinfo=timezone.utc)
+
+    updated = inventory.register_repository(
+        name="existing-app",
+        project="new-proj",
+        stack="Java, Kotlin",
+        last_commit=new_commit,
+        initial_status=MigrationStatus.WAITTING,  # Should NOT overwrite MIGRATED!
+    )
+
+    assert updated.name == "existing-app"
+    assert updated.project == "new-proj"
+    assert updated.stack == "Java, Kotlin"
+    assert updated.last_commit == new_commit
+    # Strictly preserved:
+    assert updated.migration_status == MigrationStatus.MIGRATED
+    assert updated.gh_migratation == original_migration_date
+    assert updated.origin_deactivation == original_deactivation_date
+    mock_spreadsheet.update_row.assert_called_once()
+    mock_spreadsheet.add.assert_not_called()
+
+
+def test_register_repository_accepts_repository_like_object() -> None:
+    """Test register_repository duck-types repository-like objects."""
+    mock_spreadsheet = MagicMock(spec=Spreadsheet)
+    mock_spreadsheet.find_by.return_value = []
+    mock_spreadsheet.add.side_effect = lambda row: row
+
+    class DummyStack:
+        def __init__(self, val: str) -> None:
+            self.value = val
+
+    class DummyRepo:
+        name = "duck-typed-repo"
+        project = "duck-proj"
+        stacks = [DummyStack("python"), DummyStack("bash")]
+        last_commit = datetime(2026, 9, 20, tzinfo=timezone.utc)
+
+    inventory = Inventory(spreadsheet=mock_spreadsheet)
+    record = inventory.register_repository(DummyRepo())
+
+    assert record.name == "duck-typed-repo"
+    assert record.project == "duck-proj"
+    assert "Python" in record.stack
+    assert "Bash" in record.stack
+    assert record.last_commit == datetime(2026, 9, 20, tzinfo=timezone.utc)
+    assert record.migration_status == MigrationStatus.WAITTING
+
+
+def test_sync_repositories_processes_batch() -> None:
+    """Test sync_repositories synchronizes an iterable of repositories."""
+    mock_spreadsheet = MagicMock(spec=Spreadsheet)
+    mock_spreadsheet.find_by.return_value = []
+    mock_spreadsheet.add.side_effect = lambda row: row
+
+    inventory = Inventory(spreadsheet=mock_spreadsheet)
+    records = inventory.sync_repositories(
+        [
+            Repository(name="batch-1", project="p1"),
+            Repository(name="batch-2", project="p2"),
+        ]
+    )
+
+    assert len(records) == 2
+    assert records[0].name == "batch-1"
+    assert records[1].name == "batch-2"
+    assert mock_spreadsheet.add.call_count == 2

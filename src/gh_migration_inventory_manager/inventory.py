@@ -185,6 +185,42 @@ class Inventory:
             f"Expected MigrationStatus or one of: {_VALID_STATUS_DISPLAY}."
         )
 
+    def _find_row(self, name: str, project: str | None = None) -> Any | None:
+        """Find a row matching repository name and optional project."""
+        clean_name = name.strip() if isinstance(name, str) else ""
+        if not clean_name:
+            raise ValueError("Repository name cannot be empty.")
+
+        matching_rows = self.spreadsheet.find_by("name", clean_name)
+        if not matching_rows:
+            return None
+
+        if project is not None:
+            clean_proj = project.strip().lower()
+            for r in matching_rows:
+                if str(r.data.get("project", "")).strip().lower() == clean_proj:
+                    return r
+
+        return matching_rows[0]
+
+    @staticmethod
+    def _apply_status_timestamps(
+        record: InventoryRecord, status: MigrationStatus
+    ) -> None:
+        """Update migration timestamps based on transition status."""
+        if status in (MigrationStatus.ACTIVE_IN_BOTH, MigrationStatus.MIGRATED):
+            now = datetime.now(timezone.utc)
+            if record.gh_migratation is None:
+                record.gh_migratation = now
+            if (
+                status == MigrationStatus.MIGRATED
+                and record.origin_deactivation is None
+            ):
+                record.origin_deactivation = now
+        elif status in (MigrationStatus.WAITTING, MigrationStatus.SKIPPED):
+            record.gh_migratation = None
+            record.origin_deactivation = None
+
     def update_progress(
         self,
         repository_name: str,
@@ -199,10 +235,9 @@ class Inventory:
             raise ValueError("Repository name cannot be empty.")
 
         valid_status = self._validate_status(status)
+        existing_row = self._find_row(repo_name, project)
 
-        matching_rows = self.spreadsheet.find_by("name", repo_name)
-
-        if not matching_rows:
+        if not existing_row:
             record = InventoryRecord(
                 name=repo_name,
                 project=project or "",
@@ -210,25 +245,13 @@ class Inventory:
             )
             row_index = None
         else:
-            existing_row = matching_rows[0]
             record = RowConverter.to_inventory_record(existing_row)
             if project is not None:
                 record.project = project
             record.migration_status = valid_status
             row_index = existing_row.row_index
 
-        if valid_status in (MigrationStatus.ACTIVE_IN_BOTH, MigrationStatus.MIGRATED):
-            now = datetime.now(timezone.utc)
-            if record.gh_migratation is None:
-                record.gh_migratation = now
-            if (
-                valid_status == MigrationStatus.MIGRATED
-                and record.origin_deactivation is None
-            ):
-                record.origin_deactivation = now
-        elif valid_status in (MigrationStatus.WAITTING, MigrationStatus.SKIPPED):
-            record.gh_migratation = None
-            record.origin_deactivation = None
+        self._apply_status_timestamps(record, valid_status)
 
         row = RowConverter.from_inventory_record(record, row_index=row_index)
         saved_row = (
@@ -237,6 +260,114 @@ class Inventory:
             else self.spreadsheet.add(row)
         )
         return RowConverter.to_inventory_record(saved_row)
+
+    def get_repository(
+        self,
+        repository_name: str,
+        project: str | None = None,
+    ) -> InventoryRecord | None:
+        """Find an inventory record by repository name (and optional project)."""
+        from gh_migration_inventory_manager.google import RowConverter
+
+        row = self._find_row(repository_name, project)
+        return RowConverter.to_inventory_record(row) if row is not None else None
+
+    def register_repository(
+        self,
+        name: str | Any,
+        project: str | None = None,
+        stack: str | None = None,
+        last_commit: datetime | None = None,
+        initial_status: MigrationStatus | str = MigrationStatus.WAITTING,
+    ) -> InventoryRecord:
+        """Register or synchronize a repository in the inventory.
+
+        If the repository is already recorded, its migration status and dates
+        are strictly preserved, while metadata (last_commit, stack) are updated.
+        If it does not exist, a new record is created with initial_status.
+
+        Supports primitive arguments or an object with name, project, stacks/stack,
+        and last_commit attributes (such as a Repository instance).
+        """
+        from gh_migration_inventory_manager.google import RowConverter
+
+        if not isinstance(name, str) and hasattr(name, "name"):
+            repo_obj = name
+            actual_name = str(repo_obj.name)
+            actual_project = (
+                project if project is not None else getattr(repo_obj, "project", None)
+            )
+            if stack is not None:
+                actual_stack = stack
+            elif hasattr(repo_obj, "stacks") and isinstance(repo_obj.stacks, list):
+                from gh_migration_inventory_manager.scrap import format_stacks
+
+                actual_stack = format_stacks(repo_obj.stacks)
+            else:
+                actual_stack = str(getattr(repo_obj, "stack", "") or "")
+            actual_last_commit = (
+                last_commit
+                if last_commit is not None
+                else getattr(repo_obj, "last_commit", None)
+            )
+        else:
+            actual_name = str(name).strip() if name is not None else ""
+            actual_project = project
+            actual_stack = stack or ""
+            actual_last_commit = last_commit
+
+        if not actual_name:
+            raise ValueError("Repository name cannot be empty.")
+
+        valid_initial_status = self._validate_status(initial_status)
+        target_row = self._find_row(actual_name, actual_project)
+
+        if target_row is not None:
+            record = RowConverter.to_inventory_record(target_row)
+            changed = False
+            if actual_project is not None and record.project != actual_project:
+                record.project = actual_project
+                changed = True
+            if actual_stack and record.stack != actual_stack:
+                record.stack = actual_stack
+                changed = True
+            if (
+                actual_last_commit is not None
+                and record.last_commit != actual_last_commit
+            ):
+                record.last_commit = actual_last_commit
+                changed = True
+
+            if changed:
+                row = RowConverter.from_inventory_record(
+                    record, row_index=target_row.row_index
+                )
+                saved_row = self.spreadsheet.update_row(row)
+                return RowConverter.to_inventory_record(saved_row)
+            return record
+
+        record = InventoryRecord(
+            name=actual_name,
+            project=actual_project or "",
+            stack=actual_stack,
+            last_commit=actual_last_commit,
+            migration_status=valid_initial_status,
+        )
+        self._apply_status_timestamps(record, valid_initial_status)
+        row = RowConverter.from_inventory_record(record)
+        saved_row = self.spreadsheet.add(row)
+        return RowConverter.to_inventory_record(saved_row)
+
+    def sync_repositories(
+        self,
+        repositories: Any,
+        initial_status: MigrationStatus | str = MigrationStatus.WAITTING,
+    ) -> list[InventoryRecord]:
+        """Synchronize a collection of repositories into the inventory."""
+        return [
+            self.register_repository(repo, initial_status=initial_status)
+            for repo in repositories
+        ]
 
 
 Iventory = Inventory

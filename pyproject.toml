@@ -13,6 +13,9 @@ dependencies = [
     "google-auth-httplib2>=0.2.0",
 ]
 
+[project.scripts]
+gh-migration-inventory = "gh_migration_inventory_manager.cli:main"
+
 [tool.poetry]
 packages = [{ include = "gh_migration_inventory_manager", from = "src" }]
 

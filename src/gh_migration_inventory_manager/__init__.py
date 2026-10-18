@@ -26,14 +26,19 @@ from gh_migration_inventory_manager.scrap import (
     ScraperAuthenticationError,
     ScraperConnectionError,
     ScraperError,
+    ScraperProvider,
+    ScraperRegistry,
     Stack,
     TokenAuthenticator,
+    default_scraper_registry,
+    format_stacks,
 )
 from gh_migration_inventory_manager.svn_scrap import (
     SvnClient,
     SvnEntry,
     SvnLayoutType,
     SvnRepositoryScraper,
+    SvnScraperProvider,
     SvnWebDavClient,
 )
 
@@ -60,9 +65,14 @@ __all__ = [
     "Authenticator",
     "BasicAuthenticator",
     "TokenAuthenticator",
+    "ScraperProvider",
+    "ScraperRegistry",
+    "default_scraper_registry",
+    "format_stacks",
     "SvnClient",
     "SvnEntry",
     "SvnLayoutType",
     "SvnRepositoryScraper",
+    "SvnScraperProvider",
     "SvnWebDavClient",
 ]

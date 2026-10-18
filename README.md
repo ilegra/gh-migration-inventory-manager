@@ -86,7 +86,12 @@ This produces ready-to-distribute wheels and source archives in `dist/`:
 ## Usage as a Python Library
 
 ```python
-from gh_migration_inventory_manager import Credentials, Inventory, MigrationStatus, Spreadsheet
+from gh_migration_inventory_manager import (
+    Credentials,
+    Inventory,
+    MigrationStatus,
+    Spreadsheet,
+)
 
 # 1. Initialize credentials and spreadsheet client
 credentials = Credentials(credentials_path="gcp-key.json")

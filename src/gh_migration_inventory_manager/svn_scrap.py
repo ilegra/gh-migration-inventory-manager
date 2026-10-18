@@ -5,6 +5,7 @@ from __future__ import annotations
 import base64
 import email.utils
 import html.parser
+import os
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -12,15 +13,20 @@ import xml.etree.ElementTree as ET  # nosec B405
 from dataclasses import dataclass
 from datetime import datetime
 from enum import Enum
-from typing import Protocol, runtime_checkable
+from typing import Any, Protocol, runtime_checkable
 
 from gh_migration_inventory_manager.scrap import (
     Authenticator,
+    BasicAuthenticator,
     Repository,
+    RepositoryScraper,
     ScraperAuthenticationError,
     ScraperConnectionError,
     ScraperError,
+    ScraperProvider,
     Stack,
+    TokenAuthenticator,
+    default_scraper_registry,
 )
 
 
@@ -76,6 +82,25 @@ class _SvnHtmlParser(html.parser.HTMLParser):
                         and clean not in ("../", "..", "/")
                     ):
                         self.entries.append(clean)
+
+
+_PROPFIND_XML_BODY: bytes = (
+    b'<?xml version="1.0" encoding="utf-8" ?>\n'
+    b'<D:propfind xmlns:D="DAV:">\n'
+    b"  <D:prop>\n"
+    b"    <D:displayname/>\n"
+    b"    <D:resourcetype/>\n"
+    b"    <D:getlastmodified/>\n"
+    b"    <D:version-name/>\n"
+    b"    <D:creator-displayname/>\n"
+    b"    <D:getcontentlength/>\n"
+    b"  </D:prop>\n"
+    b"</D:propfind>"
+)
+_PROPFIND_HEADERS: dict[str, str] = {
+    "Depth": "1",
+    "Content-Type": "text/xml; charset=utf-8",
+}
 
 
 class SvnWebDavClient:
@@ -138,28 +163,12 @@ class SvnWebDavClient:
     def list_dir(self, url: str) -> list[SvnEntry]:
         """List entries in an SVN path using WebDAV PROPFIND or HTML fallback."""
         clean_url = url.rstrip("/") + "/"
-        xml_body = (
-            b'<?xml version="1.0" encoding="utf-8" ?>\n'
-            b'<D:propfind xmlns:D="DAV:">\n'
-            b"  <D:prop>\n"
-            b"    <D:displayname/>\n"
-            b"    <D:resourcetype/>\n"
-            b"    <D:getlastmodified/>\n"
-            b"    <D:version-name/>\n"
-            b"    <D:creator-displayname/>\n"
-            b"    <D:getcontentlength/>\n"
-            b"  </D:prop>\n"
-            b"</D:propfind>"
-        )
-
-        headers = {
-            "Depth": "1",
-            "Content-Type": "text/xml; charset=utf-8",
-        }
-
         try:
             req = self._build_request(
-                clean_url, method="PROPFIND", headers=headers, data=xml_body
+                clean_url,
+                method="PROPFIND",
+                headers=_PROPFIND_HEADERS,
+                data=_PROPFIND_XML_BODY,
             )
             with urllib.request.urlopen(req, timeout=self.timeout) as resp:  # nosec B310
                 body = resp.read()
@@ -272,7 +281,7 @@ class SvnWebDavClient:
         return entries
 
 
-class SvnRepositoryScraper:
+class SvnRepositoryScraper(RepositoryScraper):
     """Repository scraper discovering projects and stacks from Subversion (SVN)."""
 
     def __init__(
@@ -544,3 +553,80 @@ class SvnRepositoryScraper:
                 return self._scrape_multi_project(repo_name, root_entries)
 
         return self._scrape_flat(repo_name, root_entries)
+
+
+class SvnScraperProvider(ScraperProvider):
+    """Provider exposing Subversion (SVN) configuration to the CLI."""
+
+    @property
+    def platform_name(self) -> str:
+        return "svn"
+
+    @property
+    def description(self) -> str:
+        return "Subversion (SVN) repository scraper"
+
+    def configure_parser(self, parser: Any) -> None:
+        """Add SVN-specific arguments to the subparser."""
+        parser.add_argument(
+            "--url",
+            required=True,
+            help="SVN server or repository URL (http:// or https://)",
+        )
+        parser.add_argument(
+            "--username",
+            default=os.environ.get("SVN_USERNAME"),
+            help="SVN authentication username (or SVN_USERNAME env var)",
+        )
+        parser.add_argument(
+            "--password",
+            default=os.environ.get("SVN_PASSWORD"),
+            help="SVN authentication password (or SVN_PASSWORD env var)",
+        )
+        parser.add_argument(
+            "--token",
+            default=os.environ.get("SVN_TOKEN"),
+            help="SVN bearer/PAT token (or SVN_TOKEN env var)",
+        )
+        parser.add_argument(
+            "--layout",
+            choices=[layout.value for layout in SvnLayoutType],
+            default=SvnLayoutType.AUTO.value,
+            help="SVN repository layout structure (default: auto)",
+        )
+        parser.add_argument(
+            "--organization",
+            default=None,
+            help="Organization name for discovered repositories",
+        )
+        parser.add_argument(
+            "--project",
+            default=None,
+            help="Project name override for discovered repositories",
+        )
+
+    def create_scraper(self, args: Any) -> SvnRepositoryScraper:
+        """Build SvnRepositoryScraper from parsed arguments."""
+        auth: Authenticator | None = None
+        username = getattr(args, "username", None)
+        password = getattr(args, "password", None)
+        token = getattr(args, "token", None)
+
+        if username and password is not None:
+            auth = BasicAuthenticator(username=username, password=password)
+        elif token:
+            auth = TokenAuthenticator(token=token)
+
+        raw_layout = getattr(args, "layout", SvnLayoutType.AUTO.value)
+        layout = SvnLayoutType(raw_layout) if raw_layout else SvnLayoutType.AUTO
+
+        return SvnRepositoryScraper(
+            url=getattr(args, "url", None) or "",
+            auth=auth,
+            layout=layout,
+            organization=getattr(args, "organization", None),
+            project=getattr(args, "project", None),
+        )
+
+
+default_scraper_registry.register(SvnScraperProvider())

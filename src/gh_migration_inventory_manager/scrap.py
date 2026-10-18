@@ -128,6 +128,91 @@ class RepositoryScraper(Protocol):
         raise NotImplementedError
 
 
+_STACK_DISPLAY_NAMES: dict[Stack, str] = {
+    Stack.JAVA: "Java",
+    Stack.PYTHON: "Python",
+    Stack.TYPESCRIPT: "TypeScript",
+    Stack.C_SHARP: "C#",
+    Stack.BASH: "Bash",
+    Stack.DOTNET_CORE: ".NET Core",
+    Stack.TERRAFORM: "Terraform",
+}
+
+
+def format_stacks(stacks: list[Any]) -> str:
+    """Format a list of Stack enums or stack objects into a display string."""
+    formatted = [
+        _STACK_DISPLAY_NAMES.get(s, getattr(s, "value", str(s)).title())
+        for s in stacks
+        if getattr(s, "value", str(s)).lower() != "unknown"
+    ]
+    return ", ".join(formatted)
+
+
+@runtime_checkable
+class ScraperProvider(Protocol):
+    """Contract for platform scraper registration and CLI argument binding."""
+
+    @property
+    def platform_name(self) -> str:
+        """Unique identifier for the platform (e.g. 'svn', 'bitbucket')."""
+        raise NotImplementedError
+
+    @property
+    def description(self) -> str:
+        """Brief human-readable description for CLI help text."""
+        raise NotImplementedError
+
+    def configure_parser(self, parser: Any) -> None:
+        """Configure platform-specific CLI arguments on the provided subparser."""
+        raise NotImplementedError
+
+    def create_scraper(self, args: Any) -> RepositoryScraper:
+        """Instantiate a RepositoryScraper from parsed CLI arguments."""
+        raise NotImplementedError
+
+
+class ScraperRegistry:
+    """Registry maintaining available VCS platform scraper providers."""
+
+    def __init__(self) -> None:
+        self._providers: dict[str, ScraperProvider] = {}
+
+    def register(self, provider: ScraperProvider) -> None:
+        """Register a platform scraper provider.
+
+        Raises:
+            ValueError: If provider or provider.platform_name is invalid.
+        """
+        if not provider or not getattr(provider, "platform_name", None):
+            raise ValueError("Provider must define a non-empty 'platform_name'.")
+        key = provider.platform_name.strip().lower()
+        if not key:
+            raise ValueError("Provider platform_name cannot be empty.")
+        self._providers[key] = provider
+
+    def get(self, platform_name: str) -> ScraperProvider:
+        """Retrieve a registered provider by platform name.
+
+        Raises:
+            KeyError: If platform_name is not registered.
+        """
+        clean = (platform_name or "").strip().lower()
+        if clean not in self._providers:
+            available = ", ".join(sorted(self._providers.keys())) or "none"
+            raise KeyError(
+                f"Unsupported platform: '{platform_name}'. Available: {available}."
+            )
+        return self._providers[clean]
+
+    def list_platforms(self) -> list[str]:
+        """Return sorted list of registered platform names."""
+        return sorted(self._providers.keys())
+
+
+default_scraper_registry = ScraperRegistry()
+
+
 __all__ = [
     "AuthCredentials",
     "Authenticator",
@@ -137,6 +222,10 @@ __all__ = [
     "ScraperAuthenticationError",
     "ScraperConnectionError",
     "ScraperError",
+    "ScraperProvider",
+    "ScraperRegistry",
     "Stack",
     "TokenAuthenticator",
+    "default_scraper_registry",
+    "format_stacks",
 ]
