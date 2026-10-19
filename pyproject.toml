@@ -13,6 +13,9 @@ dependencies = [
     "google-auth-httplib2>=0.2.0",
 ]
 
+[project.scripts]
+gh-migration-inventory = "gh_migration_inventory_manager.cli:main"
+
 [tool.poetry]
 packages = [{ include = "gh_migration_inventory_manager", from = "src" }]
 
@@ -44,12 +47,16 @@ select = [
 ]
 ignore = []
 
+[tool.ruff.lint.per-file-ignores]
+"tests/*" = ["E501"]
+
 [tool.ruff.format]
 quote-style = "double"
 indent-style = "space"
 
 [tool.mypy]
 python_version = "3.10"
+mypy_path = "src"
 strict = true
 warn_return_any = true
 warn_unused_configs = true

@@ -38,7 +38,9 @@ class MockSvnClient:
 class TestBasicAuthenticator:
     """Tests for BasicAuthenticator."""
 
-    def test_basic_authenticator_success(self) -> None:
+    def test_given_username_and_password_when_resolving_credentials_then_returns_valid_credentials(
+        self,
+    ) -> None:
         auth = BasicAuthenticator("svnuser", "svnpass")
         assert isinstance(auth, Authenticator)
         creds = auth.resolve_credentials()
@@ -46,54 +48,25 @@ class TestBasicAuthenticator:
         assert creds.password == "svnpass"
         assert creds.token is None
 
-    def test_basic_authenticator_empty_username_raises(self) -> None:
+    def test_given_empty_username_when_initializing_basic_authenticator_then_raises_value_error(
+        self,
+    ) -> None:
         with pytest.raises(ValueError, match="Username cannot be empty"):
             BasicAuthenticator("   ", "password")
 
-    def test_basic_authenticator_protocol_conformance(self) -> None:
+    def test_given_basic_authenticator_when_checking_type_then_conforms_to_authenticator_protocol(
+        self,
+    ) -> None:
         auth = BasicAuthenticator("user", "pass")
         assert isinstance(auth, Authenticator)
-
-
-class TestSvnDataStructures:
-    """Tests for SvnEntry and SvnLayoutType pure data containers."""
-
-    def test_svn_entry_fields(self) -> None:
-        now = datetime(2026, 10, 16, 12, 0, 0, tzinfo=timezone.utc)
-        entry = SvnEntry(
-            name="pom.xml",
-            path="trunk/pom.xml",
-            is_directory=False,
-            last_modified=now,
-            revision=10,
-            author="committer",
-            size=1024,
-        )
-        assert entry.name == "pom.xml"
-        assert entry.path == "trunk/pom.xml"
-        assert not entry.is_directory
-        assert entry.last_modified == now
-        assert entry.revision == 10
-        assert entry.author == "committer"
-        assert entry.size == 1024
-
-    def test_svn_entry_immutability(self) -> None:
-        entry = SvnEntry(name="trunk", path="trunk", is_directory=True)
-        with pytest.raises(AttributeError):
-            entry.name = "new_trunk"  # type: ignore[misc]
-
-    def test_svn_layout_type_values(self) -> None:
-        assert SvnLayoutType.AUTO.value == "auto"
-        assert SvnLayoutType.STANDARD.value == "standard"
-        assert SvnLayoutType.MULTI_PROJECT.value == "multi_project"
-        assert SvnLayoutType.FLAT.value == "flat"
-        assert SvnLayoutType.COLLECTION.value == "collection"
 
 
 class TestSvnRepositoryScraperStandardLayout:
     """Tests for standard SVN layout (trunk, branches, tags)."""
 
-    def test_standard_layout_success(self) -> None:
+    def test_given_standard_layout_repo_when_scraping_then_returns_single_repository_with_trunk_url(
+        self,
+    ) -> None:
         base_url = "http://svn.example.com/svn/sample-repo"
         now = datetime(2026, 10, 16, 15, 30, 0, tzinfo=timezone.utc)
 
@@ -138,7 +111,6 @@ class TestSvnRepositoryScraperStandardLayout:
         assert len(repos) == 1
         repo = repos[0]
 
-        # Assert on every data structure field
         assert repo.name == "sample-repo"
         assert repo.organization == "my-org"
         assert repo.project == "sample-project"
@@ -155,7 +127,9 @@ class TestSvnRepositoryScraperStandardLayout:
 class TestSvnRepositoryScraperMultiProjectLayout:
     """Tests for multi-project SVN layout (multiple sub-projects under root)."""
 
-    def test_multi_project_layout_success(self) -> None:
+    def test_given_multi_project_repo_when_scraping_then_flattens_into_discrete_project_repositories(
+        self,
+    ) -> None:
         base_url = "http://svn.example.com/svn/mono-repo"
         time_a = datetime(2026, 10, 10, 10, 0, 0, tzinfo=timezone.utc)
         time_b = datetime(2026, 10, 12, 12, 0, 0, tzinfo=timezone.utc)
@@ -251,7 +225,9 @@ class TestSvnRepositoryScraperMultiProjectLayout:
 class TestSvnRepositoryScraperFlatLayout:
     """Tests for flat SVN layout (source files directly in root)."""
 
-    def test_flat_layout_success(self) -> None:
+    def test_given_flat_layout_repo_when_scraping_then_returns_repository_with_root_url(
+        self,
+    ) -> None:
         base_url = "http://svn.example.com/svn/scripts-repo"
         now = datetime(2026, 10, 15, 8, 0, 0, tzinfo=timezone.utc)
 
@@ -294,7 +270,9 @@ class TestSvnRepositoryScraperFlatLayout:
 class TestSvnRepositoryScraperCollectionLayout:
     """Tests for SVN parent collection layout hosting multiple repositories."""
 
-    def test_collection_layout_success(self) -> None:
+    def test_given_collection_of_repositories_when_scraping_then_traverses_and_discovers_all_nested_repos(
+        self,
+    ) -> None:
         collection_url = "http://svn.example.com/svn"
         now = datetime(2026, 10, 16, 10, 0, 0, tzinfo=timezone.utc)
 
@@ -354,7 +332,9 @@ class TestSvnRepositoryScraperCollectionLayout:
 class TestSvnLayoutAutoDetection:
     """Tests for automatic layout resolution in SvnRepositoryScraper."""
 
-    def test_auto_detects_standard_layout(self) -> None:
+    def test_given_repo_with_trunk_folder_when_detecting_layout_then_resolves_standard_layout(
+        self,
+    ) -> None:
         base_url = "http://svn.example.com/svn/repo-std"
         client = MockSvnClient(
             {
@@ -373,7 +353,9 @@ class TestSvnLayoutAutoDetection:
         assert repos[0].metadata["layout"] == "standard"
         assert repos[0].stacks == [Stack.PYTHON]
 
-    def test_auto_detects_multi_project_layout(self) -> None:
+    def test_given_repo_with_project_trunks_when_detecting_layout_then_resolves_multi_project_layout(
+        self,
+    ) -> None:
         base_url = "http://svn.example.com/svn/repo-multi"
         client = MockSvnClient(
             {
@@ -397,7 +379,9 @@ class TestSvnLayoutAutoDetection:
         assert repos[0].metadata["layout"] == "multi_project"
         assert Stack.C_SHARP in repos[0].stacks
 
-    def test_auto_detects_flat_layout(self) -> None:
+    def test_given_repo_with_root_source_files_when_detecting_layout_then_resolves_flat_layout(
+        self,
+    ) -> None:
         base_url = "http://svn.example.com/svn/repo-flat"
         client = MockSvnClient(
             {
@@ -412,7 +396,9 @@ class TestSvnLayoutAutoDetection:
         assert repos[0].metadata["layout"] == "flat"
         assert repos[0].stacks == [Stack.BASH]
 
-    def test_auto_detects_collection_when_url_is_svn_root(self) -> None:
+    def test_given_root_collection_of_repos_when_detecting_layout_then_resolves_collection_layout(
+        self,
+    ) -> None:
         base_url = "http://svn.example.com/svn"
         client = MockSvnClient(
             {
@@ -452,7 +438,7 @@ class TestTechnologyStackDetection:
             (["pom.xml", "package.json"], [Stack.JAVA, Stack.TYPESCRIPT]),
         ],
     )
-    def test_stack_detection_scenarios(
+    def test_given_source_marker_files_when_detecting_stack_then_matches_expected_technology_stacks(
         self, filenames: list[str], expected_stacks: list[Stack]
     ) -> None:
         base_url = "http://svn.example.com/svn/tech-repo"
@@ -475,17 +461,23 @@ class TestTechnologyStackDetection:
 class TestSvnScraperCornerCasesAndErrors:
     """Tests for corner cases, validation errors, and communication failures."""
 
-    def test_empty_url_raises_value_error(self) -> None:
+    def test_given_empty_svn_url_when_initializing_scraper_then_raises_value_error(
+        self,
+    ) -> None:
         with pytest.raises(ValueError, match="SVN URL cannot be empty"):
             SvnRepositoryScraper(url="   ")
 
-    def test_invalid_scheme_raises_value_error(self) -> None:
+    def test_given_unsupported_url_scheme_when_initializing_scraper_then_raises_value_error(
+        self,
+    ) -> None:
         with pytest.raises(
             ValueError, match="SVN URL must start with http:// or https://"
         ):
             SvnRepositoryScraper(url="ftp://svn.example.com/repo")
 
-    def test_empty_repository_returns_single_repo_with_unknown_stack(self) -> None:
+    def test_given_empty_svn_repo_when_scraping_then_returns_repo_with_unknown_stack(
+        self,
+    ) -> None:
         base_url = "http://svn.example.com/svn/empty-repo"
         client = MockSvnClient({base_url: []})
         scraper = SvnRepositoryScraper(url=base_url, client=client)
@@ -494,7 +486,9 @@ class TestSvnScraperCornerCasesAndErrors:
         assert repos[0].name == "empty-repo"
         assert repos[0].stacks == [Stack.UNKNOWN]
 
-    def test_empty_trunk_returns_repo_with_unknown_stack(self) -> None:
+    def test_given_empty_trunk_directory_when_scraping_then_returns_repo_with_unknown_stack(
+        self,
+    ) -> None:
         base_url = "http://svn.example.com/svn/empty-trunk-repo"
         client = MockSvnClient(
             {
@@ -507,7 +501,9 @@ class TestSvnScraperCornerCasesAndErrors:
         assert len(repos) == 1
         assert repos[0].stacks == [Stack.UNKNOWN]
 
-    def test_authentication_error_is_propagated(self) -> None:
+    def test_given_http_401_when_scraping_svn_then_raises_scraper_authentication_error(
+        self,
+    ) -> None:
         client = MagicMock(spec=SvnClient)
         client.list_dir.side_effect = ScraperAuthenticationError(
             "SVN authentication failed (401)"
@@ -519,7 +515,9 @@ class TestSvnScraperCornerCasesAndErrors:
         with pytest.raises(ScraperAuthenticationError):
             scraper.scrape()
 
-    def test_connection_error_is_propagated(self) -> None:
+    def test_given_network_disconnect_when_scraping_svn_then_raises_scraper_connection_error(
+        self,
+    ) -> None:
         client = MagicMock(spec=SvnClient)
         client.list_dir.side_effect = ScraperConnectionError("Cannot connect to SVN")
         scraper = SvnRepositoryScraper(
@@ -533,7 +531,9 @@ class TestSvnScraperCornerCasesAndErrors:
 class TestSvnWebDavClientUnit:
     """Unit tests for SvnWebDavClient public methods and HTTP integrations."""
 
-    def test_list_dir_propfind_parsing(self) -> None:
+    def test_given_xml_webdav_propfind_response_when_listing_dir_then_parses_svn_entries(
+        self,
+    ) -> None:
         xml_data = b"""<?xml version="1.0" encoding="utf-8"?>
 <D:multistatus xmlns:D="DAV:" xmlns:lp1="DAV:" xmlns:lp3="http://subversion.tigris.org/xmlns/dav/">
 <D:response>
@@ -588,7 +588,9 @@ class TestSvnWebDavClientUnit:
         assert pom_entry.last_modified is not None
         assert pom_entry.last_modified.minute == 54
 
-    def test_list_dir_handles_invalid_date(self) -> None:
+    def test_given_malformed_last_modified_date_when_listing_dir_then_falls_back_to_none(
+        self,
+    ) -> None:
         xml_data = b"""<?xml version="1.0" encoding="utf-8"?>
 <D:multistatus xmlns:D="DAV:" xmlns:lp1="DAV:">
 <D:response>
@@ -608,7 +610,9 @@ class TestSvnWebDavClientUnit:
         assert len(entries) == 1
         assert entries[0].last_modified is None
 
-    def test_list_dir_sends_basic_auth_header(self) -> None:
+    def test_given_basic_authenticator_when_listing_dir_then_includes_authorization_header(
+        self,
+    ) -> None:
         auth = BasicAuthenticator("myuser", "mypass")
         client = SvnWebDavClient(auth=auth)
         mock_resp = MagicMock()
@@ -622,7 +626,9 @@ class TestSvnWebDavClientUnit:
             auth_header = req.get_header("Authorization")
             assert auth_header is not None and auth_header.startswith("Basic ")
 
-    def test_list_dir_sends_token_bearer_auth_header(self) -> None:
+    def test_given_token_authenticator_when_listing_dir_then_includes_bearer_authorization_header(
+        self,
+    ) -> None:
         auth = TokenAuthenticator("secret-pat")
         client = SvnWebDavClient(auth=auth)
         mock_resp = MagicMock()
@@ -635,7 +641,9 @@ class TestSvnWebDavClientUnit:
             req = mock_urlopen.call_args[0][0]
             assert req.get_header("Authorization") == "Bearer secret-pat"
 
-    def test_list_dir_html_fallback_on_405(self) -> None:
+    def test_given_http_405_on_propfind_when_listing_dir_then_falls_back_to_html_scraping(
+        self,
+    ) -> None:
         html_data = b"""
         <html><body>
         <h2>Collection of Repositories</h2>

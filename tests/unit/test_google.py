@@ -18,7 +18,7 @@ from gh_migration_inventory_manager.inventory import (
 )
 
 
-def test_should_add_new_row_when_input_is_valid(
+def test_given_valid_row_data_when_adding_new_row_then_appends_to_sheet_and_returns_row(
     mock_spreadsheet: Spreadsheet, mock_sheets_service: MagicMock
 ) -> None:
     """Test adding a new row asserts every returned attribute."""
@@ -57,7 +57,7 @@ def test_should_add_new_row_when_input_is_valid(
     mock_append.assert_called_once()
 
 
-def test_should_update_current_row_when_input_is_valid(
+def test_given_valid_row_with_index_when_updating_row_then_updates_sheet_values(
     mock_spreadsheet: Spreadsheet, mock_sheets_service: MagicMock
 ) -> None:
     """Test updating an existing row targets correct index and updates attributes."""
@@ -91,7 +91,7 @@ def test_should_update_current_row_when_input_is_valid(
     mock_update.assert_called_once()
 
 
-def test_should_return_empty_object_when_row_is_not_found(
+def test_given_unmatched_criteria_when_finding_row_then_returns_empty_row(
     mock_spreadsheet: Spreadsheet, mock_sheets_service: MagicMock
 ) -> None:
     """Test querying a non-existent repository returns empty list."""
@@ -115,7 +115,7 @@ def test_should_return_empty_object_when_row_is_not_found(
     assert results == []
 
 
-def test_should_find_row_when_exists(
+def test_given_existing_repository_and_project_when_finding_row_then_returns_matching_row(
     mock_spreadsheet: Spreadsheet, mock_sheets_service: MagicMock
 ) -> None:
     """Test finding a row by column name returns matching populated Row."""
@@ -162,7 +162,7 @@ def test_should_find_row_when_exists(
     assert project_results[0].data["name"] == "api-gateway"
 
 
-def test_should_raise_when_updating_row_without_index(
+def test_given_row_without_index_when_updating_row_then_raises_value_error(
     mock_spreadsheet: Spreadsheet,
 ) -> None:
     """Test updating a row with missing row_index raises ValueError."""
@@ -171,7 +171,7 @@ def test_should_raise_when_updating_row_without_index(
         mock_spreadsheet.update_row(row)
 
 
-def test_should_raise_when_column_name_is_invalid(
+def test_given_invalid_column_name_when_finding_row_then_raises_value_error(
     mock_spreadsheet: Spreadsheet,
 ) -> None:
     """Test querying an invalid column raises ValueError."""
@@ -179,7 +179,7 @@ def test_should_raise_when_column_name_is_invalid(
         mock_spreadsheet.find_by("non_existent_column_header", "some_value")
 
 
-def test_should_clear_row(
+def test_given_row_with_index_when_clearing_row_then_clears_sheet_range(
     mock_spreadsheet: Spreadsheet, mock_sheets_service: MagicMock
 ) -> None:
     """Test clearing a row executes spreadsheet values clear."""
@@ -190,7 +190,9 @@ def test_should_clear_row(
     mock_clear.assert_called_once()
 
 
-def test_row_converter_roundtrip(sample_record: InventoryRecord) -> None:
+def test_given_inventory_record_when_converting_to_and_from_row_then_preserves_all_attributes(
+    sample_record: InventoryRecord,
+) -> None:
     """Test roundtrip conversion between InventoryRecord and Row via RowConverter."""
     row = RowConverter.from_inventory_record(sample_record, row_index=3)
     assert row.row_index == 3
@@ -207,7 +209,9 @@ def test_row_converter_roundtrip(sample_record: InventoryRecord) -> None:
     assert restored.origin_deactivation == sample_record.origin_deactivation
 
 
-def test_row_converter_from_inventory_record_maps_all_fields() -> None:
+def test_given_fully_populated_inventory_record_when_converting_to_row_then_maps_all_fields() -> (
+    None
+):
     """Test RowConverter.from_inventory_record maps every record field into Row."""
     record = InventoryRecord(
         name="full-repo",
@@ -231,14 +235,18 @@ def test_row_converter_from_inventory_record_maps_all_fields() -> None:
     assert row.values == []
 
 
-def test_row_converter_from_inventory_record_default_row_index() -> None:
+def test_given_inventory_record_without_row_index_when_converting_to_row_then_defaults_index_to_none() -> (
+    None
+):
     """Test RowConverter.from_inventory_record defaults row_index to None."""
     record = InventoryRecord(name="repo-no-index")
     row = RowConverter.from_inventory_record(record)
     assert row.row_index is None
 
 
-def test_row_converter_to_inventory_record_maps_all_fields() -> None:
+def test_given_sheet_row_when_converting_to_inventory_record_then_maps_all_fields() -> (
+    None
+):
     """Test RowConverter.to_inventory_record correctly builds InventoryRecord."""
     now = datetime(2026, 10, 15, tzinfo=timezone.utc)
     row = Row(
@@ -277,7 +285,7 @@ def test_row_converter_to_inventory_record_maps_all_fields() -> None:
         ("", MigrationStatus.WAITTING),
     ],
 )
-def test_row_converter_to_inventory_record_with_string_migration_status(
+def test_given_row_with_string_status_when_converting_to_inventory_record_then_parses_status_enum(
     raw_status: str, expected_enum: MigrationStatus
 ) -> None:
     """Test RowConverter.to_inventory_record converts string status to enum."""
@@ -294,7 +302,7 @@ def test_row_converter_to_inventory_record_with_string_migration_status(
         ("2026-10-15T08:30:00", datetime(2026, 10, 15, 8, 30, 0)),
     ],
 )
-def test_row_converter_to_inventory_record_with_string_dates(
+def test_given_row_with_string_dates_when_converting_to_inventory_record_then_parses_iso_datetimes(
     date_str: str, expected_dt: datetime
 ) -> None:
     """Test RowConverter.to_inventory_record parses string date formats."""
@@ -312,7 +320,9 @@ def test_row_converter_to_inventory_record_with_string_dates(
     assert record.origin_deactivation == expected_dt
 
 
-def test_row_converter_to_inventory_record_with_gh_migration_alias() -> None:
+def test_given_row_with_migration_date_when_converting_to_inventory_record_then_supports_gh_migration_alias() -> (
+    None
+):
     """Test RowConverter.to_inventory_record resolves gh_migration key alias."""
     dt = datetime(2026, 9, 1, tzinfo=timezone.utc)
     row = Row(data={"name": "alias-repo", "gh_migration": dt})
@@ -321,7 +331,9 @@ def test_row_converter_to_inventory_record_with_gh_migration_alias() -> None:
     assert record.gh_migration == dt
 
 
-def test_row_converter_to_inventory_record_defaults_missing_fields() -> None:
+def test_given_sparse_row_when_converting_to_inventory_record_then_applies_default_values() -> (
+    None
+):
     """Test RowConverter.to_inventory_record applies clean defaults when empty."""
     row = Row()
     record = RowConverter.to_inventory_record(row)
@@ -333,14 +345,18 @@ def test_row_converter_to_inventory_record_defaults_missing_fields() -> None:
     assert record.migration_status == MigrationStatus.WAITTING
 
 
-def test_credentials_configuration() -> None:
+def test_given_file_path_when_initializing_credentials_then_stores_path_correctly() -> (
+    None
+):
     """Test Credentials defaults and custom scopes."""
     creds = Credentials(credentials_path="my-key.json")
     assert creds.credentials_path == "my-key.json"
     assert "https://www.googleapis.com/auth/spreadsheets" in creds.scopes
 
 
-def test_spreadsheet_alias_and_initialization_error() -> None:
+def test_given_invalid_credentials_when_initializing_spreadsheet_then_raises_type_error() -> (
+    None
+):
     """Test Spreadshseet typo alias and missing credentials error."""
     assert Spreadshseet is Spreadsheet
 
@@ -350,7 +366,9 @@ def test_spreadsheet_alias_and_initialization_error() -> None:
         Spreadsheet(id="test-id")
 
 
-def test_dataclasses_do_not_contain_business_rules() -> None:
+def test_given_dataclasses_when_inspecting_attributes_then_has_no_business_rules() -> (
+    None
+):
     """Ensure dataclasses do not contain business rules or conversion methods."""
     assert not hasattr(Row, "to_sheet_row")
     assert not hasattr(Row, "from_sheet_row")
@@ -373,7 +391,7 @@ def test_dataclasses_do_not_contain_business_rules() -> None:
         ("", "Aguardando Migração"),
     ],
 )
-def test_should_format_migration_status_when_adding_row(
+def test_given_migration_status_when_adding_row_then_formats_localized_sheet_label(
     mock_spreadsheet: Spreadsheet,
     mock_sheets_service: MagicMock,
     status_input: object,
@@ -391,7 +409,7 @@ def test_should_format_migration_status_when_adding_row(
     assert added.values[6] == expected_sheet_label
 
 
-def test_should_format_dates_and_empty_values_when_adding_row(
+def test_given_none_dates_when_adding_row_then_formats_as_empty_sheet_cells(
     mock_spreadsheet: Spreadsheet, mock_sheets_service: MagicMock
 ) -> None:
     """Test formatting dates and empty values via public add method."""
@@ -416,7 +434,7 @@ def test_should_format_dates_and_empty_values_when_adding_row(
     assert added.values[7] == "Junho/2026"
 
 
-def test_should_preserve_explicit_migration_month_when_adding_row(
+def test_given_explicit_migration_month_when_adding_row_then_preserves_month_value(
     mock_spreadsheet: Spreadsheet, mock_sheets_service: MagicMock
 ) -> None:
     """Test explicit migration_month is preserved via public add method."""
@@ -448,7 +466,7 @@ def test_should_preserve_explicit_migration_month_when_adding_row(
         ("not-a-valid-date", None),
     ],
 )
-def test_should_parse_dates_when_finding_row(
+def test_given_iso_date_strings_in_sheet_when_finding_row_then_parses_datetime_objects(
     mock_spreadsheet: Spreadsheet,
     mock_sheets_service: MagicMock,
     date_str: str,
@@ -466,7 +484,7 @@ def test_should_parse_dates_when_finding_row(
     assert results[0].data["last_commit"] == expected_date
 
 
-def test_should_pad_short_row_when_finding_row(
+def test_given_short_sheet_row_when_finding_row_then_pads_missing_columns(
     mock_spreadsheet: Spreadsheet, mock_sheets_service: MagicMock
 ) -> None:
     """Test padding rows with fewer columns via public find_by method."""
@@ -497,7 +515,7 @@ def test_should_pad_short_row_when_finding_row(
         ("", MigrationStatus.WAITTING),
     ],
 )
-def test_should_parse_migration_status_labels_when_finding_row(
+def test_given_localized_status_label_when_finding_row_then_maps_to_status_enum(
     mock_spreadsheet: Spreadsheet,
     mock_sheets_service: MagicMock,
     sheet_label: str,
@@ -513,7 +531,7 @@ def test_should_parse_migration_status_labels_when_finding_row(
     assert results[0].data["migration_status"] == expected_status
 
 
-def test_spreadsheet_loads_credentials_via_service_account(
+def test_given_valid_credentials_path_when_connecting_spreadsheet_then_loads_service_account(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Test Spreadsheet initialization loads credentials via service account."""
