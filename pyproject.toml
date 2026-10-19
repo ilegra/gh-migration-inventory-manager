@@ -1,6 +1,6 @@
 [project]
 name = "gh-migration-inventory-manager"
-version = "0.1.8"
+version = "1.0.0"
 description = "GitHub Migration Inventory Manager library and tools"
 authors = [
     { name = "ilegra" }
