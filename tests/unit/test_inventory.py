@@ -1,11 +1,21 @@
 """Unit tests for Inventory (Iventory) and inventory models/entities."""
 
 from datetime import datetime, timezone
-from unittest.mock import MagicMock
+from typing import Any
+from unittest.mock import MagicMock, patch
 
 import pytest
 
-from gh_migration_inventory_manager.google import Row, RowConverter, Spreadsheet
+from gh_migration_inventory_manager.converter import RepositoryConverter
+from gh_migration_inventory_manager.google import (
+    Credentials,
+    Row,
+    RowConverter,
+    Spreadsheet,
+    SpreadsheetAccessError,
+    SpreadsheetError,
+    SpreadsheetNotFoundError,
+)
 from gh_migration_inventory_manager.inventory import (
     Inventory,
     InventoryRecord,
@@ -270,8 +280,9 @@ def test_given_custom_backend_when_initializing_inventory_then_binds_backend_cor
     inv2 = Iventory(spredsheet=mock_spreadsheet)
     assert inv2.spreadsheet is mock_spreadsheet
 
-    with pytest.raises(ValueError, match="A Spreadsheet instance must be provided"):
-        Inventory()
+    inv3 = Inventory()
+    with pytest.raises(ValueError, match="Missing Google Spreadsheet ID"):
+        inv3.sync_records([])
 
 
 @pytest.mark.parametrize(
@@ -644,3 +655,178 @@ def test_given_batch_of_repositories_when_syncing_then_registers_all_in_inventor
     assert records[0].name == "batch-1"
     assert records[1].name == "batch-2"
     assert mock_spreadsheet.add.call_count == 2
+
+
+def test_given_custom_converter_when_initializing_inventory_then_uses_injected_instance() -> (
+    None
+):
+    """Test Inventory uses an injected RepositoryConverter instance for domain conversions."""
+    mock_spreadsheet = MagicMock(spec=Spreadsheet)
+    mock_spreadsheet.find_by.return_value = []
+    mock_spreadsheet.add.side_effect = lambda row: row
+
+    mock_converter = MagicMock(spec=RepositoryConverter)
+    custom_record = InventoryRecord(
+        name="custom-converted-repo",
+        project="custom-team",
+        stack="Rust",
+        migration_status=MigrationStatus.WAITTING,
+    )
+    mock_converter.to_inventory_record.return_value = custom_record
+
+    inventory = Inventory(spreadsheet=mock_spreadsheet, converter=mock_converter)
+    repo = Repository(name="custom-converted-repo")
+
+    record = inventory.register_repository(repo)
+
+    mock_converter.to_inventory_record.assert_called_once_with(
+        repo, initial_status=MigrationStatus.WAITTING
+    )
+    assert record.name == "custom-converted-repo"
+    assert record.project == "custom-team"
+    assert record.stack == "Rust"
+
+
+# ============================================================================
+# Inventory Construction & sync_records Validation Tests
+# ============================================================================
+
+
+def test_given_valid_spreadsheet_id_and_credentials_path_when_syncing_records_then_builds_objects_and_synchronizes(
+    tmp_path: Any,
+) -> None:
+    """Verify sync_records builds Credentials and Spreadsheet and synchronizes."""
+    creds_file = tmp_path / "valid_creds.json"
+    creds_file.write_text('{"type": "service_account"}')
+
+    mock_sheet = MagicMock(spec=Spreadsheet)
+    mock_sheet.id = "my-sheet-123"
+    mock_sheet.find_by.return_value = []
+    mock_sheet.add.side_effect = lambda row: row
+
+    with patch(
+        "gh_migration_inventory_manager.google.Spreadsheet", return_value=mock_sheet
+    ):
+        inventory = Inventory(
+            spreadsheet_id="my-sheet-123",
+            credentials_path=str(creds_file),
+            sheet_name="Inventario",
+        )
+        record = InventoryRecord(name="migrated-app")
+        synced = inventory.sync_records([record])
+
+        assert len(synced) == 1
+        assert synced[0].name == "migrated-app"
+        assert inventory.spreadsheet is mock_sheet
+        mock_sheet.validate.assert_called_once()
+        assert inventory.credentials.credentials_path == str(creds_file)
+
+
+def test_given_missing_spreadsheet_id_when_syncing_records_then_raises_value_error() -> (
+    None
+):
+    """Verify sync_records raises ValueError when spreadsheet_id is missing."""
+    inventory = Inventory(credentials_path="/tmp/fake_key.json")
+    with pytest.raises(ValueError, match="Missing Google Spreadsheet ID"):
+        inventory.sync_records([])
+
+
+def test_given_empty_spreadsheet_id_when_syncing_records_then_raises_value_error() -> (
+    None
+):
+    """Verify sync_records raises ValueError when spreadsheet_id is whitespace."""
+    inventory = Inventory(spreadsheet_id="   ", credentials_path="/tmp/fake_key.json")
+    with pytest.raises(ValueError, match="Missing Google Spreadsheet ID"):
+        inventory.sync_records([])
+
+
+def test_given_missing_credentials_path_when_syncing_records_then_raises_value_error() -> (
+    None
+):
+    """Verify sync_records raises ValueError when credentials_path is missing."""
+    inventory = Inventory(spreadsheet_id="sheet-123")
+    with pytest.raises(ValueError, match="Missing Google credentials path"):
+        inventory.sync_records([])
+
+
+def test_given_empty_credentials_path_when_syncing_records_then_raises_value_error() -> (
+    None
+):
+    """Verify sync_records raises ValueError when credentials_path is whitespace."""
+    inventory = Inventory(spreadsheet_id="sheet-123", credentials_path="   ")
+    with pytest.raises(ValueError, match="Missing Google credentials path"):
+        inventory.sync_records([])
+
+
+def test_given_nonexistent_credentials_path_when_syncing_records_then_raises_file_not_found_error() -> (
+    None
+):
+    """Verify sync_records raises FileNotFoundError when credentials file does not exist."""
+    inventory = Inventory(
+        spreadsheet_id="sheet-123",
+        credentials_path="/non/existent/path/service_key.json",
+    )
+    with pytest.raises(FileNotFoundError, match="Google credentials file not found"):
+        inventory.sync_records([])
+
+
+def test_given_inconsistent_spreadsheet_id_and_instance_when_syncing_records_then_raises_value_error() -> (
+    None
+):
+    """Verify sync_records raises ValueError when spreadsheet.id does not match spreadsheet_id."""
+    mock_sheet = MagicMock(spec=Spreadsheet)
+    mock_sheet.id = "sheet-A"
+
+    inventory = Inventory(spreadsheet=mock_sheet, spreadsheet_id="sheet-B")
+    with pytest.raises(ValueError, match="Inconsistent spreadsheet configuration"):
+        inventory.sync_records([])
+
+
+def test_given_inconsistent_credentials_path_and_instance_when_syncing_records_then_raises_value_error() -> (
+    None
+):
+    """Verify sync_records raises ValueError when credentials_path does not match Credentials object."""
+    creds = Credentials(credentials_path="/path/A.json")
+    inventory = Inventory(
+        spreadsheet_id="sheet-123",
+        credentials=creds,
+        credentials_path="/path/B.json",
+    )
+    with pytest.raises(ValueError, match="Inconsistent credentials configuration"):
+        inventory.sync_records([])
+
+
+def test_given_spreadsheet_not_found_when_syncing_records_then_raises_spreadsheet_not_found_error() -> (
+    None
+):
+    """Verify sync_records propagates SpreadsheetNotFoundError from spreadsheet validation."""
+    mock_sheet = MagicMock(spec=Spreadsheet)
+    mock_sheet.validate.side_effect = SpreadsheetNotFoundError("Sheet not found")
+
+    inventory = Inventory(spreadsheet=mock_sheet)
+    with pytest.raises(SpreadsheetNotFoundError, match="Sheet not found"):
+        inventory.sync_records([])
+
+
+def test_given_spreadsheet_access_denied_when_syncing_records_then_raises_spreadsheet_access_error() -> (
+    None
+):
+    """Verify sync_records propagates SpreadsheetAccessError from spreadsheet validation."""
+    mock_sheet = MagicMock(spec=Spreadsheet)
+    mock_sheet.validate.side_effect = SpreadsheetAccessError("Access denied")
+
+    inventory = Inventory(spreadsheet=mock_sheet)
+    with pytest.raises(SpreadsheetAccessError, match="Access denied"):
+        inventory.sync_records([])
+
+
+def test_given_spreadsheet_api_error_when_syncing_records_then_raises_spreadsheet_error() -> (
+    None
+):
+    """Verify sync_records propagates general SpreadsheetError from spreadsheet validation."""
+    mock_sheet = MagicMock(spec=Spreadsheet)
+    mock_sheet.validate.side_effect = SpreadsheetError("Backend service unavailable")
+
+    inventory = Inventory(spreadsheet=mock_sheet)
+    with pytest.raises(SpreadsheetError, match="Backend service unavailable"):
+        inventory.sync_records([])

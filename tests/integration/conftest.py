@@ -251,3 +251,38 @@ def svn_server() -> Generator[dict[str, Any], None, None]:
 def svn_auth(svn_server: dict[str, Any]) -> BasicAuthenticator:
     """Fixture providing BasicAuthenticator configured for test SVN server."""
     return BasicAuthenticator(svn_server["username"], svn_server["password"])
+
+
+_DEFAULT_SPREADSHEET_ID = "1Z0PAjv8KK6WBrS2356gtR3VE0ulD1-8LM4DPQiG-Nkk"
+
+
+@pytest.fixture(scope="module")
+def gcp_credentials_path() -> str:
+    """Fixture providing path to valid GCP credentials JSON file or skipping."""
+    import os
+
+    for candidate in (
+        "gcp-key.json",
+        os.environ.get("GCP_KEY_PATH"),
+        os.environ.get("GOOGLE_APPLICATION_CREDENTIALS"),
+        "gcp-api-keys.json",
+    ):
+        if candidate and os.path.exists(candidate):
+            return candidate
+    pytest.skip(
+        "GCP credentials file (gcp-key.json) not found; skipping live Google Sheets integration tests."
+    )
+
+
+@pytest.fixture(scope="module")
+def live_spreadsheet(gcp_credentials_path: str) -> Any:
+    """Fixture providing a connected Spreadsheet client for live integration tests."""
+    from gh_migration_inventory_manager.google import Credentials, Spreadsheet
+
+    creds = Credentials(credentials_path=gcp_credentials_path)
+    sheet = Spreadsheet(
+        id=_DEFAULT_SPREADSHEET_ID,
+        credentials=creds,
+        sheet_name="Inventario",
+    )
+    return sheet

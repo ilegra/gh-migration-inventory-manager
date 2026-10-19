@@ -1,15 +1,17 @@
-"""Unit tests for Google Sheets integration module."""
-
 from datetime import datetime, timezone
 from unittest.mock import MagicMock
 
 import pytest
+from googleapiclient.errors import HttpError
 
 from gh_migration_inventory_manager.google import (
     Credentials,
     Row,
     RowConverter,
     Spreadsheet,
+    SpreadsheetAccessError,
+    SpreadsheetError,
+    SpreadsheetNotFoundError,
     Spreadshseet,
 )
 from gh_migration_inventory_manager.inventory import (
@@ -556,3 +558,98 @@ def test_given_valid_credentials_path_when_connecting_spreadsheet_then_loads_ser
         "sheets", "v4", credentials=mock_from_file.return_value, cache_discovery=False
     )
     assert sheet.id == "my-sheet-id"
+
+
+def test_given_valid_spreadsheet_id_when_validating_then_succeeds(
+    mock_spreadsheet: Spreadsheet, mock_sheets_service: MagicMock
+) -> None:
+    """Verify validate succeeds when the spreadsheet exists and is accessible."""
+    mock_get = mock_sheets_service.spreadsheets.return_value.get
+    mock_get.return_value.execute.return_value = {
+        "spreadsheetId": mock_spreadsheet.id,
+        "properties": {"title": "Inventario Repos"},
+    }
+
+    mock_spreadsheet.validate()
+    mock_get.assert_called_once_with(
+        spreadsheetId=mock_spreadsheet.id, fields="spreadsheetId,properties.title"
+    )
+
+
+def test_given_empty_spreadsheet_id_when_validating_then_raises_value_error(
+    mock_sheets_service: MagicMock,
+) -> None:
+    """Verify validate raises ValueError when spreadsheet ID is empty."""
+    sheet = Spreadsheet(id="   ", service=mock_sheets_service)
+    with pytest.raises(ValueError, match="Spreadsheet ID cannot be empty"):
+        sheet.validate()
+
+
+def test_given_http_404_when_validating_then_raises_spreadsheet_not_found_error(
+    mock_spreadsheet: Spreadsheet, mock_sheets_service: MagicMock
+) -> None:
+    """Verify validate translates HTTP 404 to SpreadsheetNotFoundError."""
+    resp = MagicMock()
+    resp.status = 404
+    error = HttpError(resp, b"Not Found")
+    mock_sheets_service.spreadsheets.return_value.get.return_value.execute.side_effect = error
+
+    with pytest.raises(SpreadsheetNotFoundError, match="Spreadsheet not found"):
+        mock_spreadsheet.validate()
+
+
+def test_given_http_403_when_validating_then_raises_spreadsheet_access_error(
+    mock_spreadsheet: Spreadsheet, mock_sheets_service: MagicMock
+) -> None:
+    """Verify validate translates HTTP 403 to SpreadsheetAccessError."""
+    resp = MagicMock()
+    resp.status = 403
+    error = HttpError(resp, b"Access Denied")
+    mock_sheets_service.spreadsheets.return_value.get.return_value.execute.side_effect = error
+
+    with pytest.raises(SpreadsheetAccessError, match="Access denied to spreadsheet"):
+        mock_spreadsheet.validate()
+
+
+def test_given_generic_http_error_when_validating_then_raises_spreadsheet_error(
+    mock_spreadsheet: Spreadsheet, mock_sheets_service: MagicMock
+) -> None:
+    """Verify validate translates other HTTP errors to SpreadsheetError."""
+    resp = MagicMock()
+    resp.status = 500
+    error = HttpError(resp, b"Internal Server Error")
+    mock_sheets_service.spreadsheets.return_value.get.return_value.execute.side_effect = error
+
+    with pytest.raises(SpreadsheetError, match="Error accessing spreadsheet"):
+        mock_spreadsheet.validate()
+
+
+def test_given_none_spreadsheet_id_when_validating_then_raises_value_error(
+    mock_sheets_service: MagicMock,
+) -> None:
+    """Verify validate raises ValueError when spreadsheet ID is None."""
+    sheet = Spreadsheet(id=None, service=mock_sheets_service)  # type: ignore[arg-type]
+    with pytest.raises(ValueError, match="Spreadsheet ID cannot be empty"):
+        sheet.validate()
+
+
+def test_given_empty_string_spreadsheet_id_when_validating_then_raises_value_error(
+    mock_sheets_service: MagicMock,
+) -> None:
+    """Verify validate raises ValueError when spreadsheet ID is an empty string."""
+    sheet = Spreadsheet(id="", service=mock_sheets_service)
+    with pytest.raises(ValueError, match="Spreadsheet ID cannot be empty"):
+        sheet.validate()
+
+
+def test_given_http_401_unauthorized_when_validating_then_raises_spreadsheet_access_error(
+    mock_spreadsheet: Spreadsheet, mock_sheets_service: MagicMock
+) -> None:
+    """Verify validate translates HTTP 401 to SpreadsheetAccessError."""
+    resp = MagicMock()
+    resp.status = 401
+    error = HttpError(resp, b"Unauthorized")
+    mock_sheets_service.spreadsheets.return_value.get.return_value.execute.side_effect = error
+
+    with pytest.raises(SpreadsheetAccessError, match="Access denied to spreadsheet"):
+        mock_spreadsheet.validate()

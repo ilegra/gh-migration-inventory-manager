@@ -5,7 +5,6 @@ from __future__ import annotations
 import base64
 import email.utils
 import html.parser
-import os
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -575,18 +574,18 @@ class SvnScraperProvider(ScraperProvider):
         )
         parser.add_argument(
             "--username",
-            default=os.environ.get("SVN_USERNAME"),
-            help="SVN authentication username (or SVN_USERNAME env var)",
+            default=None,
+            help="SVN authentication username",
         )
         parser.add_argument(
             "--password",
-            default=os.environ.get("SVN_PASSWORD"),
-            help="SVN authentication password (or SVN_PASSWORD env var)",
+            default=None,
+            help="SVN authentication password",
         )
         parser.add_argument(
             "--token",
-            default=os.environ.get("SVN_TOKEN"),
-            help="SVN bearer/PAT token (or SVN_TOKEN env var)",
+            default=None,
+            help="SVN bearer/PAT token",
         )
         parser.add_argument(
             "--layout",
