@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import argparse
-import os
 import sys
 from typing import Any
 
@@ -63,19 +62,17 @@ def build_parser(
     persistence_parent = argparse.ArgumentParser(add_help=False)
     persistence_parent.add_argument(
         "--spreadsheet-id",
-        default=os.environ.get("SPREADSHEET_ID")
-        or os.environ.get("GOOGLE_SPREADSHEET_ID"),
-        help="Google Spreadsheet ID (or SPREADSHEET_ID env var)",
+        default=None,
+        help="Google Spreadsheet ID",
     )
     persistence_parent.add_argument(
         "--credentials-path",
-        default=os.environ.get("GCP_KEY_PATH")
-        or os.environ.get("GOOGLE_APPLICATION_CREDENTIALS"),
-        help="Path to GCP service account JSON key (or GCP_KEY_PATH env var)",
+        default=None,
+        help="Path to GCP service account JSON key",
     )
     persistence_parent.add_argument(
         "--sheet-name",
-        default=os.environ.get("INVENTORY_SHEET_NAME", "Inventario"),
+        default="Inventario",
         help="Google Sheets tab name (default: Inventario)",
     )
     persistence_parent.add_argument(
@@ -132,8 +129,7 @@ def run_cli(
         spreadsheet_id = getattr(args, "spreadsheet_id", None)
         if not spreadsheet_id or not str(spreadsheet_id).strip():
             print(
-                "Error: Missing Google Spreadsheet ID. Pass --spreadsheet-id or set "
-                "the SPREADSHEET_ID environment variable.",
+                "Error: Missing Google Spreadsheet ID. Pass --spreadsheet-id.",
                 file=err,
             )
             return None
@@ -141,8 +137,7 @@ def run_cli(
         credentials_path = getattr(args, "credentials_path", None)
         if not credentials_path or not str(credentials_path).strip():
             print(
-                "Error: Missing Google credentials path. Pass "
-                "--credentials-path or set the GCP_KEY_PATH environment variable.",
+                "Error: Missing Google credentials path. Pass --credentials-path.",
                 file=err,
             )
             return None

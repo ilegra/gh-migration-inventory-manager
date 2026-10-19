@@ -116,24 +116,24 @@ gh-migration-inventory scrape svn --url <SVN_URL> [OPTIONS]
 
 #### SVN Scraper Options
 
-| Option | Environment Variable | Default | Description |
-| :--- | :--- | :--- | :--- |
-| `--url <URL>` | — | *(Required)* | SVN repository or server URL (`http://` or `https://`) |
-| `--layout <TYPE>` | — | `auto` | SVN repository layout (`auto`, `standard`, `multi_project`, `flat`, `collection`) |
-| `--username <USER>` | `SVN_USERNAME` | — | HTTP Basic authentication username |
-| `--password <PASS>` | `SVN_PASSWORD` | — | HTTP Basic authentication password |
-| `--token <TOKEN>` | `SVN_TOKEN` | — | HTTP Bearer/PAT token |
-| `--organization <ORG>` | — | — | Organization name tag for discovered repositories |
-| `--project <PROJECT>` | — | — | Project name override for discovered repositories |
+| Option | Default | Description |
+| :--- | :--- | :--- |
+| `--url <URL>` | *(Required)* | SVN repository or server URL (`http://` or `https://`) |
+| `--layout <TYPE>` | `auto` | SVN repository layout (`auto`, `standard`, `multi_project`, `flat`, `collection`) |
+| `--username <USER>` | — | HTTP Basic authentication username |
+| `--password <PASS>` | — | HTTP Basic authentication password |
+| `--token <TOKEN>` | — | HTTP Bearer/PAT token |
+| `--organization <ORG>` | — | Organization name tag for discovered repositories |
+| `--project <PROJECT>` | — | Project name override for discovered repositories |
 
 #### Google Sheets Synchronization Options
 
-| Option | Environment Variable | Default | Description |
-| :--- | :--- | :--- | :--- |
-| `--spreadsheet-id <ID>` | `SPREADSHEET_ID`, `GOOGLE_SPREADSHEET_ID` | — | Target Google Spreadsheet ID (mandatory for sync) |
-| `--credentials-path <PATH>` | `GCP_KEY_PATH`, `GOOGLE_APPLICATION_CREDENTIALS` | — | Path to GCP Service Account JSON key |
-| `--sheet-name <NAME>` | `INVENTORY_SHEET_NAME` | `Inventario` | Google Sheets worksheet/tab name |
-| `--initial-status <STATUS>` | — | `waitting` | Initial status for newly discovered repositories (`waitting`, `waiting`, `active_in_both`, `migrated`, `skipped`) |
+| Option | Default | Description |
+| :--- | :--- | :--- |
+| `--spreadsheet-id <ID>` | *(Required for sync)* | Target Google Spreadsheet ID |
+| `--credentials-path <PATH>` | *(Required for sync)* | Path to GCP Service Account JSON key |
+| `--sheet-name <NAME>` | `Inventario` | Google Sheets worksheet/tab name |
+| `--initial-status <STATUS>` | `waitting` | Initial status for newly discovered repositories (`waitting`, `waiting`, `active_in_both`, `migrated`, `skipped`) |
 
 #### SVN Repository Layouts
 
@@ -150,8 +150,8 @@ gh-migration-inventory scrape svn --url <SVN_URL> [OPTIONS]
 ```bash
 poetry run gh-migration-inventory scrape svn \
   --url https://svn.internal.company.com/svn/core-apps \
-  --username "$SVN_USERNAME" \
-  --password "$SVN_PASSWORD" \
+  --username "svn-user" \
+  --password "svn-pass" \
   --organization "Engineering" \
   --spreadsheet-id "1Z0PAjv8KK6WBrS2356gtR3VE0ulD1-8LM4DPQiG-Nkk" \
   --credentials-path "./gcp-service-account.json" \
@@ -163,18 +163,17 @@ Output:
 https://docs.google.com/spreadsheets/d/1Z0PAjv8KK6WBrS2356gtR3VE0ulD1-8LM4DPQiG-Nkk
 ```
 
-##### 2. Headless Execution Using Environment Variables
+##### 2. Automation and CI/CD Scripting
 
-You can supply credentials and IDs via environment variables, ideal for CI/CD pipelines and automated cron jobs:
+In automated pipelines or scripts, variables and secrets can be passed directly as CLI arguments:
 
 ```bash
-export SVN_USERNAME="service-account"
-export SVN_PASSWORD="service-password"
-export SPREADSHEET_ID="1Z0PAjv8KK6WBrS2356gtR3VE0ulD1-8LM4DPQiG-Nkk"
-export GCP_KEY_PATH="/secrets/gcp-sa.json"
-
 poetry run gh-migration-inventory scrape svn \
   --url https://svn.internal.company.com/svn/core-apps \
+  --username "$SVN_USERNAME" \
+  --password "$SVN_PASSWORD" \
+  --spreadsheet-id "$SPREADSHEET_ID" \
+  --credentials-path "$GCP_KEY_PATH" \
   --organization "Engineering"
 ```
 
