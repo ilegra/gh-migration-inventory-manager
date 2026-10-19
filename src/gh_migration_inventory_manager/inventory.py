@@ -109,12 +109,17 @@ class Inventory:
         self,
         spreadsheet: SpreadsheetClient | Any = None,
         spredsheet: SpreadsheetClient | Any = None,
+        spreadsheet_id: str | None = None,
+        credentials_path: str | None = None,
+        sheet_name: str = "Inventario",
+        credentials: Any = None,
         converter: Any = None,
     ) -> None:
-        target = spreadsheet if spreadsheet is not None else spredsheet
-        if target is None:
-            raise ValueError("A Spreadsheet instance must be provided.")
-        self.spreadsheet = target
+        self.spreadsheet = spreadsheet if spreadsheet is not None else spredsheet
+        self.spreadsheet_id = spreadsheet_id
+        self.credentials_path = credentials_path
+        self.sheet_name = sheet_name
+        self.credentials = credentials
         if converter is not None:
             self.converter = converter
         else:
@@ -123,6 +128,91 @@ class Inventory:
             )
 
             self.converter = _RepoConverter()
+
+    def _validate_and_build_credentials(self) -> Any:
+        """Validate credentials configuration and build Credentials instance.
+
+        Raises:
+            ValueError: If credentials configuration is inconsistent, missing, or empty.
+            FileNotFoundError: If the specified credentials path does not exist.
+        """
+        if self.credentials is not None:
+            if self.credentials_path is not None:
+                configured_path = getattr(self.credentials, "credentials_path", None)
+                if (
+                    configured_path
+                    and configured_path != str(self.credentials_path).strip()
+                ):
+                    raise ValueError(
+                        "Inconsistent credentials configuration: "
+                        f"credentials.credentials_path '{configured_path}' "
+                        f"does not match credentials_path '{self.credentials_path}'."
+                    )
+            return self.credentials
+
+        if not self.credentials_path or not str(self.credentials_path).strip():
+            raise ValueError(
+                "Missing Google credentials path. Pass --credentials-path."
+            )
+
+        clean_path = str(self.credentials_path).strip()
+        from pathlib import Path
+
+        if not Path(clean_path).exists():
+            raise FileNotFoundError(
+                f"Google credentials file not found: '{clean_path}'."
+            )
+
+        from gh_migration_inventory_manager.google import Credentials
+
+        self.credentials = Credentials(credentials_path=clean_path)
+        return self.credentials
+
+    _build_credentials = _validate_and_build_credentials
+
+    def _validate_and_build_spreadsheet(self) -> SpreadsheetClient:
+        """Validate spreadsheet configuration and build Spreadsheet instance.
+
+        Raises:
+            ValueError: If spreadsheet configuration is inconsistent, missing, or empty.
+            SpreadsheetNotFoundError: If spreadsheet does not exist (HTTP 404).
+            SpreadsheetAccessError: If access is denied (HTTP 403) or
+                unauthorized (HTTP 401).
+            SpreadsheetError: For general spreadsheet errors.
+        """
+        if self.spreadsheet is not None:
+            if self.spreadsheet_id is not None:
+                configured_id = getattr(self.spreadsheet, "id", None)
+                if configured_id and configured_id != str(self.spreadsheet_id).strip():
+                    raise ValueError(
+                        "Inconsistent spreadsheet configuration: "
+                        f"spreadsheet.id '{configured_id}' "
+                        f"does not match spreadsheet_id '{self.spreadsheet_id}'."
+                    )
+            if hasattr(self.spreadsheet, "validate") and callable(
+                self.spreadsheet.validate
+            ):
+                self.spreadsheet.validate()
+            return self.spreadsheet
+
+        if not self.spreadsheet_id or not str(self.spreadsheet_id).strip():
+            raise ValueError("Missing Google Spreadsheet ID. Pass --spreadsheet-id.")
+
+        clean_id = str(self.spreadsheet_id).strip()
+        creds = self._validate_and_build_credentials()
+
+        from gh_migration_inventory_manager.google import Spreadsheet
+
+        sheet = Spreadsheet(
+            id=clean_id,
+            credentials=creds,
+            sheet_name=self.sheet_name,
+        )
+        sheet.validate()
+        self.spreadsheet = sheet
+        return self.spreadsheet
+
+    _build_spreadsheet = _validate_and_build_spreadsheet
 
     @staticmethod
     def _from_sheet_label(label: str) -> MigrationStatus:
@@ -196,11 +286,14 @@ class Inventory:
 
     def _find_row(self, name: str, project: str | None = None) -> Any | None:
         """Find a row matching repository name and optional project."""
+        sheet = self.spreadsheet
+        if sheet is None:
+            sheet = self._validate_and_build_spreadsheet()
         clean_name = name.strip() if isinstance(name, str) else ""
         if not clean_name:
             raise ValueError("Repository name cannot be empty.")
 
-        matching_rows = self.spreadsheet.find_by("name", clean_name)
+        matching_rows = sheet.find_by("name", clean_name)
         if not matching_rows:
             return None
 
@@ -338,6 +431,7 @@ class Inventory:
 
     def sync_records(self, records: Any) -> list[InventoryRecord]:
         """Synchronize an iterable of InventoryRecord instances into the inventory."""
+        self._validate_and_build_spreadsheet()
         return [self.register_record(rec) for rec in records]
 
     def register_repository(

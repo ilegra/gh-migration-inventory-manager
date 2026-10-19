@@ -4,11 +4,10 @@ from __future__ import annotations
 
 import argparse
 import sys
-from typing import Any
+from typing import Any, cast
 
 from gh_migration_inventory_manager.converter import RepositoryConverter
 from gh_migration_inventory_manager.google import (
-    Credentials,
     Spreadsheet,
     SpreadsheetAccessError,
     SpreadsheetError,
@@ -124,66 +123,65 @@ def run_cli(
     initial_status = getattr(args, "initial_status", MigrationStatus.WAITTING)
     records = conv.to_inventory_records(repos, initial_status=initial_status)
 
-    target_spreadsheet = spreadsheet
-    if target_spreadsheet is None:
-        spreadsheet_id = getattr(args, "spreadsheet_id", None)
-        if not spreadsheet_id or not str(spreadsheet_id).strip():
-            print(
-                "Error: Missing Google Spreadsheet ID. Pass --spreadsheet-id.",
-                file=err,
-            )
-            return None
+    inventory = Inventory(
+        spreadsheet=spreadsheet,
+        spreadsheet_id=getattr(args, "spreadsheet_id", None),
+        credentials_path=getattr(args, "credentials_path", None),
+        sheet_name=getattr(args, "sheet_name", "Inventario"),
+        converter=conv,
+    )
 
-        credentials_path = getattr(args, "credentials_path", None)
-        if not credentials_path or not str(credentials_path).strip():
-            print(
-                "Error: Missing Google credentials path. Pass --credentials-path.",
-                file=err,
-            )
-            return None
-
-        try:
-            credentials = Credentials(credentials_path=credentials_path)
-            target_spreadsheet = Spreadsheet(
-                id=spreadsheet_id.strip(),
-                credentials=credentials,
-                sheet_name=getattr(args, "sheet_name", "Inventario"),
-            )
-        except (FileNotFoundError, OSError):
-            print(
-                f"Error: Google credentials file not found: '{credentials_path}'.",
-                file=err,
-            )
-            return None
-
-    # Validate mandatory spreadsheet reference
     try:
-        target_spreadsheet.validate()
+        inventory.sync_records(records)
     except SpreadsheetNotFoundError:
+        sheet_id = inventory.spreadsheet_id or getattr(
+            getattr(inventory, "spreadsheet", None), "id", ""
+        )
         print(
-            f"Error: Google Spreadsheet not found: '{target_spreadsheet.id}'.",
+            f"Error: Google Spreadsheet not found: '{sheet_id}'.",
             file=err,
         )
         return None
     except SpreadsheetAccessError:
+        sheet_id = inventory.spreadsheet_id or getattr(
+            getattr(inventory, "spreadsheet", None), "id", ""
+        )
         print(
-            f"Error: Access denied to Google Spreadsheet: '{target_spreadsheet.id}'.",
+            f"Error: Access denied to Google Spreadsheet: '{sheet_id}'.",
+            file=err,
+        )
+        return None
+    except FileNotFoundError:
+        creds_path = getattr(args, "credentials_path", None)
+        print(
+            f"Error: Google credentials file not found: '{creds_path}'.",
             file=err,
         )
         return None
     except ValueError as exc:
-        print(f"Configuration Error: {exc}", file=err)
+        msg = str(exc)
+        if "Missing Google Spreadsheet ID" in msg:
+            print(
+                "Error: Missing Google Spreadsheet ID. Pass --spreadsheet-id.",
+                file=err,
+            )
+        elif "Missing Google credentials path" in msg:
+            print(
+                "Error: Missing Google credentials path. Pass --credentials-path.",
+                file=err,
+            )
+        else:
+            print(f"Configuration Error: {exc}", file=err)
         return None
     except SpreadsheetError as exc:
         print(f"Spreadsheet Error: {exc}", file=err)
         return None
 
-    inventory = Inventory(spreadsheet=target_spreadsheet, converter=conv)
-    inventory.sync_records(records)
-
-    sheet_ref = f"https://docs.google.com/spreadsheets/d/{target_spreadsheet.id}"
+    target_spreadsheet = inventory.spreadsheet
+    sheet_id = getattr(target_spreadsheet, "id", "")
+    sheet_ref = f"https://docs.google.com/spreadsheets/d/{sheet_id}"
     print(sheet_ref, file=out)
-    return target_spreadsheet
+    return cast(Spreadsheet | None, target_spreadsheet)
 
 
 def main(argv: list[str] | None = None) -> int:

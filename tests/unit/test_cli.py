@@ -180,13 +180,11 @@ def test_given_valid_args_and_credentials_when_running_cli_then_synchronizes_rep
     )
 
     out_stream = io.StringIO()
-    with (
-        patch("gh_migration_inventory_manager.cli.Spreadsheet") as mock_sheet_cls,
-        patch("gh_migration_inventory_manager.cli.Inventory") as mock_inv_cls,
-    ):
-        mock_sheet: MagicMock = mock_sheet_cls.return_value
+    with patch("gh_migration_inventory_manager.cli.Inventory") as mock_inv_cls:
+        mock_sheet = MagicMock(spec=Spreadsheet)
         mock_sheet.id = "sheet-456"
         mock_inv = mock_inv_cls.return_value
+        mock_inv.spreadsheet = mock_sheet
         mock_inv.sync_records.return_value = [
             InventoryRecord(name="cloud-app", project="infra", stack="Terraform")
         ]
@@ -195,7 +193,13 @@ def test_given_valid_args_and_credentials_when_running_cli_then_synchronizes_rep
 
         assert result is not None
         assert result.id == "sheet-456"
-        mock_sheet.validate.assert_called_once()
+        mock_inv_cls.assert_called_once_with(
+            spreadsheet=None,
+            spreadsheet_id="sheet-456",
+            credentials_path=str(creds_file),
+            sheet_name="Inventario",
+            converter=mock_inv_cls.call_args[1]["converter"],
+        )
         mock_inv.sync_records.assert_called_once()
         synced_records = mock_inv.sync_records.call_args[0][0]
         assert len(synced_records) == 1
@@ -225,6 +229,7 @@ def test_given_spreadsheet_parameter_when_running_cli_then_uses_and_returns_prov
     out_stream = io.StringIO()
     with patch("gh_migration_inventory_manager.cli.Inventory") as mock_inv_cls:
         mock_inv = mock_inv_cls.return_value
+        mock_inv.spreadsheet = mock_sheet
         result = run_cli(
             args,
             registry=test_registry,
@@ -233,7 +238,13 @@ def test_given_spreadsheet_parameter_when_running_cli_then_uses_and_returns_prov
         )
 
         assert result is mock_sheet
-        mock_sheet.validate.assert_called_once()
+        mock_inv_cls.assert_called_once_with(
+            spreadsheet=mock_sheet,
+            spreadsheet_id=None,
+            credentials_path=None,
+            sheet_name="Inventario",
+            converter=mock_inv_cls.call_args[1]["converter"],
+        )
         mock_inv.sync_records.assert_called_once()
         assert (
             "https://docs.google.com/spreadsheets/d/passed-sheet-id"

@@ -622,3 +622,34 @@ def test_given_generic_http_error_when_validating_then_raises_spreadsheet_error(
 
     with pytest.raises(SpreadsheetError, match="Error accessing spreadsheet"):
         mock_spreadsheet.validate()
+
+
+def test_given_none_spreadsheet_id_when_validating_then_raises_value_error(
+    mock_sheets_service: MagicMock,
+) -> None:
+    """Verify validate raises ValueError when spreadsheet ID is None."""
+    sheet = Spreadsheet(id=None, service=mock_sheets_service)  # type: ignore[arg-type]
+    with pytest.raises(ValueError, match="Spreadsheet ID cannot be empty"):
+        sheet.validate()
+
+
+def test_given_empty_string_spreadsheet_id_when_validating_then_raises_value_error(
+    mock_sheets_service: MagicMock,
+) -> None:
+    """Verify validate raises ValueError when spreadsheet ID is an empty string."""
+    sheet = Spreadsheet(id="", service=mock_sheets_service)
+    with pytest.raises(ValueError, match="Spreadsheet ID cannot be empty"):
+        sheet.validate()
+
+
+def test_given_http_401_unauthorized_when_validating_then_raises_spreadsheet_access_error(
+    mock_spreadsheet: Spreadsheet, mock_sheets_service: MagicMock
+) -> None:
+    """Verify validate translates HTTP 401 to SpreadsheetAccessError."""
+    resp = MagicMock()
+    resp.status = 401
+    error = HttpError(resp, b"Unauthorized")
+    mock_sheets_service.spreadsheets.return_value.get.return_value.execute.side_effect = error
+
+    with pytest.raises(SpreadsheetAccessError, match="Access denied to spreadsheet"):
+        mock_spreadsheet.validate()
