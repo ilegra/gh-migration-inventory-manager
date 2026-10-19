@@ -14,6 +14,7 @@ from gh_migration_inventory_manager.cli import (
     main,
     run_cli,
 )
+from gh_migration_inventory_manager.converter import RepositoryConverter
 from gh_migration_inventory_manager.google import (
     Spreadsheet,
     SpreadsheetAccessError,
@@ -468,3 +469,28 @@ def test_given_keyboard_interrupt_when_invoking_main_then_returns_exit_code_130(
             ["scrape", "svn", "--url", "http://svn.example.com", "--dry-run"]
         )
         assert exit_code == 130
+
+
+def test_given_custom_converter_when_running_cli_then_uses_injected_converter(
+    test_registry: ScraperRegistry, mock_provider: MagicMock
+) -> None:
+    """Test run_cli uses the injected RepositoryConverter instance."""
+    mock_scraper = MagicMock(spec=RepositoryScraper)
+    mock_scraper.scrape.return_value = [Repository(name="injected-repo")]
+    mock_provider.create_scraper.return_value = mock_scraper
+
+    mock_converter = MagicMock(spec=RepositoryConverter)
+    mock_converter.to_inventory_records.return_value = [
+        InventoryRecord(name="injected-repo")
+    ]
+
+    parser = build_parser(test_registry)
+    args = parser.parse_args(
+        ["scrape", "mock-plat", "--repo-url", "http://x", "--dry-run"]
+    )
+
+    out = io.StringIO()
+    run_cli(args, registry=test_registry, converter=mock_converter, out_stream=out)
+
+    mock_converter.to_inventory_records.assert_called_once()
+    assert "[DRY RUN] Discovered 1 repositories." in out.getvalue()

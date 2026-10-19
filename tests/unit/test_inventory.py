@@ -5,6 +5,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
+from gh_migration_inventory_manager.converter import RepositoryConverter
 from gh_migration_inventory_manager.google import Row, RowConverter, Spreadsheet
 from gh_migration_inventory_manager.inventory import (
     Inventory,
@@ -644,3 +645,33 @@ def test_given_batch_of_repositories_when_syncing_then_registers_all_in_inventor
     assert records[0].name == "batch-1"
     assert records[1].name == "batch-2"
     assert mock_spreadsheet.add.call_count == 2
+
+
+def test_given_custom_converter_when_initializing_inventory_then_uses_injected_instance() -> (
+    None
+):
+    """Test Inventory uses an injected RepositoryConverter instance for domain conversions."""
+    mock_spreadsheet = MagicMock(spec=Spreadsheet)
+    mock_spreadsheet.find_by.return_value = []
+    mock_spreadsheet.add.side_effect = lambda row: row
+
+    mock_converter = MagicMock(spec=RepositoryConverter)
+    custom_record = InventoryRecord(
+        name="custom-converted-repo",
+        project="custom-team",
+        stack="Rust",
+        migration_status=MigrationStatus.WAITTING,
+    )
+    mock_converter.to_inventory_record.return_value = custom_record
+
+    inventory = Inventory(spreadsheet=mock_spreadsheet, converter=mock_converter)
+    repo = Repository(name="custom-converted-repo")
+
+    record = inventory.register_repository(repo)
+
+    mock_converter.to_inventory_record.assert_called_once_with(
+        repo, initial_status=MigrationStatus.WAITTING
+    )
+    assert record.name == "custom-converted-repo"
+    assert record.project == "custom-team"
+    assert record.stack == "Rust"

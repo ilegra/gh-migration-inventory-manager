@@ -109,11 +109,20 @@ class Inventory:
         self,
         spreadsheet: SpreadsheetClient | Any = None,
         spredsheet: SpreadsheetClient | Any = None,
+        converter: Any = None,
     ) -> None:
         target = spreadsheet if spreadsheet is not None else spredsheet
         if target is None:
             raise ValueError("A Spreadsheet instance must be provided.")
         self.spreadsheet = target
+        if converter is not None:
+            self.converter = converter
+        else:
+            from gh_migration_inventory_manager.converter import (
+                RepositoryConverter as _RepoConverter,
+            )
+
+            self.converter = _RepoConverter()
 
     @staticmethod
     def _from_sheet_label(label: str) -> MigrationStatus:
@@ -358,11 +367,7 @@ class Inventory:
             return self.register_record(record)
 
         if not isinstance(name, str) and hasattr(name, "name"):
-            from gh_migration_inventory_manager.converter import (
-                RepositoryConverter,
-            )
-
-            record = RepositoryConverter.to_inventory_record(
+            record = self.converter.to_inventory_record(
                 name, initial_status=initial_status
             )
             if project is not None:
@@ -395,12 +400,8 @@ class Inventory:
             if isinstance(repo, InventoryRecord):
                 records.append(repo)
             elif not isinstance(repo, str) and hasattr(repo, "name"):
-                from gh_migration_inventory_manager.converter import (
-                    RepositoryConverter,
-                )
-
                 records.append(
-                    RepositoryConverter.to_inventory_record(
+                    self.converter.to_inventory_record(
                         repo, initial_status=initial_status
                     )
                 )

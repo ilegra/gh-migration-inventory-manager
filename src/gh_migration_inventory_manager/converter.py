@@ -3,10 +3,10 @@
 from __future__ import annotations
 
 from collections.abc import Iterable
+from datetime import datetime, timezone
 from typing import Any
 
 from gh_migration_inventory_manager.inventory import (
-    Inventory,
     InventoryRecord,
     MigrationStatus,
 )
@@ -14,10 +14,73 @@ from gh_migration_inventory_manager.scrap import Repository, format_stacks
 
 
 class RepositoryConverter:
-    """Conversion utility bridging VCS discovery models and inventory records."""
+    """Conversion adapter bridging VCS discovery models and inventory records."""
 
-    @staticmethod
+    def __init__(self) -> None:
+        """Initialize a new RepositoryConverter instance."""
+
+    def _validate_status(self, status: Any) -> MigrationStatus:
+        """Validate that status is a valid MigrationStatus or valid status string."""
+        if isinstance(status, MigrationStatus):
+            return status
+
+        valid_display = ", ".join(
+            f"'{v}'" for v in sorted({s.value for s in MigrationStatus})
+        )
+
+        if status is None:
+            raise ValueError(
+                "Invalid migration status: None. Status cannot be None. "
+                f"Expected a valid MigrationStatus or one of: {valid_display}."
+            )
+
+        if isinstance(status, str):
+            clean = status.strip()
+            if not clean:
+                raise ValueError(
+                    "Invalid migration status: status cannot be empty. "
+                    f"Expected a valid MigrationStatus or one of: {valid_display}."
+                )
+
+            try:
+                return MigrationStatus(clean.lower())
+            except ValueError:
+                pass
+
+            try:
+                return MigrationStatus[clean.upper()]
+            except KeyError:
+                pass
+
+            raise ValueError(
+                f"Invalid migration status: '{status}'. "
+                f"Expected a valid MigrationStatus or one of: {valid_display}."
+            )
+
+        raise ValueError(
+            f"Invalid migration status type: '{type(status).__name__}'. "
+            f"Expected MigrationStatus or one of: {valid_display}."
+        )
+
+    def _apply_status_timestamps(
+        self, record: InventoryRecord, status: MigrationStatus
+    ) -> None:
+        """Update migration timestamps based on transition status."""
+        if status in (MigrationStatus.ACTIVE_IN_BOTH, MigrationStatus.MIGRATED):
+            now = datetime.now(timezone.utc)
+            if record.gh_migratation is None:
+                record.gh_migratation = now
+            if (
+                status == MigrationStatus.MIGRATED
+                and record.origin_deactivation is None
+            ):
+                record.origin_deactivation = now
+        elif status in (MigrationStatus.WAITTING, MigrationStatus.SKIPPED):
+            record.gh_migratation = None
+            record.origin_deactivation = None
+
     def to_inventory_record(
+        self,
         repository: Repository | Any,
         initial_status: MigrationStatus | str = MigrationStatus.WAITTING,
     ) -> InventoryRecord:
@@ -52,7 +115,7 @@ class RepositoryConverter:
             stack = ""
 
         last_commit = getattr(repository, "last_commit", None)
-        valid_status = Inventory._validate_status(initial_status)
+        valid_status = self._validate_status(initial_status)
 
         record = InventoryRecord(
             name=clean_name,
@@ -61,12 +124,11 @@ class RepositoryConverter:
             last_commit=last_commit,
             migration_status=valid_status,
         )
-        Inventory._apply_status_timestamps(record, valid_status)
+        self._apply_status_timestamps(record, valid_status)
         return record
 
-    @classmethod
     def to_inventory_records(
-        cls,
+        self,
         repositories: Iterable[Repository | Any],
         initial_status: MigrationStatus | str = MigrationStatus.WAITTING,
     ) -> list[InventoryRecord]:
@@ -82,34 +144,9 @@ class RepositoryConverter:
         if repositories is None:
             raise ValueError("Repositories collection cannot be None.")
         return [
-            cls.to_inventory_record(repo, initial_status=initial_status)
+            self.to_inventory_record(repo, initial_status=initial_status)
             for repo in repositories
         ]
-
-    @staticmethod
-    def from_inventory_record(record: InventoryRecord) -> Repository:
-        """Convert an InventoryRecord back into a canonical Repository domain model.
-
-        Args:
-            record: The inventory record to convert.
-
-        Returns:
-            A Repository domain model instance.
-
-        Raises:
-            ValueError: If record is None or record name is empty.
-        """
-        if record is None:
-            raise ValueError("InventoryRecord cannot be None.")
-        clean_name = str(getattr(record, "name", "") or "").strip()
-        if not clean_name:
-            raise ValueError("Record name cannot be empty.")
-
-        return Repository(
-            name=clean_name,
-            project=record.project or None,
-            last_commit=record.last_commit,
-        )
 
 
 __all__ = ["RepositoryConverter"]

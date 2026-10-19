@@ -107,6 +107,7 @@ def run_cli(
     args: argparse.Namespace,
     registry: ScraperRegistry | None = None,
     spreadsheet: Spreadsheet | None = None,
+    converter: RepositoryConverter | None = None,
     out_stream: Any = None,
     err_stream: Any = None,
 ) -> Spreadsheet | None:
@@ -117,6 +118,7 @@ def run_cli(
     out = out_stream if out_stream is not None else sys.stdout
     err = err_stream if err_stream is not None else sys.stderr
     reg = registry if registry is not None else default_scraper_registry
+    conv = converter if converter is not None else RepositoryConverter()
 
     if getattr(args, "command", None) != "scrape" or not getattr(
         args, "platform", None
@@ -128,9 +130,7 @@ def run_cli(
     repos = scraper.scrape()
 
     initial_status = getattr(args, "initial_status", MigrationStatus.WAITTING)
-    records = RepositoryConverter.to_inventory_records(
-        repos, initial_status=initial_status
-    )
+    records = conv.to_inventory_records(repos, initial_status=initial_status)
 
     if getattr(args, "dry_run", False):
         print(
@@ -196,7 +196,7 @@ def run_cli(
         print(f"Spreadsheet Error: {exc}", file=err)
         return None
 
-    inventory = Inventory(spreadsheet=target_spreadsheet)
+    inventory = Inventory(spreadsheet=target_spreadsheet, converter=conv)
     inventory.sync_records(records)
 
     sheet_ref = f"https://docs.google.com/spreadsheets/d/{target_spreadsheet.id}"

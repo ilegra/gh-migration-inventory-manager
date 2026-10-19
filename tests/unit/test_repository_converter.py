@@ -11,9 +11,15 @@ from gh_migration_inventory_manager.inventory import InventoryRecord, MigrationS
 from gh_migration_inventory_manager.scrap import Repository, Stack
 
 
-def test_given_repository_with_stacks_when_converting_then_returns_inventory_record_with_formatted_stack() -> (
-    None
-):
+@pytest.fixture
+def converter() -> RepositoryConverter:
+    """Fixture providing an instance of RepositoryConverter."""
+    return RepositoryConverter()
+
+
+def test_given_repository_with_stacks_when_converting_then_returns_inventory_record_with_formatted_stack(
+    converter: RepositoryConverter,
+) -> None:
     """Verify single repository with stacks converts to InventoryRecord with formatted stacks."""
     repo = Repository(
         name="billing-service",
@@ -22,7 +28,7 @@ def test_given_repository_with_stacks_when_converting_then_returns_inventory_rec
         last_commit=datetime(2026, 10, 15, 12, 0, tzinfo=timezone.utc),
     )
 
-    record = RepositoryConverter.to_inventory_record(repo)
+    record = converter.to_inventory_record(repo)
 
     assert isinstance(record, InventoryRecord)
     assert record.name == "billing-service"
@@ -32,13 +38,13 @@ def test_given_repository_with_stacks_when_converting_then_returns_inventory_rec
     assert record.migration_status == MigrationStatus.WAITTING
 
 
-def test_given_repository_with_custom_initial_status_when_converting_then_sets_status_and_timestamps() -> (
-    None
-):
+def test_given_repository_with_custom_initial_status_when_converting_then_sets_status_and_timestamps(
+    converter: RepositoryConverter,
+) -> None:
     """Verify converting repository with MIGRATED status sets status and migration timestamps."""
     repo = Repository(name="migrated-app", project="core")
 
-    record = RepositoryConverter.to_inventory_record(
+    record = converter.to_inventory_record(
         repo, initial_status=MigrationStatus.MIGRATED
     )
 
@@ -49,13 +55,13 @@ def test_given_repository_with_custom_initial_status_when_converting_then_sets_s
     assert record.origin_deactivation is not None
 
 
-def test_given_repository_with_active_in_both_status_when_converting_then_sets_gh_migration_only() -> (
-    None
-):
+def test_given_repository_with_active_in_both_status_when_converting_then_sets_gh_migration_only(
+    converter: RepositoryConverter,
+) -> None:
     """Verify converting repository with ACTIVE_IN_BOTH sets gh_migratation timestamp only."""
     repo = Repository(name="active-app", project="core")
 
-    record = RepositoryConverter.to_inventory_record(
+    record = converter.to_inventory_record(
         repo, initial_status=MigrationStatus.ACTIVE_IN_BOTH
     )
 
@@ -64,16 +70,16 @@ def test_given_repository_with_active_in_both_status_when_converting_then_sets_g
     assert record.origin_deactivation is None
 
 
-def test_given_repository_collection_when_converting_batch_then_returns_all_inventory_records() -> (
-    None
-):
+def test_given_repository_collection_when_converting_batch_then_returns_all_inventory_records(
+    converter: RepositoryConverter,
+) -> None:
     """Verify batch conversion of Repository models into InventoryRecord list."""
     repos = [
         Repository(name="repo-1", project="p1", stacks=[Stack.JAVA]),
         Repository(name="repo-2", project="p2", stacks=[Stack.BASH]),
     ]
 
-    records = RepositoryConverter.to_inventory_records(repos)
+    records = converter.to_inventory_records(repos)
 
     assert len(records) == 2
     assert records[0].name == "repo-1"
@@ -82,7 +88,9 @@ def test_given_repository_collection_when_converting_batch_then_returns_all_inve
     assert records[1].stack == "Bash"
 
 
-def test_given_duck_typed_repository_when_converting_then_extracts_attributes() -> None:
+def test_given_duck_typed_repository_when_converting_then_extracts_attributes(
+    converter: RepositoryConverter,
+) -> None:
     """Verify duck-typed repository objects with string stack or stack objects convert properly."""
 
     class DuckRepo:
@@ -91,7 +99,7 @@ def test_given_duck_typed_repository_when_converting_then_extracts_attributes() 
         stack = "C#"
         last_commit = None
 
-    record = RepositoryConverter.to_inventory_record(DuckRepo())
+    record = converter.to_inventory_record(DuckRepo())
 
     assert record.name == "duck-app"
     assert record.project == "duck-proj"
@@ -99,66 +107,52 @@ def test_given_duck_typed_repository_when_converting_then_extracts_attributes() 
     assert record.last_commit is None
 
 
-def test_given_inventory_record_when_converting_to_repository_then_maps_fields_correctly() -> (
-    None
-):
-    """Verify from_inventory_record reconstructs a Repository domain model."""
-    commit_date = datetime(2026, 9, 1, tzinfo=timezone.utc)
-    record = InventoryRecord(
-        name="auth-service",
-        project="security",
-        stack="Python",
-        last_commit=commit_date,
-    )
-
-    repo = RepositoryConverter.from_inventory_record(record)
-
-    assert isinstance(repo, Repository)
-    assert repo.name == "auth-service"
-    assert repo.project == "security"
-    assert repo.last_commit == commit_date
-
-
-def test_given_none_repository_when_converting_then_raises_value_error() -> None:
+def test_given_none_repository_when_converting_then_raises_value_error(
+    converter: RepositoryConverter,
+) -> None:
     """Verify ValueError is raised when repository is None."""
     with pytest.raises(ValueError, match="Repository cannot be None"):
-        RepositoryConverter.to_inventory_record(None)
+        converter.to_inventory_record(None)
 
 
-def test_given_empty_repository_name_when_converting_then_raises_value_error() -> None:
+def test_given_empty_repository_name_when_converting_then_raises_value_error(
+    converter: RepositoryConverter,
+) -> None:
     """Verify ValueError is raised when repository name is empty or whitespace."""
     repo = Repository(name="   ")
     with pytest.raises(ValueError, match="Repository name cannot be empty"):
-        RepositoryConverter.to_inventory_record(repo)
+        converter.to_inventory_record(repo)
 
 
-def test_given_none_repositories_collection_when_converting_then_raises_value_error() -> (
-    None
-):
+def test_given_none_repositories_collection_when_converting_then_raises_value_error(
+    converter: RepositoryConverter,
+) -> None:
     """Verify ValueError is raised when repositories collection is None."""
     with pytest.raises(ValueError, match="Repositories collection cannot be None"):
-        RepositoryConverter.to_inventory_records(None)  # type: ignore[arg-type]
+        converter.to_inventory_records(None)  # type: ignore[arg-type]
 
 
-def test_given_invalid_status_when_converting_then_raises_value_error() -> None:
+def test_given_invalid_status_when_converting_then_raises_value_error(
+    converter: RepositoryConverter,
+) -> None:
     """Verify ValueError is raised when invalid initial_status is supplied."""
     repo = Repository(name="valid-name")
     with pytest.raises(ValueError, match="Invalid migration status"):
-        RepositoryConverter.to_inventory_record(repo, initial_status="invalid_status")
+        converter.to_inventory_record(repo, initial_status="invalid_status")
 
 
-def test_given_none_inventory_record_when_converting_to_repository_then_raises_value_error() -> (
+def test_given_multiple_converter_instances_when_converting_then_each_instance_works_independently() -> (
     None
 ):
-    """Verify ValueError is raised when record is None in from_inventory_record."""
-    with pytest.raises(ValueError, match="InventoryRecord cannot be None"):
-        RepositoryConverter.from_inventory_record(None)  # type: ignore[arg-type]
+    """Verify multiple RepositoryConverter instances can be instantiated and operate independently."""
+    converter1 = RepositoryConverter()
+    converter2 = RepositoryConverter()
 
+    repo1 = Repository(name="repo-a", project="p-a")
+    repo2 = Repository(name="repo-b", project="p-b")
 
-def test_given_inventory_record_with_empty_name_when_converting_to_repository_then_raises_value_error() -> (
-    None
-):
-    """Verify ValueError is raised when record has empty name in from_inventory_record."""
-    record = InventoryRecord(name="   ")
-    with pytest.raises(ValueError, match="Record name cannot be empty"):
-        RepositoryConverter.from_inventory_record(record)
+    record1 = converter1.to_inventory_record(repo1)
+    record2 = converter2.to_inventory_record(repo2)
+
+    assert record1.name == "repo-a"
+    assert record2.name == "repo-b"
