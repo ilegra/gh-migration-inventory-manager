@@ -4,16 +4,17 @@ from __future__ import annotations
 
 import argparse
 import sys
-from typing import Any, cast
+from typing import Any
 
 from gh_migration_inventory_manager.converter import RepositoryConverter
-from gh_migration_inventory_manager.google import (
-    Spreadsheet,
-    SpreadsheetAccessError,
-    SpreadsheetError,
-    SpreadsheetNotFoundError,
+from gh_migration_inventory_manager.inventory import (
+    Inventory,
+    InventoryAccessError,
+    InventoryError,
+    InventoryNotFoundError,
+    InventoryRecord,
+    MigrationStatus,
 )
-from gh_migration_inventory_manager.inventory import Inventory, MigrationStatus
 from gh_migration_inventory_manager.scrap import (
     ScraperAuthenticationError,
     ScraperConnectionError,
@@ -97,14 +98,16 @@ def build_parser(
 def run_cli(
     args: argparse.Namespace,
     registry: ScraperRegistry | None = None,
-    spreadsheet: Spreadsheet | None = None,
+    inventory: Inventory | None = None,
     converter: RepositoryConverter | None = None,
     out_stream: Any = None,
     err_stream: Any = None,
-) -> Spreadsheet | None:
+    *,
+    spreadsheet: Any = None,
+) -> int | None:
     """Execute the CLI operation based on parsed arguments.
 
-    Returns the updated Spreadsheet reference on success, or None on failure.
+    Returns the number of items inventoried on success, or None on failure.
     """
     out = out_stream if out_stream is not None else sys.stdout
     err = err_stream if err_stream is not None else sys.stderr
@@ -121,33 +124,43 @@ def run_cli(
     repos = scraper.scrape()
 
     initial_status = getattr(args, "initial_status", MigrationStatus.WAITTING)
-    records = conv.to_inventory_records(repos, initial_status=initial_status)
-
-    inventory = Inventory(
-        spreadsheet=spreadsheet,
-        spreadsheet_id=getattr(args, "spreadsheet_id", None),
-        credentials_path=getattr(args, "credentials_path", None),
-        sheet_name=getattr(args, "sheet_name", "Inventario"),
-        converter=conv,
+    records: list[InventoryRecord] = conv.to_inventory_records(
+        repos, initial_status=initial_status
     )
 
+    inv = inventory
+    if inv is not None and not hasattr(inv, "sync_records"):
+        inv = Inventory(spreadsheet=inv, converter=conv)
+    elif inv is None:
+        inv = Inventory(
+            spreadsheet=spreadsheet,
+            spreadsheet_id=getattr(args, "spreadsheet_id", None),
+            credentials_path=getattr(args, "credentials_path", None),
+            sheet_name=getattr(args, "sheet_name", "Inventario"),
+            converter=conv,
+        )
+
     try:
-        inventory.sync_records(records)
-    except SpreadsheetNotFoundError:
-        sheet_id = inventory.spreadsheet_id or getattr(
-            getattr(inventory, "spreadsheet", None), "id", ""
+        synced_records: list[InventoryRecord] = inv.sync_records(records)
+    except InventoryNotFoundError as exc:
+        target = (
+            getattr(args, "spreadsheet_id", None)
+            or getattr(inv, "spreadsheet_id", None)
+            or (str(exc).split("'")[1] if "'" in str(exc) else "")
         )
         print(
-            f"Error: Google Spreadsheet not found: '{sheet_id}'.",
+            f"Error: Inventory not found: '{target}'.",
             file=err,
         )
         return None
-    except SpreadsheetAccessError:
-        sheet_id = inventory.spreadsheet_id or getattr(
-            getattr(inventory, "spreadsheet", None), "id", ""
+    except InventoryAccessError as exc:
+        target = (
+            getattr(args, "spreadsheet_id", None)
+            or getattr(inv, "spreadsheet_id", None)
+            or (str(exc).split("'")[1] if "'" in str(exc) else "")
         )
         print(
-            f"Error: Access denied to Google Spreadsheet: '{sheet_id}'.",
+            f"Error: Access denied to inventory: '{target}'.",
             file=err,
         )
         return None
@@ -173,15 +186,13 @@ def run_cli(
         else:
             print(f"Configuration Error: {exc}", file=err)
         return None
-    except SpreadsheetError as exc:
-        print(f"Spreadsheet Error: {exc}", file=err)
+    except InventoryError as exc:
+        print(f"Inventory Error: {exc}", file=err)
         return None
 
-    target_spreadsheet = inventory.spreadsheet
-    sheet_id = getattr(target_spreadsheet, "id", "")
-    sheet_ref = f"https://docs.google.com/spreadsheets/d/{sheet_id}"
-    print(sheet_ref, file=out)
-    return cast(Spreadsheet | None, target_spreadsheet)
+    count = len(synced_records)
+    print(count, file=out)
+    return count
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -208,14 +219,14 @@ def main(argv: list[str] | None = None) -> int:
     except ScraperError as exc:
         print(f"Scraper Error: {exc}", file=sys.stderr)
         return 1
-    except SpreadsheetAccessError as exc:
+    except InventoryAccessError as exc:
         print(f"Access Error: {exc}", file=sys.stderr)
         return 1
-    except SpreadsheetNotFoundError as exc:
-        print(f"Spreadsheet Error: {exc}", file=sys.stderr)
+    except InventoryNotFoundError as exc:
+        print(f"Inventory Error: {exc}", file=sys.stderr)
         return 2
-    except SpreadsheetError as exc:
-        print(f"Spreadsheet Error: {exc}", file=sys.stderr)
+    except InventoryError as exc:
+        print(f"Inventory Error: {exc}", file=sys.stderr)
         return 2
     except ValueError as exc:
         print(f"Configuration Error: {exc}", file=sys.stderr)

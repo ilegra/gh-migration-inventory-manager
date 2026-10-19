@@ -98,11 +98,8 @@ def test_given_live_svn_repos_and_sheets_credentials_when_running_cli_sync_then_
     try:
         result = run_cli(args, out_stream=out_stream)
 
-        assert result is not None
-        assert isinstance(result, Spreadsheet)
-        assert result.id == live_spreadsheet.id
-        expected_url = f"https://docs.google.com/spreadsheets/d/{live_spreadsheet.id}"
-        assert expected_url in out_stream.getvalue()
+        assert result == 1
+        assert out_stream.getvalue().strip() == "1"
 
         # Verify entry exists in live Google Sheets
         matching_rows = live_spreadsheet.find_by("name", "standard-app")
@@ -154,11 +151,8 @@ def test_given_live_spreadsheet_instance_parameter_when_running_cli_then_persist
             out_stream=out_stream,
         )
 
-        assert result is live_spreadsheet
-        assert (
-            f"https://docs.google.com/spreadsheets/d/{live_spreadsheet.id}"
-            in out_stream.getvalue()
-        )
+        assert result == 1
+        assert out_stream.getvalue().strip() == "1"
 
         matching_rows = live_spreadsheet.find_by("name", "standard-app")
         test_rows = [r for r in matching_rows if r.data.get("project") == test_project]
@@ -202,7 +196,7 @@ def test_given_non_existent_spreadsheet_id_when_running_cli_sync_then_validates_
 
     assert result is None
     error_output = err_stream.getvalue()
-    assert "Google Spreadsheet not found" in error_output
+    assert "Inventory not found" in error_output
 
 
 def test_given_invalid_empty_spreadsheet_id_when_running_cli_sync_then_reports_configuration_error(

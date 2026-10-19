@@ -14,13 +14,13 @@ from gh_migration_inventory_manager.cli import (
     run_cli,
 )
 from gh_migration_inventory_manager.converter import RepositoryConverter
-from gh_migration_inventory_manager.google import (
-    Spreadsheet,
-    SpreadsheetAccessError,
-    SpreadsheetError,
-    SpreadsheetNotFoundError,
+from gh_migration_inventory_manager.google import Spreadsheet
+from gh_migration_inventory_manager.inventory import (
+    InventoryAccessError,
+    InventoryError,
+    InventoryNotFoundError,
+    InventoryRecord,
 )
-from gh_migration_inventory_manager.inventory import InventoryRecord
 from gh_migration_inventory_manager.scrap import (
     Repository,
     RepositoryScraper,
@@ -148,7 +148,7 @@ def test_given_default_registry_when_building_parser_then_includes_default_svn_a
 def test_given_valid_args_and_credentials_when_running_cli_then_synchronizes_repositories_with_google_sheets(
     test_registry: ScraperRegistry, mock_provider: MagicMock, tmp_path: Any
 ) -> None:
-    """Test full CLI flow validating spreadsheet and returning its reference."""
+    """Test full CLI flow synchronizing records and returning inventoried item count."""
     creds_file = tmp_path / "service_account.json"
     creds_file.write_text('{"type": "service_account"}')
 
@@ -181,18 +181,14 @@ def test_given_valid_args_and_credentials_when_running_cli_then_synchronizes_rep
 
     out_stream = io.StringIO()
     with patch("gh_migration_inventory_manager.cli.Inventory") as mock_inv_cls:
-        mock_sheet = MagicMock(spec=Spreadsheet)
-        mock_sheet.id = "sheet-456"
         mock_inv = mock_inv_cls.return_value
-        mock_inv.spreadsheet = mock_sheet
         mock_inv.sync_records.return_value = [
             InventoryRecord(name="cloud-app", project="infra", stack="Terraform")
         ]
 
         result = run_cli(args, registry=test_registry, out_stream=out_stream)
 
-        assert result is not None
-        assert result.id == "sheet-456"
+        assert result == 1
         mock_inv_cls.assert_called_once_with(
             spreadsheet=None,
             spreadsheet_id="sheet-456",
@@ -206,15 +202,42 @@ def test_given_valid_args_and_credentials_when_running_cli_then_synchronizes_rep
         assert synced_records[0].name == "cloud-app"
         assert synced_records[0].stack == "Terraform"
 
-        assert (
-            "https://docs.google.com/spreadsheets/d/sheet-456" in out_stream.getvalue()
-        )
+        assert out_stream.getvalue().strip() == "1"
 
 
-def test_given_spreadsheet_parameter_when_running_cli_then_uses_and_returns_provided_spreadsheet(
+def test_given_inventory_parameter_when_running_cli_then_uses_provided_inventory_and_returns_item_count(
     test_registry: ScraperRegistry, mock_provider: MagicMock
 ) -> None:
-    """Test passing spreadsheet directly as parameter to run_cli."""
+    """Test passing inventory directly as parameter to run_cli."""
+    fake_repos = [Repository(name="direct-app", project="direct")]
+    mock_scraper = MagicMock(spec=RepositoryScraper)
+    mock_scraper.scrape.return_value = fake_repos
+    mock_provider.create_scraper.return_value = mock_scraper
+
+    parser = build_parser(test_registry)
+    args = parser.parse_args(["scrape", "mock-plat", "--repo-url", "http://test"])
+
+    out_stream = io.StringIO()
+    mock_inv = MagicMock()
+    mock_inv.sync_records.return_value = [
+        InventoryRecord(name="direct-app", project="direct")
+    ]
+    result = run_cli(
+        args,
+        registry=test_registry,
+        inventory=mock_inv,
+        out_stream=out_stream,
+    )
+
+    assert result == 1
+    mock_inv.sync_records.assert_called_once()
+    assert out_stream.getvalue().strip() == "1"
+
+
+def test_given_spreadsheet_parameter_when_running_cli_then_uses_spreadsheet_and_returns_item_count(
+    test_registry: ScraperRegistry, mock_provider: MagicMock
+) -> None:
+    """Test passing spreadsheet directly as parameter to run_cli for backward compatibility."""
     fake_repos = [Repository(name="direct-app", project="direct")]
     mock_scraper = MagicMock(spec=RepositoryScraper)
     mock_scraper.scrape.return_value = fake_repos
@@ -229,7 +252,9 @@ def test_given_spreadsheet_parameter_when_running_cli_then_uses_and_returns_prov
     out_stream = io.StringIO()
     with patch("gh_migration_inventory_manager.cli.Inventory") as mock_inv_cls:
         mock_inv = mock_inv_cls.return_value
-        mock_inv.spreadsheet = mock_sheet
+        mock_inv.sync_records.return_value = [
+            InventoryRecord(name="direct-app", project="direct")
+        ]
         result = run_cli(
             args,
             registry=test_registry,
@@ -237,7 +262,7 @@ def test_given_spreadsheet_parameter_when_running_cli_then_uses_and_returns_prov
             out_stream=out_stream,
         )
 
-        assert result is mock_sheet
+        assert result == 1
         mock_inv_cls.assert_called_once_with(
             spreadsheet=mock_sheet,
             spreadsheet_id=None,
@@ -246,16 +271,13 @@ def test_given_spreadsheet_parameter_when_running_cli_then_uses_and_returns_prov
             converter=mock_inv_cls.call_args[1]["converter"],
         )
         mock_inv.sync_records.assert_called_once()
-        assert (
-            "https://docs.google.com/spreadsheets/d/passed-sheet-id"
-            in out_stream.getvalue()
-        )
+        assert out_stream.getvalue().strip() == "1"
 
 
-def test_given_non_existent_spreadsheet_when_running_cli_then_reports_error_and_returns_none(
+def test_given_non_existent_inventory_when_running_cli_then_reports_error_and_returns_none(
     test_registry: ScraperRegistry, mock_provider: MagicMock
 ) -> None:
-    """Test run_cli catches SpreadsheetNotFoundError during validation."""
+    """Test run_cli catches InventoryNotFoundError during validation."""
     mock_scraper = MagicMock(spec=RepositoryScraper)
     mock_scraper.scrape.return_value = [Repository(name="app")]
     mock_provider.create_scraper.return_value = mock_scraper
@@ -265,8 +287,8 @@ def test_given_non_existent_spreadsheet_when_running_cli_then_reports_error_and_
 
     mock_sheet = MagicMock(spec=Spreadsheet)
     mock_sheet.id = "invalid-sheet"
-    mock_sheet.validate.side_effect = SpreadsheetNotFoundError(
-        "Spreadsheet not found: 'invalid-sheet'."
+    mock_sheet.validate.side_effect = InventoryNotFoundError(
+        "Inventory not found: 'invalid-sheet'."
     )
 
     err_stream = io.StringIO()
@@ -278,13 +300,13 @@ def test_given_non_existent_spreadsheet_when_running_cli_then_reports_error_and_
     )
 
     assert result is None
-    assert "Google Spreadsheet not found" in err_stream.getvalue()
+    assert "Inventory not found" in err_stream.getvalue()
 
 
-def test_given_spreadsheet_access_error_when_running_cli_then_reports_error_and_returns_none(
+def test_given_inventory_access_error_when_running_cli_then_reports_error_and_returns_none(
     test_registry: ScraperRegistry, mock_provider: MagicMock
 ) -> None:
-    """Test run_cli catches SpreadsheetAccessError during validation."""
+    """Test run_cli catches InventoryAccessError during validation."""
     mock_scraper = MagicMock(spec=RepositoryScraper)
     mock_scraper.scrape.return_value = [Repository(name="app")]
     mock_provider.create_scraper.return_value = mock_scraper
@@ -294,8 +316,8 @@ def test_given_spreadsheet_access_error_when_running_cli_then_reports_error_and_
 
     mock_sheet = MagicMock(spec=Spreadsheet)
     mock_sheet.id = "forbidden-sheet"
-    mock_sheet.validate.side_effect = SpreadsheetAccessError(
-        "Access denied to spreadsheet."
+    mock_sheet.validate.side_effect = InventoryAccessError(
+        "Access denied to inventory."
     )
 
     err_stream = io.StringIO()
@@ -307,7 +329,7 @@ def test_given_spreadsheet_access_error_when_running_cli_then_reports_error_and_
     )
 
     assert result is None
-    assert "Access denied to Google Spreadsheet" in err_stream.getvalue()
+    assert "Access denied to inventory" in err_stream.getvalue()
 
 
 def test_given_missing_spreadsheet_id_when_running_cli_sync_then_returns_none(
@@ -409,9 +431,9 @@ def test_given_no_cli_arguments_when_invoking_main_then_prints_help_and_exits_su
         (ScraperAuthenticationError, 1, "Authentication Error"),
         (ScraperConnectionError, 1, "Connection Error"),
         (ScraperError, 1, "Scraper Error"),
-        (SpreadsheetAccessError, 1, "Access Error"),
-        (SpreadsheetNotFoundError, 2, "Spreadsheet Error"),
-        (SpreadsheetError, 2, "Spreadsheet Error"),
+        (InventoryAccessError, 1, "Access Error"),
+        (InventoryNotFoundError, 2, "Inventory Error"),
+        (InventoryError, 2, "Inventory Error"),
         (ValueError, 2, "Configuration Error"),
         (RuntimeError, 1, "Unexpected Error"),
     ],
@@ -473,8 +495,8 @@ def test_given_custom_converter_when_running_cli_then_uses_injected_converter(
         InventoryRecord(name="injected-repo")
     ]
 
-    mock_spreadsheet = MagicMock(spec=Spreadsheet)
-    mock_spreadsheet.id = "mock-sheet-id"
+    mock_inv = MagicMock()
+    mock_inv.sync_records.return_value = [InventoryRecord(name="injected-repo")]
 
     parser = build_parser(test_registry)
     args = parser.parse_args(["scrape", "mock-plat", "--repo-url", "http://x"])
@@ -483,11 +505,11 @@ def test_given_custom_converter_when_running_cli_then_uses_injected_converter(
     result = run_cli(
         args,
         registry=test_registry,
-        spreadsheet=mock_spreadsheet,
+        inventory=mock_inv,
         converter=mock_converter,
         out_stream=out,
     )
 
     mock_converter.to_inventory_records.assert_called_once()
-    assert result is mock_spreadsheet
-    assert "https://docs.google.com/spreadsheets/d/mock-sheet-id" in out.getvalue()
+    assert result == 1
+    assert out.getvalue().strip() == "1"

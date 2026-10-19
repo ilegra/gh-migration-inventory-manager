@@ -17,6 +17,9 @@ from gh_migration_inventory_manager.google import (
 )
 from gh_migration_inventory_manager.inventory import (
     Inventory,
+    InventoryAccessError,
+    InventoryError,
+    InventoryNotFoundError,
     InventoryRecord,
     Iventory,
     MigrationStatus,
@@ -52,6 +55,9 @@ __all__ = [
     "__version__",
     "Inventory",
     "Iventory",
+    "InventoryError",
+    "InventoryNotFoundError",
+    "InventoryAccessError",
     "Spreadsheet",
     "Spreadshseet",
     "SpreadsheetError",

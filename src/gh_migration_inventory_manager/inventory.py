@@ -8,6 +8,18 @@ from enum import Enum
 from typing import Any, Protocol
 
 
+class InventoryError(Exception):
+    """Base exception for inventory domain and storage operations."""
+
+
+class InventoryNotFoundError(InventoryError):
+    """Raised when an inventory or its storage backend cannot be found."""
+
+
+class InventoryAccessError(InventoryError):
+    """Raised when access to an inventory or its storage backend is denied."""
+
+
 class SpreadsheetClient(Protocol):
     """Protocol representing spreadsheet operations required by Inventory."""
 
@@ -175,10 +187,10 @@ class Inventory:
 
         Raises:
             ValueError: If spreadsheet configuration is inconsistent, missing, or empty.
-            SpreadsheetNotFoundError: If spreadsheet does not exist (HTTP 404).
-            SpreadsheetAccessError: If access is denied (HTTP 403) or
+            InventoryNotFoundError: If inventory storage does not exist (HTTP 404).
+            InventoryAccessError: If access is denied (HTTP 403) or
                 unauthorized (HTTP 401).
-            SpreadsheetError: For general spreadsheet errors.
+            InventoryError: For general inventory storage errors.
         """
         if self.spreadsheet is not None:
             if self.spreadsheet_id is not None:

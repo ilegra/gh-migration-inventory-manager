@@ -13,21 +13,24 @@ from googleapiclient.errors import HttpError
 
 from gh_migration_inventory_manager.inventory import (
     Inventory,
+    InventoryAccessError,
+    InventoryError,
+    InventoryNotFoundError,
     InventoryRecord,
     MigrationStatus,
     format_migration_month,
 )
 
 
-class SpreadsheetError(Exception):
+class SpreadsheetError(InventoryError):
     """Base exception for spreadsheet backend operations."""
 
 
-class SpreadsheetNotFoundError(SpreadsheetError):
+class SpreadsheetNotFoundError(SpreadsheetError, InventoryNotFoundError):
     """Raised when a specified spreadsheet does not exist or cannot be found."""
 
 
-class SpreadsheetAccessError(SpreadsheetError):
+class SpreadsheetAccessError(SpreadsheetError, InventoryAccessError):
     """Raised when credentials do not have permission to access the spreadsheet."""
 
 
