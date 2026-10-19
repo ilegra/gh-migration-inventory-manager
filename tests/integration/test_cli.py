@@ -1,161 +1,15 @@
-"""Integration tests verifying CLI execution against live SVN Docker container."""
+"""Integration tests verifying CLI execution against live SVN Docker container and live Google Sheets."""
 
 from __future__ import annotations
 
 import io
-import json
+import uuid
 from typing import Any
-from unittest.mock import patch
 
 import pytest
 
-from gh_migration_inventory_manager.cli import main, run_cli
-from gh_migration_inventory_manager.inventory import InventoryRecord, MigrationStatus
-
-
-def test_given_live_svn_standard_repo_when_running_cli_dry_run_table_then_outputs_table_with_detected_stacks(
-    svn_server: dict[str, Any],
-) -> None:
-    """Verify live CLI invocation scraping standard SVN repository in dry-run table mode."""
-    repo_url = f"{svn_server['url']}/standard-app"
-
-    exit_code = main(
-        [
-            "scrape",
-            "svn",
-            "--url",
-            repo_url,
-            "--username",
-            svn_server["username"],
-            "--password",
-            svn_server["password"],
-            "--dry-run",
-        ]
-    )
-
-    assert exit_code == 0
-
-
-def test_given_live_svn_standard_repo_when_running_cli_dry_run_table_via_run_cli_then_asserts_stdout(
-    svn_server: dict[str, Any],
-) -> None:
-    """Verify stdout contents when scraping standard SVN repository via CLI."""
-    repo_url = f"{svn_server['url']}/standard-app"
-    from gh_migration_inventory_manager.cli import build_parser
-
-    parser = build_parser()
-    args = parser.parse_args(
-        [
-            "scrape",
-            "svn",
-            "--url",
-            repo_url,
-            "--username",
-            svn_server["username"],
-            "--password",
-            svn_server["password"],
-            "--organization",
-            "ilegra",
-            "--project",
-            "banking",
-            "--dry-run",
-        ]
-    )
-
-    out_stream = io.StringIO()
-    exit_code = run_cli(args, out_stream=out_stream)
-
-    assert exit_code == 0
-    output = out_stream.getvalue()
-    assert "Repository" in output
-    assert "Project" in output
-    assert "standard-app" in output
-    assert "banking" in output
-    assert "Java" in output
-    assert "trunk" in output
-    assert "[DRY RUN]" in output
-    assert "Total discovered: 1" in output
-
-
-def test_given_live_svn_standard_repo_when_running_cli_dry_run_json_then_outputs_valid_json_payload(
-    svn_server: dict[str, Any],
-) -> None:
-    """Verify live CLI invocation with --format json produces valid JSON with detected stacks."""
-    repo_url = f"{svn_server['url']}/standard-app"
-    from gh_migration_inventory_manager.cli import build_parser
-
-    parser = build_parser()
-    args = parser.parse_args(
-        [
-            "scrape",
-            "svn",
-            "--url",
-            repo_url,
-            "--username",
-            svn_server["username"],
-            "--password",
-            svn_server["password"],
-            "--format",
-            "json",
-            "--dry-run",
-        ]
-    )
-
-    out_stream = io.StringIO()
-    err_stream = io.StringIO()
-    exit_code = run_cli(args, out_stream=out_stream, err_stream=err_stream)
-
-    assert exit_code == 0
-    payload = json.loads(out_stream.getvalue())
-    assert len(payload) == 1
-    repo = payload[0]
-    assert repo["name"] == "standard-app"
-    assert repo["stacks"] == ["java"]
-    assert repo["default_branch"] == "trunk"
-    assert repo["metadata"]["layout"] == "standard"
-    assert "[DRY RUN]" in err_stream.getvalue()
-
-
-def test_given_live_svn_multi_project_repo_when_running_cli_then_outputs_all_subproject_repositories(
-    svn_server: dict[str, Any],
-) -> None:
-    """Verify live CLI invocation with multi_project layout detects all subprojects."""
-    repo_url = f"{svn_server['url']}/multi-app"
-    from gh_migration_inventory_manager.cli import build_parser
-
-    parser = build_parser()
-    args = parser.parse_args(
-        [
-            "scrape",
-            "svn",
-            "--url",
-            repo_url,
-            "--username",
-            svn_server["username"],
-            "--password",
-            svn_server["password"],
-            "--layout",
-            "multi_project",
-            "--format",
-            "json",
-            "--dry-run",
-        ]
-    )
-
-    out_stream = io.StringIO()
-    exit_code = run_cli(args, out_stream=out_stream)
-
-    assert exit_code == 0
-    payload = json.loads(out_stream.getvalue())
-    assert len(payload) == 2
-    names = {r["name"] for r in payload}
-    assert names == {"auth-service", "billing-service"}
-
-    auth_repo = next(r for r in payload if r["name"] == "auth-service")
-    assert auth_repo["stacks"] == ["python"]
-
-    billing_repo = next(r for r in payload if r["name"] == "billing-service")
-    assert billing_repo["stacks"] == ["typescript"]
+from gh_migration_inventory_manager.cli import build_parser, main, run_cli
+from gh_migration_inventory_manager.google import Spreadsheet
 
 
 def test_given_invalid_svn_credentials_when_running_cli_then_logs_auth_error_and_exits_with_code_1(
@@ -175,7 +29,6 @@ def test_given_invalid_svn_credentials_when_running_cli_then_logs_auth_error_and
             svn_server["username"],
             "--password",
             "wrong_password_xyz",
-            "--dry-run",
         ]
     )
 
@@ -201,7 +54,6 @@ def test_given_nonexistent_svn_url_when_running_cli_then_logs_scraper_error_and_
             svn_server["username"],
             "--password",
             svn_server["password"],
-            "--dry-run",
         ]
     )
 
@@ -212,14 +64,114 @@ def test_given_nonexistent_svn_url_when_running_cli_then_logs_scraper_error_and_
 
 def test_given_live_svn_repos_and_sheets_credentials_when_running_cli_sync_then_synchronizes_inventory(
     svn_server: dict[str, Any],
-    tmp_path: Any,
+    gcp_credentials_path: str,
+    live_spreadsheet: Spreadsheet,
 ) -> None:
-    """Verify full CLI flow scraping live SVN and persisting to inventory backend."""
-    creds_file = tmp_path / "gcp-credentials.json"
-    creds_file.write_text('{"type": "service_account"}')
-
+    """Verify full CLI flow scraping live SVN and persisting to live Google Spreadsheet."""
     repo_url = f"{svn_server['url']}/standard-app"
-    from gh_migration_inventory_manager.cli import build_parser
+    test_project = f"test-cli-{uuid.uuid4().hex[:6]}"
+    parser = build_parser()
+    args = parser.parse_args(
+        [
+            "scrape",
+            "svn",
+            "--url",
+            repo_url,
+            "--username",
+            svn_server["username"],
+            "--password",
+            svn_server["password"],
+            "--spreadsheet-id",
+            live_spreadsheet.id,
+            "--credentials-path",
+            gcp_credentials_path,
+            "--sheet-name",
+            live_spreadsheet.sheet_name,
+            "--project",
+            test_project,
+        ]
+    )
+
+    out_stream = io.StringIO()
+    created_row_indices: list[int] = []
+
+    try:
+        result = run_cli(args, out_stream=out_stream)
+
+        assert result == 1
+        assert out_stream.getvalue().strip() == "1"
+
+        # Verify entry exists in live Google Sheets
+        matching_rows = live_spreadsheet.find_by("name", "standard-app")
+        test_rows = [r for r in matching_rows if r.data.get("project") == test_project]
+        assert len(test_rows) >= 1
+        created_row_indices.extend(
+            r.row_index for r in test_rows if r.row_index is not None
+        )
+
+        persisted = test_rows[0]
+        assert persisted.data["name"] == "standard-app"
+        assert persisted.data["project"] == test_project
+        assert persisted.data["stack"] == "Java"
+    finally:
+        for idx in created_row_indices:
+            live_spreadsheet.clear_row(idx)
+
+
+def test_given_live_spreadsheet_instance_parameter_when_running_cli_then_persists_to_provided_spreadsheet(
+    svn_server: dict[str, Any],
+    live_spreadsheet: Spreadsheet,
+) -> None:
+    """Verify passing live Spreadsheet instance directly to run_cli persists correctly."""
+    repo_url = f"{svn_server['url']}/standard-app"
+    test_project = f"test-param-{uuid.uuid4().hex[:6]}"
+    parser = build_parser()
+    args = parser.parse_args(
+        [
+            "scrape",
+            "svn",
+            "--url",
+            repo_url,
+            "--username",
+            svn_server["username"],
+            "--password",
+            svn_server["password"],
+            "--project",
+            test_project,
+        ]
+    )
+
+    out_stream = io.StringIO()
+    created_row_indices: list[int] = []
+
+    try:
+        result = run_cli(
+            args,
+            spreadsheet=live_spreadsheet,
+            out_stream=out_stream,
+        )
+
+        assert result == 1
+        assert out_stream.getvalue().strip() == "1"
+
+        matching_rows = live_spreadsheet.find_by("name", "standard-app")
+        test_rows = [r for r in matching_rows if r.data.get("project") == test_project]
+        assert len(test_rows) >= 1
+        created_row_indices.extend(
+            r.row_index for r in test_rows if r.row_index is not None
+        )
+    finally:
+        for idx in created_row_indices:
+            live_spreadsheet.clear_row(idx)
+
+
+def test_given_non_existent_spreadsheet_id_when_running_cli_sync_then_validates_and_reports_error(
+    svn_server: dict[str, Any],
+    gcp_credentials_path: str,
+) -> None:
+    """Verify live validation against Google Sheets API rejects non-existent spreadsheet ID."""
+    repo_url = f"{svn_server['url']}/standard-app"
+    fake_id = f"non-existent-sheet-id-404-{uuid.uuid4().hex[:8]}"
 
     parser = build_parser()
     args = parser.parse_args(
@@ -233,39 +185,47 @@ def test_given_live_svn_repos_and_sheets_credentials_when_running_cli_sync_then_
             "--password",
             svn_server["password"],
             "--spreadsheet-id",
-            "sheet-xyz-123",
+            fake_id,
             "--credentials-path",
-            str(creds_file),
-            "--sheet-name",
-            "Inventario",
-            "--initial-status",
-            "waiting",
+            gcp_credentials_path,
         ]
     )
 
-    out_stream = io.StringIO()
-    with (
-        patch("gh_migration_inventory_manager.google.Spreadsheet") as mock_sheet_cls,
-        patch("gh_migration_inventory_manager.cli.Inventory") as mock_inv_cls,
-    ):
-        mock_inv = mock_inv_cls.return_value
-        mock_inv.sync_repositories.return_value = [
-            InventoryRecord(
-                name="standard-app",
-                stack="Java",
-                migration_status=MigrationStatus.WAITTING,
-            )
+    err_stream = io.StringIO()
+    result = run_cli(args, err_stream=err_stream)
+
+    assert result is None
+    error_output = err_stream.getvalue()
+    assert "Inventory not found" in error_output
+
+
+def test_given_invalid_empty_spreadsheet_id_when_running_cli_sync_then_reports_configuration_error(
+    svn_server: dict[str, Any],
+    gcp_credentials_path: str,
+) -> None:
+    """Verify empty spreadsheet ID is rejected before API execution."""
+    repo_url = f"{svn_server['url']}/standard-app"
+
+    parser = build_parser()
+    args = parser.parse_args(
+        [
+            "scrape",
+            "svn",
+            "--url",
+            repo_url,
+            "--username",
+            svn_server["username"],
+            "--password",
+            svn_server["password"],
+            "--spreadsheet-id",
+            "   ",
+            "--credentials-path",
+            gcp_credentials_path,
         ]
+    )
 
-        exit_code = run_cli(args, out_stream=out_stream)
+    err_stream = io.StringIO()
+    result = run_cli(args, err_stream=err_stream)
 
-        assert exit_code == 0
-        mock_sheet_cls.assert_called_once()
-        mock_inv.sync_repositories.assert_called_once()
-
-        synced_repos = mock_inv.sync_repositories.call_args[0][0]
-        assert len(synced_repos) == 1
-        assert synced_repos[0].name == "standard-app"
-
-        output = out_stream.getvalue()
-        assert "Successfully synchronized 1 repositories" in output
+    assert result is None
+    assert "Missing Google Spreadsheet ID" in err_stream.getvalue()

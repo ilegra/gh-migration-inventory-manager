@@ -8,6 +8,18 @@ from enum import Enum
 from typing import Any, Protocol
 
 
+class InventoryError(Exception):
+    """Base exception for inventory domain and storage operations."""
+
+
+class InventoryNotFoundError(InventoryError):
+    """Raised when an inventory or its storage backend cannot be found."""
+
+
+class InventoryAccessError(InventoryError):
+    """Raised when access to an inventory or its storage backend is denied."""
+
+
 class SpreadsheetClient(Protocol):
     """Protocol representing spreadsheet operations required by Inventory."""
 
@@ -109,11 +121,110 @@ class Inventory:
         self,
         spreadsheet: SpreadsheetClient | Any = None,
         spredsheet: SpreadsheetClient | Any = None,
+        spreadsheet_id: str | None = None,
+        credentials_path: str | None = None,
+        sheet_name: str = "Inventario",
+        credentials: Any = None,
+        converter: Any = None,
     ) -> None:
-        target = spreadsheet if spreadsheet is not None else spredsheet
-        if target is None:
-            raise ValueError("A Spreadsheet instance must be provided.")
-        self.spreadsheet = target
+        self.spreadsheet = spreadsheet if spreadsheet is not None else spredsheet
+        self.spreadsheet_id = spreadsheet_id
+        self.credentials_path = credentials_path
+        self.sheet_name = sheet_name
+        self.credentials = credentials
+        if converter is not None:
+            self.converter = converter
+        else:
+            from gh_migration_inventory_manager.converter import (
+                RepositoryConverter as _RepoConverter,
+            )
+
+            self.converter = _RepoConverter()
+
+    def _validate_and_build_credentials(self) -> Any:
+        """Validate credentials configuration and build Credentials instance.
+
+        Raises:
+            ValueError: If credentials configuration is inconsistent, missing, or empty.
+            FileNotFoundError: If the specified credentials path does not exist.
+        """
+        if self.credentials is not None:
+            if self.credentials_path is not None:
+                configured_path = getattr(self.credentials, "credentials_path", None)
+                if (
+                    configured_path
+                    and configured_path != str(self.credentials_path).strip()
+                ):
+                    raise ValueError(
+                        "Inconsistent credentials configuration: "
+                        f"credentials.credentials_path '{configured_path}' "
+                        f"does not match credentials_path '{self.credentials_path}'."
+                    )
+            return self.credentials
+
+        if not self.credentials_path or not str(self.credentials_path).strip():
+            raise ValueError(
+                "Missing Google credentials path. Pass --credentials-path."
+            )
+
+        clean_path = str(self.credentials_path).strip()
+        from pathlib import Path
+
+        if not Path(clean_path).exists():
+            raise FileNotFoundError(
+                f"Google credentials file not found: '{clean_path}'."
+            )
+
+        from gh_migration_inventory_manager.google import Credentials
+
+        self.credentials = Credentials(credentials_path=clean_path)
+        return self.credentials
+
+    _build_credentials = _validate_and_build_credentials
+
+    def _validate_and_build_spreadsheet(self) -> SpreadsheetClient:
+        """Validate spreadsheet configuration and build Spreadsheet instance.
+
+        Raises:
+            ValueError: If spreadsheet configuration is inconsistent, missing, or empty.
+            InventoryNotFoundError: If inventory storage does not exist (HTTP 404).
+            InventoryAccessError: If access is denied (HTTP 403) or
+                unauthorized (HTTP 401).
+            InventoryError: For general inventory storage errors.
+        """
+        if self.spreadsheet is not None:
+            if self.spreadsheet_id is not None:
+                configured_id = getattr(self.spreadsheet, "id", None)
+                if configured_id and configured_id != str(self.spreadsheet_id).strip():
+                    raise ValueError(
+                        "Inconsistent spreadsheet configuration: "
+                        f"spreadsheet.id '{configured_id}' "
+                        f"does not match spreadsheet_id '{self.spreadsheet_id}'."
+                    )
+            if hasattr(self.spreadsheet, "validate") and callable(
+                self.spreadsheet.validate
+            ):
+                self.spreadsheet.validate()
+            return self.spreadsheet
+
+        if not self.spreadsheet_id or not str(self.spreadsheet_id).strip():
+            raise ValueError("Missing Google Spreadsheet ID. Pass --spreadsheet-id.")
+
+        clean_id = str(self.spreadsheet_id).strip()
+        creds = self._validate_and_build_credentials()
+
+        from gh_migration_inventory_manager.google import Spreadsheet
+
+        sheet = Spreadsheet(
+            id=clean_id,
+            credentials=creds,
+            sheet_name=self.sheet_name,
+        )
+        sheet.validate()
+        self.spreadsheet = sheet
+        return self.spreadsheet
+
+    _build_spreadsheet = _validate_and_build_spreadsheet
 
     @staticmethod
     def _from_sheet_label(label: str) -> MigrationStatus:
@@ -187,11 +298,14 @@ class Inventory:
 
     def _find_row(self, name: str, project: str | None = None) -> Any | None:
         """Find a row matching repository name and optional project."""
+        sheet = self.spreadsheet
+        if sheet is None:
+            sheet = self._validate_and_build_spreadsheet()
         clean_name = name.strip() if isinstance(name, str) else ""
         if not clean_name:
             raise ValueError("Repository name cannot be empty.")
 
-        matching_rows = self.spreadsheet.find_by("name", clean_name)
+        matching_rows = sheet.find_by("name", clean_name)
         if not matching_rows:
             return None
 
@@ -272,6 +386,66 @@ class Inventory:
         row = self._find_row(repository_name, project)
         return RowConverter.to_inventory_record(row) if row is not None else None
 
+    def register_record(self, record: InventoryRecord) -> InventoryRecord:
+        """Register or synchronize an InventoryRecord in the inventory.
+
+        If the repository is already recorded, its migration status and dates
+        are strictly preserved, while metadata (project, stack, last_commit)
+        are updated if modified. If it does not exist, a new record is added.
+        """
+        from gh_migration_inventory_manager.google import RowConverter
+
+        if record is None:
+            raise ValueError("InventoryRecord cannot be None.")
+
+        clean_name = (record.name or "").strip()
+        if not clean_name:
+            raise ValueError("Repository name cannot be empty.")
+
+        target_row = self._find_row(clean_name, record.project or None)
+
+        if target_row is not None:
+            existing = RowConverter.to_inventory_record(target_row)
+            changed = False
+            if record.project is not None and existing.project != record.project:
+                existing.project = record.project
+                changed = True
+            if record.stack and existing.stack != record.stack:
+                existing.stack = record.stack
+                changed = True
+            if (
+                record.last_commit is not None
+                and existing.last_commit != record.last_commit
+            ):
+                existing.last_commit = record.last_commit
+                changed = True
+
+            if changed:
+                row = RowConverter.from_inventory_record(
+                    existing, row_index=target_row.row_index
+                )
+                saved_row = self.spreadsheet.update_row(row)
+                return RowConverter.to_inventory_record(saved_row)
+            return existing
+
+        valid_status = self._validate_status(record.migration_status)
+        new_record = InventoryRecord(
+            name=clean_name,
+            project=record.project or "",
+            stack=record.stack or "",
+            last_commit=record.last_commit,
+            migration_status=valid_status,
+        )
+        self._apply_status_timestamps(new_record, valid_status)
+        row = RowConverter.from_inventory_record(new_record)
+        saved_row = self.spreadsheet.add(row)
+        return RowConverter.to_inventory_record(saved_row)
+
+    def sync_records(self, records: Any) -> list[InventoryRecord]:
+        """Synchronize an iterable of InventoryRecord instances into the inventory."""
+        self._validate_and_build_spreadsheet()
+        return [self.register_record(rec) for rec in records]
+
     def register_repository(
         self,
         name: str | Any,
@@ -286,88 +460,71 @@ class Inventory:
         are strictly preserved, while metadata (last_commit, stack) are updated.
         If it does not exist, a new record is created with initial_status.
 
-        Supports primitive arguments or an object with name, project, stacks/stack,
-        and last_commit attributes (such as a Repository instance).
+        Supports primitive arguments, an InventoryRecord, or a Repository instance.
         """
-        from gh_migration_inventory_manager.google import RowConverter
+        if isinstance(name, InventoryRecord):
+            record = name
+            if project is not None:
+                record.project = project
+            if stack is not None:
+                record.stack = stack
+            if last_commit is not None:
+                record.last_commit = last_commit
+            return self.register_record(record)
 
         if not isinstance(name, str) and hasattr(name, "name"):
-            repo_obj = name
-            actual_name = str(repo_obj.name)
-            actual_project = (
-                project if project is not None else getattr(repo_obj, "project", None)
+            record = self.converter.to_inventory_record(
+                name, initial_status=initial_status
             )
+            if project is not None:
+                record.project = project
             if stack is not None:
-                actual_stack = stack
-            elif hasattr(repo_obj, "stacks") and isinstance(repo_obj.stacks, list):
-                from gh_migration_inventory_manager.scrap import format_stacks
+                record.stack = stack
+            if last_commit is not None:
+                record.last_commit = last_commit
+            return self.register_record(record)
 
-                actual_stack = format_stacks(repo_obj.stacks)
-            else:
-                actual_stack = str(getattr(repo_obj, "stack", "") or "")
-            actual_last_commit = (
-                last_commit
-                if last_commit is not None
-                else getattr(repo_obj, "last_commit", None)
-            )
-        else:
-            actual_name = str(name).strip() if name is not None else ""
-            actual_project = project
-            actual_stack = stack or ""
-            actual_last_commit = last_commit
-
-        if not actual_name:
-            raise ValueError("Repository name cannot be empty.")
-
-        valid_initial_status = self._validate_status(initial_status)
-        target_row = self._find_row(actual_name, actual_project)
-
-        if target_row is not None:
-            record = RowConverter.to_inventory_record(target_row)
-            changed = False
-            if actual_project is not None and record.project != actual_project:
-                record.project = actual_project
-                changed = True
-            if actual_stack and record.stack != actual_stack:
-                record.stack = actual_stack
-                changed = True
-            if (
-                actual_last_commit is not None
-                and record.last_commit != actual_last_commit
-            ):
-                record.last_commit = actual_last_commit
-                changed = True
-
-            if changed:
-                row = RowConverter.from_inventory_record(
-                    record, row_index=target_row.row_index
-                )
-                saved_row = self.spreadsheet.update_row(row)
-                return RowConverter.to_inventory_record(saved_row)
-            return record
-
+        clean_name = str(name).strip() if name is not None else ""
+        valid_status = self._validate_status(initial_status)
         record = InventoryRecord(
-            name=actual_name,
-            project=actual_project or "",
-            stack=actual_stack,
-            last_commit=actual_last_commit,
-            migration_status=valid_initial_status,
+            name=clean_name,
+            project=project or "",
+            stack=stack or "",
+            last_commit=last_commit,
+            migration_status=valid_status,
         )
-        self._apply_status_timestamps(record, valid_initial_status)
-        row = RowConverter.from_inventory_record(record)
-        saved_row = self.spreadsheet.add(row)
-        return RowConverter.to_inventory_record(saved_row)
+        return self.register_record(record)
 
     def sync_repositories(
         self,
         repositories: Any,
         initial_status: MigrationStatus | str = MigrationStatus.WAITTING,
     ) -> list[InventoryRecord]:
-        """Synchronize a collection of repositories into the inventory."""
-        return [
-            self.register_repository(repo, initial_status=initial_status)
-            for repo in repositories
-        ]
+        """Synchronize a collection of repositories or inventory records."""
+        records: list[InventoryRecord] = []
+        for repo in repositories:
+            if isinstance(repo, InventoryRecord):
+                records.append(repo)
+            elif not isinstance(repo, str) and hasattr(repo, "name"):
+                records.append(
+                    self.converter.to_inventory_record(
+                        repo, initial_status=initial_status
+                    )
+                )
+            else:
+                return [
+                    self.register_repository(r, initial_status=initial_status)
+                    for r in repositories
+                ]
+        return self.sync_records(records)
+
+
+def __getattr__(name: str) -> Any:
+    if name == "RepositoryConverter":
+        from gh_migration_inventory_manager.converter import RepositoryConverter
+
+        return RepositoryConverter
+    raise AttributeError(f"module '{__name__}' has no attribute '{name}'")
 
 
 Iventory = Inventory

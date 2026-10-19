@@ -4,15 +4,22 @@ Provides a clean interface to track, catalog, and update repository migration
 records backed by Google Sheets.
 """
 
+from gh_migration_inventory_manager.converter import RepositoryConverter
 from gh_migration_inventory_manager.google import (
     Credentials,
     Row,
     RowConverter,
     Spreadsheet,
+    SpreadsheetAccessError,
+    SpreadsheetError,
+    SpreadsheetNotFoundError,
     Spreadshseet,
 )
 from gh_migration_inventory_manager.inventory import (
     Inventory,
+    InventoryAccessError,
+    InventoryError,
+    InventoryNotFoundError,
     InventoryRecord,
     Iventory,
     MigrationStatus,
@@ -48,13 +55,20 @@ __all__ = [
     "__version__",
     "Inventory",
     "Iventory",
+    "InventoryError",
+    "InventoryNotFoundError",
+    "InventoryAccessError",
     "Spreadsheet",
     "Spreadshseet",
+    "SpreadsheetError",
+    "SpreadsheetNotFoundError",
+    "SpreadsheetAccessError",
     "Row",
     "RowConverter",
     "Credentials",
     "InventoryRecord",
     "MigrationStatus",
+    "RepositoryConverter",
     "Stack",
     "Repository",
     "RepositoryScraper",
