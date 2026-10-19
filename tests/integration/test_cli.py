@@ -12,93 +12,6 @@ from gh_migration_inventory_manager.cli import build_parser, main, run_cli
 from gh_migration_inventory_manager.google import Spreadsheet
 
 
-def test_given_live_svn_standard_repo_when_running_cli_dry_run_then_reports_discovery(
-    svn_server: dict[str, Any],
-) -> None:
-    """Verify live CLI invocation scraping standard SVN repository in dry-run mode."""
-    repo_url = f"{svn_server['url']}/standard-app"
-
-    exit_code = main(
-        [
-            "scrape",
-            "svn",
-            "--url",
-            repo_url,
-            "--username",
-            svn_server["username"],
-            "--password",
-            svn_server["password"],
-            "--dry-run",
-        ]
-    )
-
-    assert exit_code == 0
-
-
-def test_given_live_svn_standard_repo_when_running_cli_dry_run_via_run_cli_then_asserts_stdout(
-    svn_server: dict[str, Any],
-) -> None:
-    """Verify stdout contents when scraping standard SVN repository via CLI dry run."""
-    repo_url = f"{svn_server['url']}/standard-app"
-    parser = build_parser()
-    args = parser.parse_args(
-        [
-            "scrape",
-            "svn",
-            "--url",
-            repo_url,
-            "--username",
-            svn_server["username"],
-            "--password",
-            svn_server["password"],
-            "--organization",
-            "ilegra",
-            "--project",
-            "banking",
-            "--dry-run",
-        ]
-    )
-
-    out_stream = io.StringIO()
-    result = run_cli(args, out_stream=out_stream)
-
-    assert result is None
-    output = out_stream.getvalue()
-    assert "[DRY RUN]" in output
-    assert "Discovered 1 repositories" in output
-
-
-def test_given_live_svn_multi_project_repo_when_running_cli_dry_run_then_discovers_all_subprojects(
-    svn_server: dict[str, Any],
-) -> None:
-    """Verify live CLI invocation with multi_project layout discovers all subprojects in dry run."""
-    repo_url = f"{svn_server['url']}/multi-app"
-    parser = build_parser()
-    args = parser.parse_args(
-        [
-            "scrape",
-            "svn",
-            "--url",
-            repo_url,
-            "--username",
-            svn_server["username"],
-            "--password",
-            svn_server["password"],
-            "--layout",
-            "multi_project",
-            "--dry-run",
-        ]
-    )
-
-    out_stream = io.StringIO()
-    result = run_cli(args, out_stream=out_stream)
-
-    assert result is None
-    output = out_stream.getvalue()
-    assert "[DRY RUN]" in output
-    assert "Discovered 2 repositories" in output
-
-
 def test_given_invalid_svn_credentials_when_running_cli_then_logs_auth_error_and_exits_with_code_1(
     svn_server: dict[str, Any],
     capsys: pytest.CaptureFixture[str],
@@ -116,7 +29,6 @@ def test_given_invalid_svn_credentials_when_running_cli_then_logs_auth_error_and
             svn_server["username"],
             "--password",
             "wrong_password_xyz",
-            "--dry-run",
         ]
     )
 
@@ -142,7 +54,6 @@ def test_given_nonexistent_svn_url_when_running_cli_then_logs_scraper_error_and_
             svn_server["username"],
             "--password",
             svn_server["password"],
-            "--dry-run",
         ]
     )
 

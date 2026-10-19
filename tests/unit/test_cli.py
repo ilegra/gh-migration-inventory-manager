@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import io
-from datetime import datetime, timezone
 from typing import Any
 from unittest.mock import MagicMock, patch
 
@@ -81,7 +80,6 @@ def test_given_registered_scraper_provider_when_building_parser_then_registers_p
     assert args.credentials_path == "key.json"
     assert args.sheet_name == "Inventario"
     assert args.initial_status == "waitting"
-    assert args.dry_run is False
 
 
 def test_given_deprecated_format_flag_when_building_parser_then_rejects_argument(
@@ -98,6 +96,23 @@ def test_given_deprecated_format_flag_when_building_parser_then_rejects_argument
                 "https://mock.example.com",
                 "--format",
                 "json",
+            ]
+        )
+
+
+def test_given_deprecated_dry_run_flag_when_building_parser_then_rejects_argument(
+    test_registry: ScraperRegistry,
+) -> None:
+    """Test that removed --dry-run parameter is rejected by argument parser."""
+    parser = build_parser(test_registry)
+    with pytest.raises(SystemExit):
+        parser.parse_args(
+            [
+                "scrape",
+                "mock-plat",
+                "--repo-url",
+                "https://mock.example.com",
+                "--dry-run",
             ]
         )
 
@@ -119,7 +134,6 @@ def test_given_default_registry_when_building_parser_then_includes_default_svn_a
             "svnpass",
             "--layout",
             "multi_project",
-            "--dry-run",
         ]
     )
 
@@ -129,38 +143,6 @@ def test_given_default_registry_when_building_parser_then_includes_default_svn_a
     assert args.username == "svnuser"
     assert args.password == "svnpass"
     assert args.layout == "multi_project"
-    assert args.dry_run is True
-
-
-def test_given_dry_run_flag_when_running_cli_then_does_not_access_google_sheets(
-    test_registry: ScraperRegistry, mock_provider: MagicMock
-) -> None:
-    """Test running CLI with --dry-run avoids Google Sheets persistence."""
-    fake_repos = [
-        Repository(
-            name="app-core",
-            project="banking",
-            stacks=[Stack.JAVA],
-            last_commit=datetime(2026, 10, 18, 10, 0, tzinfo=timezone.utc),
-            default_branch="trunk",
-        )
-    ]
-    mock_scraper = MagicMock(spec=RepositoryScraper)
-    mock_scraper.scrape.return_value = fake_repos
-    mock_provider.create_scraper.return_value = mock_scraper
-
-    parser = build_parser(test_registry)
-    args = parser.parse_args(
-        ["scrape", "mock-plat", "--repo-url", "http://test", "--dry-run"]
-    )
-
-    out_stream = io.StringIO()
-    result = run_cli(args, registry=test_registry, out_stream=out_stream)
-
-    assert result is None
-    output = out_stream.getvalue()
-    assert "[DRY RUN]" in output
-    assert "Discovered 1 repositories" in output
 
 
 def test_given_valid_args_and_credentials_when_running_cli_then_synchronizes_repositories_with_google_sheets(
@@ -434,16 +416,14 @@ def test_given_scraper_error_when_invoking_main_then_logs_error_and_returns_exit
         "gh_migration_inventory_manager.cli.run_cli",
         side_effect=exception_cls("test failure"),
     ):
-        exit_code = main(
-            ["scrape", "svn", "--url", "http://svn.example.com", "--dry-run"]
-        )
+        exit_code = main(["scrape", "svn", "--url", "http://svn.example.com"])
         assert exit_code == expected_code
         captured = capsys.readouterr()
         assert expected_msg in captured.err
 
 
 def test_given_failed_run_cli_when_invoking_main_then_returns_exit_code_2() -> None:
-    """Test main returns 2 when run_cli returns None without dry-run."""
+    """Test main returns 2 when run_cli returns None."""
     with patch("gh_migration_inventory_manager.cli.run_cli", return_value=None):
         exit_code = main(
             [
@@ -465,9 +445,7 @@ def test_given_keyboard_interrupt_when_invoking_main_then_returns_exit_code_130(
     with patch(
         "gh_migration_inventory_manager.cli.run_cli", side_effect=KeyboardInterrupt
     ):
-        exit_code = main(
-            ["scrape", "svn", "--url", "http://svn.example.com", "--dry-run"]
-        )
+        exit_code = main(["scrape", "svn", "--url", "http://svn.example.com"])
         assert exit_code == 130
 
 
@@ -484,13 +462,21 @@ def test_given_custom_converter_when_running_cli_then_uses_injected_converter(
         InventoryRecord(name="injected-repo")
     ]
 
+    mock_spreadsheet = MagicMock(spec=Spreadsheet)
+    mock_spreadsheet.id = "mock-sheet-id"
+
     parser = build_parser(test_registry)
-    args = parser.parse_args(
-        ["scrape", "mock-plat", "--repo-url", "http://x", "--dry-run"]
-    )
+    args = parser.parse_args(["scrape", "mock-plat", "--repo-url", "http://x"])
 
     out = io.StringIO()
-    run_cli(args, registry=test_registry, converter=mock_converter, out_stream=out)
+    result = run_cli(
+        args,
+        registry=test_registry,
+        spreadsheet=mock_spreadsheet,
+        converter=mock_converter,
+        out_stream=out,
+    )
 
     mock_converter.to_inventory_records.assert_called_once()
-    assert "[DRY RUN] Discovered 1 repositories." in out.getvalue()
+    assert result is mock_spreadsheet
+    assert "https://docs.google.com/spreadsheets/d/mock-sheet-id" in out.getvalue()

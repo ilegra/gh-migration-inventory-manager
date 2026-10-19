@@ -84,11 +84,6 @@ def build_parser(
         default=MigrationStatus.WAITTING.value,
         help="Initial status for newly discovered repositories (default: waitting)",
     )
-    persistence_parent.add_argument(
-        "--dry-run",
-        action="store_true",
-        help="Preview discovered repositories without persisting to Google Sheets",
-    )
 
     for platform_name in reg.list_platforms():
         provider = reg.get(platform_name)
@@ -113,7 +108,7 @@ def run_cli(
 ) -> Spreadsheet | None:
     """Execute the CLI operation based on parsed arguments.
 
-    Returns the updated Spreadsheet reference on success, or None on failure or dry-run.
+    Returns the updated Spreadsheet reference on success, or None on failure.
     """
     out = out_stream if out_stream is not None else sys.stdout
     err = err_stream if err_stream is not None else sys.stderr
@@ -131,14 +126,6 @@ def run_cli(
 
     initial_status = getattr(args, "initial_status", MigrationStatus.WAITTING)
     records = conv.to_inventory_records(repos, initial_status=initial_status)
-
-    if getattr(args, "dry_run", False):
-        print(
-            f"[DRY RUN] Discovered {len(records)} repositories. "
-            "No changes written to Google Sheets.",
-            file=out,
-        )
-        return spreadsheet
 
     target_spreadsheet = spreadsheet
     if target_spreadsheet is None:
@@ -216,7 +203,7 @@ def main(argv: list[str] | None = None) -> int:
     try:
         args = parser.parse_args(args_list)
         result = run_cli(args)
-        if result is None and not getattr(args, "dry_run", False):
+        if result is None:
             return 2
         return 0
     except ScraperAuthenticationError as exc:

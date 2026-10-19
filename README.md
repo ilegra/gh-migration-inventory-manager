@@ -126,12 +126,6 @@ gh-migration-inventory scrape svn --url <SVN_URL> [OPTIONS]
 | `--organization <ORG>` | — | — | Organization name tag for discovered repositories |
 | `--project <PROJECT>` | — | — | Project name override for discovered repositories |
 
-#### Output & Dry-Run Options
-
-| Option | Default | Description |
-| :--- | :--- | :--- |
-| `--dry-run` | `false` | Discover repositories and preview count without updating Google Sheets |
-
 #### Google Sheets Synchronization Options
 
 | Option | Environment Variable | Default | Description |
@@ -151,22 +145,7 @@ gh-migration-inventory scrape svn --url <SVN_URL> [OPTIONS]
 
 #### CLI Usage Examples
 
-##### 1. Preview Discovered Repositories (Dry Run)
-
-```bash
-poetry run gh-migration-inventory scrape svn \
-  --url http://svn.example.com/svn/my-repo \
-  --username svnuser \
-  --password secret \
-  --dry-run
-```
-
-Output:
-```text
-[DRY RUN] Discovered 1 repositories. No changes written to Google Sheets.
-```
-
-##### 2. Synchronize Directly to Google Sheets
+##### 1. Synchronize Directly to Google Sheets
 
 ```bash
 poetry run gh-migration-inventory scrape svn \
@@ -184,7 +163,7 @@ Output:
 https://docs.google.com/spreadsheets/d/1Z0PAjv8KK6WBrS2356gtR3VE0ulD1-8LM4DPQiG-Nkk
 ```
 
-##### 4. Headless Execution Using Environment Variables
+##### 2. Headless Execution Using Environment Variables
 
 You can supply credentials and IDs via environment variables, ideal for CI/CD pipelines and automated cron jobs:
 
