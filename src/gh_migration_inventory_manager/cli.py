@@ -3,71 +3,26 @@
 from __future__ import annotations
 
 import argparse
-import json
 import os
 import sys
 from typing import Any
 
+from gh_migration_inventory_manager.converter import RepositoryConverter
+from gh_migration_inventory_manager.google import (
+    Credentials,
+    Spreadsheet,
+    SpreadsheetAccessError,
+    SpreadsheetError,
+    SpreadsheetNotFoundError,
+)
 from gh_migration_inventory_manager.inventory import Inventory, MigrationStatus
 from gh_migration_inventory_manager.scrap import (
-    Repository,
     ScraperAuthenticationError,
     ScraperConnectionError,
     ScraperError,
     ScraperRegistry,
     default_scraper_registry,
-    format_stacks,
 )
-
-
-def _render_table(repos: list[Repository]) -> str:
-    """Render a formatted ASCII table of discovered repositories."""
-    if not repos:
-        return "No repositories discovered."
-
-    headers = ["Repository", "Project", "Stack(s)", "Last Commit", "Branch"]
-    rows: list[list[str]] = []
-    for r in repos:
-        commit_str = r.last_commit.strftime("%Y-%m-%d %H:%M") if r.last_commit else "-"
-        branch_str = r.default_branch or "-"
-        stacks_str = format_stacks(r.stacks) or "-"
-        rows.append([r.name, r.project or "-", stacks_str, commit_str, branch_str])
-
-    col_widths = [
-        max(len(cell) for cell in col) for col in zip(headers, *rows, strict=False)
-    ]
-
-    def format_row(cells: list[str]) -> str:
-        return " | ".join(cell.ljust(col_widths[i]) for i, cell in enumerate(cells))
-
-    separator = "-+-".join("-" * w for w in col_widths)
-    output_lines = [
-        format_row(headers),
-        separator,
-        *(format_row(row) for row in rows),
-        "",
-        f"Total discovered: {len(repos)}",
-    ]
-    return "\n".join(output_lines)
-
-
-def _render_json(repos: list[Repository]) -> str:
-    """Render JSON formatted output of discovered repositories."""
-    data = [
-        {
-            "name": r.name,
-            "project": r.project,
-            "organization": r.organization,
-            "path": r.path,
-            "url": r.url,
-            "default_branch": r.default_branch,
-            "stacks": [s.value for s in r.stacks],
-            "last_commit": r.last_commit.isoformat() if r.last_commit else None,
-            "metadata": r.metadata,
-        }
-        for r in repos
-    ]
-    return json.dumps(data, indent=2)
 
 
 def build_parser(
@@ -134,12 +89,6 @@ def build_parser(
         action="store_true",
         help="Preview discovered repositories without persisting to Google Sheets",
     )
-    persistence_parent.add_argument(
-        "--format",
-        choices=["table", "json"],
-        default="table",
-        help="Output format for discovered repositories (default: table)",
-    )
 
     for platform_name in reg.list_platforms():
         provider = reg.get(platform_name)
@@ -157,10 +106,14 @@ def build_parser(
 def run_cli(
     args: argparse.Namespace,
     registry: ScraperRegistry | None = None,
+    spreadsheet: Spreadsheet | None = None,
     out_stream: Any = None,
     err_stream: Any = None,
-) -> int:
-    """Execute the CLI operation based on parsed arguments."""
+) -> Spreadsheet | None:
+    """Execute the CLI operation based on parsed arguments.
+
+    Returns the updated Spreadsheet reference on success, or None on failure or dry-run.
+    """
     out = out_stream if out_stream is not None else sys.stdout
     err = err_stream if err_stream is not None else sys.stderr
     reg = registry if registry is not None else default_scraper_registry
@@ -168,74 +121,87 @@ def run_cli(
     if getattr(args, "command", None) != "scrape" or not getattr(
         args, "platform", None
     ):
-        return 0
+        return None
 
     provider = reg.get(args.platform)
     scraper = provider.create_scraper(args)
-
     repos = scraper.scrape()
 
-    if getattr(args, "format", "table") == "json":
-        print(_render_json(repos), file=out)
-    else:
-        print(_render_table(repos), file=out)
+    initial_status = getattr(args, "initial_status", MigrationStatus.WAITTING)
+    records = RepositoryConverter.to_inventory_records(
+        repos, initial_status=initial_status
+    )
 
     if getattr(args, "dry_run", False):
-        dry_msg = (
-            f"\n[DRY RUN] Discovered {len(repos)} repositories. "
-            "No changes written to Google Sheets."
-        )
-        if getattr(args, "format", "table") == "json":
-            print(dry_msg.strip(), file=err)
-        else:
-            print(dry_msg, file=out)
-        return 0
-
-    spreadsheet_id = getattr(args, "spreadsheet_id", None)
-    if not spreadsheet_id:
         print(
-            "Error: Missing Google Spreadsheet ID. Pass --spreadsheet-id or set "
-            "the SPREADSHEET_ID environment variable.",
-            file=err,
+            f"[DRY RUN] Discovered {len(records)} repositories. "
+            "No changes written to Google Sheets.",
+            file=out,
         )
-        return 2
+        return spreadsheet
 
-    credentials_path = getattr(args, "credentials_path", None)
-    if not credentials_path:
-        print(
-            "Error: Missing Google credentials path. Pass --credentials-path or set "
-            "the GCP_KEY_PATH environment variable.",
-            file=err,
-        )
-        return 2
+    target_spreadsheet = spreadsheet
+    if target_spreadsheet is None:
+        spreadsheet_id = getattr(args, "spreadsheet_id", None)
+        if not spreadsheet_id or not str(spreadsheet_id).strip():
+            print(
+                "Error: Missing Google Spreadsheet ID. Pass --spreadsheet-id or set "
+                "the SPREADSHEET_ID environment variable.",
+                file=err,
+            )
+            return None
 
+        credentials_path = getattr(args, "credentials_path", None)
+        if not credentials_path or not str(credentials_path).strip():
+            print(
+                "Error: Missing Google credentials path. Pass "
+                "--credentials-path or set the GCP_KEY_PATH environment variable.",
+                file=err,
+            )
+            return None
+
+        try:
+            credentials = Credentials(credentials_path=credentials_path)
+            target_spreadsheet = Spreadsheet(
+                id=spreadsheet_id.strip(),
+                credentials=credentials,
+                sheet_name=getattr(args, "sheet_name", "Inventario"),
+            )
+        except (FileNotFoundError, OSError):
+            print(
+                f"Error: Google credentials file not found: '{credentials_path}'.",
+                file=err,
+            )
+            return None
+
+    # Validate mandatory spreadsheet reference
     try:
-        from gh_migration_inventory_manager.google import Credentials, Spreadsheet
-
-        credentials = Credentials(credentials_path=credentials_path)
-        spreadsheet = Spreadsheet(
-            id=spreadsheet_id,
-            credentials=credentials,
-            sheet_name=getattr(args, "sheet_name", "Inventario"),
-        )
-    except (FileNotFoundError, OSError):
+        target_spreadsheet.validate()
+    except SpreadsheetNotFoundError:
         print(
-            f"Error: Google credentials file not found: '{credentials_path}'.",
+            f"Error: Google Spreadsheet not found: '{target_spreadsheet.id}'.",
             file=err,
         )
-        return 2
+        return None
+    except SpreadsheetAccessError:
+        print(
+            f"Error: Access denied to Google Spreadsheet: '{target_spreadsheet.id}'.",
+            file=err,
+        )
+        return None
+    except ValueError as exc:
+        print(f"Configuration Error: {exc}", file=err)
+        return None
+    except SpreadsheetError as exc:
+        print(f"Spreadsheet Error: {exc}", file=err)
+        return None
 
-    inventory = Inventory(spreadsheet=spreadsheet)
+    inventory = Inventory(spreadsheet=target_spreadsheet)
+    inventory.sync_records(records)
 
-    initial_status = getattr(args, "initial_status", MigrationStatus.WAITTING)
-    synced_records = inventory.sync_repositories(repos, initial_status=initial_status)
-
-    print(
-        f"\nSuccessfully synchronized {len(synced_records)} repositories "
-        f"(Spreadsheet: {spreadsheet_id}, Sheet: '{args.sheet_name}').",
-        file=out,
-    )
-    return 0
+    sheet_ref = f"https://docs.google.com/spreadsheets/d/{target_spreadsheet.id}"
+    print(sheet_ref, file=out)
+    return target_spreadsheet
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -249,7 +215,10 @@ def main(argv: list[str] | None = None) -> int:
 
     try:
         args = parser.parse_args(args_list)
-        return run_cli(args)
+        result = run_cli(args)
+        if result is None and not getattr(args, "dry_run", False):
+            return 2
+        return 0
     except ScraperAuthenticationError as exc:
         print(f"Authentication Error: {exc}", file=sys.stderr)
         return 1
@@ -259,6 +228,15 @@ def main(argv: list[str] | None = None) -> int:
     except ScraperError as exc:
         print(f"Scraper Error: {exc}", file=sys.stderr)
         return 1
+    except SpreadsheetAccessError as exc:
+        print(f"Access Error: {exc}", file=sys.stderr)
+        return 1
+    except SpreadsheetNotFoundError as exc:
+        print(f"Spreadsheet Error: {exc}", file=sys.stderr)
+        return 2
+    except SpreadsheetError as exc:
+        print(f"Spreadsheet Error: {exc}", file=sys.stderr)
+        return 2
     except ValueError as exc:
         print(f"Configuration Error: {exc}", file=sys.stderr)
         return 2

@@ -9,6 +9,7 @@ from typing import Any
 
 from google.oauth2 import service_account
 from googleapiclient.discovery import build
+from googleapiclient.errors import HttpError
 
 from gh_migration_inventory_manager.inventory import (
     Inventory,
@@ -16,6 +17,19 @@ from gh_migration_inventory_manager.inventory import (
     MigrationStatus,
     format_migration_month,
 )
+
+
+class SpreadsheetError(Exception):
+    """Base exception for spreadsheet backend operations."""
+
+
+class SpreadsheetNotFoundError(SpreadsheetError):
+    """Raised when a specified spreadsheet does not exist or cannot be found."""
+
+
+class SpreadsheetAccessError(SpreadsheetError):
+    """Raised when credentials do not have permission to access the spreadsheet."""
+
 
 _DATE_FORMAT = "%d/%m/%Y"
 _SUPPORTED_DATE_FORMATS: tuple[str, ...] = (
@@ -171,6 +185,42 @@ class Spreadsheet:
         """Load service account credentials from credentials configuration."""
         loader: Any = service_account.Credentials.from_service_account_file
         return loader(credentials.credentials_path, scopes=credentials.scopes)
+
+    def validate(self) -> None:
+        """Validate that the spreadsheet reference exists and is accessible.
+
+        Raises:
+            ValueError: If spreadsheet ID is empty or invalid.
+            SpreadsheetNotFoundError: If spreadsheet does not exist (HTTP 404).
+            SpreadsheetAccessError: If access is denied (HTTP 403) or
+                unauthorized (HTTP 401).
+            SpreadsheetError: If any other error occurs contacting Google Sheets.
+        """
+        clean_id = (self.id or "").strip()
+        if not clean_id:
+            raise ValueError("Spreadsheet ID cannot be empty.")
+
+        try:
+            self._service.spreadsheets().get(
+                spreadsheetId=clean_id, fields="spreadsheetId,properties.title"
+            ).execute()
+        except HttpError as err:
+            status = getattr(getattr(err, "resp", None), "status", None)
+            if status == 404:
+                raise SpreadsheetNotFoundError(
+                    f"Spreadsheet not found: '{clean_id}'."
+                ) from err
+            if status in (401, 403):
+                raise SpreadsheetAccessError(
+                    f"Access denied to spreadsheet: '{clean_id}'."
+                ) from err
+            raise SpreadsheetError(
+                f"Error accessing spreadsheet '{clean_id}': {err}"
+            ) from err
+        except Exception as err:
+            raise SpreadsheetError(
+                f"Error accessing spreadsheet '{clean_id}': {err}"
+            ) from err
 
     def _to_sheet_row(self, row: Row) -> list[str]:
         """Convert row data to an ordered list of cell string values.

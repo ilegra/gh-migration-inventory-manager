@@ -1,7 +1,8 @@
+"""Unit tests for repository scraping CLI module."""
+
 from __future__ import annotations
 
 import io
-import json
 from datetime import datetime, timezone
 from typing import Any
 from unittest.mock import MagicMock, patch
@@ -13,7 +14,13 @@ from gh_migration_inventory_manager.cli import (
     main,
     run_cli,
 )
-from gh_migration_inventory_manager.inventory import InventoryRecord, MigrationStatus
+from gh_migration_inventory_manager.google import (
+    Spreadsheet,
+    SpreadsheetAccessError,
+    SpreadsheetError,
+    SpreadsheetNotFoundError,
+)
+from gh_migration_inventory_manager.inventory import InventoryRecord
 from gh_migration_inventory_manager.scrap import (
     Repository,
     RepositoryScraper,
@@ -74,7 +81,24 @@ def test_given_registered_scraper_provider_when_building_parser_then_registers_p
     assert args.sheet_name == "Inventario"
     assert args.initial_status == "waitting"
     assert args.dry_run is False
-    assert args.format == "table"
+
+
+def test_given_deprecated_format_flag_when_building_parser_then_rejects_argument(
+    test_registry: ScraperRegistry,
+) -> None:
+    """Test that removed --format parameter is rejected by argument parser."""
+    parser = build_parser(test_registry)
+    with pytest.raises(SystemExit):
+        parser.parse_args(
+            [
+                "scrape",
+                "mock-plat",
+                "--repo-url",
+                "https://mock.example.com",
+                "--format",
+                "json",
+            ]
+        )
 
 
 def test_given_default_registry_when_building_parser_then_includes_default_svn_arguments() -> (
@@ -130,65 +154,18 @@ def test_given_dry_run_flag_when_running_cli_then_does_not_access_google_sheets(
     )
 
     out_stream = io.StringIO()
-    exit_code = run_cli(args, registry=test_registry, out_stream=out_stream)
+    result = run_cli(args, registry=test_registry, out_stream=out_stream)
 
-    assert exit_code == 0
+    assert result is None
     output = out_stream.getvalue()
-    assert "app-core" in output
-    assert "banking" in output
-    assert "Java" in output
     assert "[DRY RUN]" in output
-    assert "Total discovered: 1" in output
-
-
-def test_given_json_format_flag_when_running_cli_then_outputs_valid_json(
-    test_registry: ScraperRegistry, mock_provider: MagicMock
-) -> None:
-    """Test running CLI with --format json outputs valid JSON payload."""
-    fake_repos = [
-        Repository(
-            name="json-app",
-            project="json-proj",
-            stacks=[Stack.PYTHON],
-            last_commit=datetime(2026, 10, 15, tzinfo=timezone.utc),
-        )
-    ]
-    mock_scraper = MagicMock(spec=RepositoryScraper)
-    mock_scraper.scrape.return_value = fake_repos
-    mock_provider.create_scraper.return_value = mock_scraper
-
-    parser = build_parser(test_registry)
-    args = parser.parse_args(
-        [
-            "scrape",
-            "mock-plat",
-            "--repo-url",
-            "http://test",
-            "--dry-run",
-            "--format",
-            "json",
-        ]
-    )
-
-    out_stream = io.StringIO()
-    err_stream = io.StringIO()
-    exit_code = run_cli(
-        args, registry=test_registry, out_stream=out_stream, err_stream=err_stream
-    )
-
-    assert exit_code == 0
-    parsed = json.loads(out_stream.getvalue())
-    assert len(parsed) == 1
-    assert parsed[0]["name"] == "json-app"
-    assert parsed[0]["project"] == "json-proj"
-    assert parsed[0]["stacks"] == ["python"]
-    assert "[DRY RUN]" in err_stream.getvalue()
+    assert "Discovered 1 repositories" in output
 
 
 def test_given_valid_args_and_credentials_when_running_cli_then_synchronizes_repositories_with_google_sheets(
     test_registry: ScraperRegistry, mock_provider: MagicMock, tmp_path: Any
 ) -> None:
-    """Test full CLI flow with Google Sheets persistence."""
+    """Test full CLI flow validating spreadsheet and returning its reference."""
     creds_file = tmp_path / "service_account.json"
     creds_file.write_text('{"type": "service_account"}')
 
@@ -221,28 +198,128 @@ def test_given_valid_args_and_credentials_when_running_cli_then_synchronizes_rep
 
     out_stream = io.StringIO()
     with (
-        patch("gh_migration_inventory_manager.google.Spreadsheet") as mock_sheet_cls,
+        patch("gh_migration_inventory_manager.cli.Spreadsheet") as mock_sheet_cls,
         patch("gh_migration_inventory_manager.cli.Inventory") as mock_inv_cls,
     ):
+        mock_sheet: MagicMock = mock_sheet_cls.return_value
+        mock_sheet.id = "sheet-456"
         mock_inv = mock_inv_cls.return_value
-        mock_inv.sync_repositories.return_value = [
+        mock_inv.sync_records.return_value = [
             InventoryRecord(name="cloud-app", project="infra", stack="Terraform")
         ]
 
-        exit_code = run_cli(args, registry=test_registry, out_stream=out_stream)
+        result = run_cli(args, registry=test_registry, out_stream=out_stream)
 
-        assert exit_code == 0
-        mock_sheet_cls.assert_called_once()
-        mock_inv.sync_repositories.assert_called_once_with(
-            fake_repos, initial_status=MigrationStatus.WAITTING.value
+        assert result is not None
+        assert result.id == "sheet-456"
+        mock_sheet.validate.assert_called_once()
+        mock_inv.sync_records.assert_called_once()
+        synced_records = mock_inv.sync_records.call_args[0][0]
+        assert len(synced_records) == 1
+        assert synced_records[0].name == "cloud-app"
+        assert synced_records[0].stack == "Terraform"
+
+        assert (
+            "https://docs.google.com/spreadsheets/d/sheet-456" in out_stream.getvalue()
         )
-        assert "Successfully synchronized 1 repositories" in out_stream.getvalue()
 
 
-def test_given_missing_spreadsheet_id_when_running_cli_sync_then_returns_error_code(
+def test_given_spreadsheet_parameter_when_running_cli_then_uses_and_returns_provided_spreadsheet(
     test_registry: ScraperRegistry, mock_provider: MagicMock
 ) -> None:
-    """Test run_cli without spreadsheet ID in non-dry-run mode returns error code 2."""
+    """Test passing spreadsheet directly as parameter to run_cli."""
+    fake_repos = [Repository(name="direct-app", project="direct")]
+    mock_scraper = MagicMock(spec=RepositoryScraper)
+    mock_scraper.scrape.return_value = fake_repos
+    mock_provider.create_scraper.return_value = mock_scraper
+
+    parser = build_parser(test_registry)
+    args = parser.parse_args(["scrape", "mock-plat", "--repo-url", "http://test"])
+
+    mock_sheet = MagicMock(spec=Spreadsheet)
+    mock_sheet.id = "passed-sheet-id"
+
+    out_stream = io.StringIO()
+    with patch("gh_migration_inventory_manager.cli.Inventory") as mock_inv_cls:
+        mock_inv = mock_inv_cls.return_value
+        result = run_cli(
+            args,
+            registry=test_registry,
+            spreadsheet=mock_sheet,
+            out_stream=out_stream,
+        )
+
+        assert result is mock_sheet
+        mock_sheet.validate.assert_called_once()
+        mock_inv.sync_records.assert_called_once()
+        assert (
+            "https://docs.google.com/spreadsheets/d/passed-sheet-id"
+            in out_stream.getvalue()
+        )
+
+
+def test_given_non_existent_spreadsheet_when_running_cli_then_reports_error_and_returns_none(
+    test_registry: ScraperRegistry, mock_provider: MagicMock
+) -> None:
+    """Test run_cli catches SpreadsheetNotFoundError during validation."""
+    mock_scraper = MagicMock(spec=RepositoryScraper)
+    mock_scraper.scrape.return_value = [Repository(name="app")]
+    mock_provider.create_scraper.return_value = mock_scraper
+
+    parser = build_parser(test_registry)
+    args = parser.parse_args(["scrape", "mock-plat", "--repo-url", "http://test"])
+
+    mock_sheet = MagicMock(spec=Spreadsheet)
+    mock_sheet.id = "invalid-sheet"
+    mock_sheet.validate.side_effect = SpreadsheetNotFoundError(
+        "Spreadsheet not found: 'invalid-sheet'."
+    )
+
+    err_stream = io.StringIO()
+    result = run_cli(
+        args,
+        registry=test_registry,
+        spreadsheet=mock_sheet,
+        err_stream=err_stream,
+    )
+
+    assert result is None
+    assert "Google Spreadsheet not found" in err_stream.getvalue()
+
+
+def test_given_spreadsheet_access_error_when_running_cli_then_reports_error_and_returns_none(
+    test_registry: ScraperRegistry, mock_provider: MagicMock
+) -> None:
+    """Test run_cli catches SpreadsheetAccessError during validation."""
+    mock_scraper = MagicMock(spec=RepositoryScraper)
+    mock_scraper.scrape.return_value = [Repository(name="app")]
+    mock_provider.create_scraper.return_value = mock_scraper
+
+    parser = build_parser(test_registry)
+    args = parser.parse_args(["scrape", "mock-plat", "--repo-url", "http://test"])
+
+    mock_sheet = MagicMock(spec=Spreadsheet)
+    mock_sheet.id = "forbidden-sheet"
+    mock_sheet.validate.side_effect = SpreadsheetAccessError(
+        "Access denied to spreadsheet."
+    )
+
+    err_stream = io.StringIO()
+    result = run_cli(
+        args,
+        registry=test_registry,
+        spreadsheet=mock_sheet,
+        err_stream=err_stream,
+    )
+
+    assert result is None
+    assert "Access denied to Google Spreadsheet" in err_stream.getvalue()
+
+
+def test_given_missing_spreadsheet_id_when_running_cli_sync_then_returns_none(
+    test_registry: ScraperRegistry, mock_provider: MagicMock
+) -> None:
+    """Test run_cli without spreadsheet ID in non-dry-run mode returns None and logs error."""
     mock_scraper = MagicMock(spec=RepositoryScraper)
     mock_scraper.scrape.return_value = []
     mock_provider.create_scraper.return_value = mock_scraper
@@ -260,16 +337,16 @@ def test_given_missing_spreadsheet_id_when_running_cli_sync_then_returns_error_c
     )
 
     err_stream = io.StringIO()
-    exit_code = run_cli(args, registry=test_registry, err_stream=err_stream)
+    result = run_cli(args, registry=test_registry, err_stream=err_stream)
 
-    assert exit_code == 2
+    assert result is None
     assert "Missing Google Spreadsheet ID" in err_stream.getvalue()
 
 
-def test_given_missing_credentials_path_when_running_cli_sync_then_returns_error_code(
+def test_given_missing_credentials_path_when_running_cli_sync_then_returns_none(
     test_registry: ScraperRegistry, mock_provider: MagicMock
 ) -> None:
-    """Test run_cli without credentials path in non-dry-run mode returns error."""
+    """Test run_cli without credentials path in non-dry-run mode returns None and logs error."""
     mock_scraper = MagicMock(spec=RepositoryScraper)
     mock_scraper.scrape.return_value = []
     mock_provider.create_scraper.return_value = mock_scraper
@@ -287,16 +364,16 @@ def test_given_missing_credentials_path_when_running_cli_sync_then_returns_error
     )
 
     err_stream = io.StringIO()
-    exit_code = run_cli(args, registry=test_registry, err_stream=err_stream)
+    result = run_cli(args, registry=test_registry, err_stream=err_stream)
 
-    assert exit_code == 2
+    assert result is None
     assert "Missing Google credentials path" in err_stream.getvalue()
 
 
-def test_given_non_existent_credentials_path_when_running_cli_sync_then_returns_error_code(
+def test_given_non_existent_credentials_path_when_running_cli_sync_then_returns_none(
     test_registry: ScraperRegistry, mock_provider: MagicMock
 ) -> None:
-    """Test run_cli with non-existent credentials path returns error code 2."""
+    """Test run_cli with non-existent credentials path returns None and logs error."""
     mock_scraper = MagicMock(spec=RepositoryScraper)
     mock_scraper.scrape.return_value = []
     mock_provider.create_scraper.return_value = mock_scraper
@@ -316,9 +393,9 @@ def test_given_non_existent_credentials_path_when_running_cli_sync_then_returns_
     )
 
     err_stream = io.StringIO()
-    exit_code = run_cli(args, registry=test_registry, err_stream=err_stream)
+    result = run_cli(args, registry=test_registry, err_stream=err_stream)
 
-    assert exit_code == 2
+    assert result is None
     assert "Google credentials file not found" in err_stream.getvalue()
 
 
@@ -338,6 +415,9 @@ def test_given_no_cli_arguments_when_invoking_main_then_prints_help_and_exits_su
         (ScraperAuthenticationError, 1, "Authentication Error"),
         (ScraperConnectionError, 1, "Connection Error"),
         (ScraperError, 1, "Scraper Error"),
+        (SpreadsheetAccessError, 1, "Access Error"),
+        (SpreadsheetNotFoundError, 2, "Spreadsheet Error"),
+        (SpreadsheetError, 2, "Spreadsheet Error"),
         (ValueError, 2, "Configuration Error"),
         (RuntimeError, 1, "Unexpected Error"),
     ],
@@ -359,6 +439,22 @@ def test_given_scraper_error_when_invoking_main_then_logs_error_and_returns_exit
         assert exit_code == expected_code
         captured = capsys.readouterr()
         assert expected_msg in captured.err
+
+
+def test_given_failed_run_cli_when_invoking_main_then_returns_exit_code_2() -> None:
+    """Test main returns 2 when run_cli returns None without dry-run."""
+    with patch("gh_migration_inventory_manager.cli.run_cli", return_value=None):
+        exit_code = main(
+            [
+                "scrape",
+                "svn",
+                "--url",
+                "http://svn.example.com",
+                "--spreadsheet-id",
+                "x",
+            ]
+        )
+        assert exit_code == 2
 
 
 def test_given_keyboard_interrupt_when_invoking_main_then_returns_exit_code_130() -> (
