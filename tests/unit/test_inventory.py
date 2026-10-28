@@ -406,6 +406,10 @@ def test_given_valid_string_status_when_updating_progress_then_normalizes_to_mig
         ("waiting", MigrationStatus.WAITTING),
         ("", MigrationStatus.WAITTING),
         ("   ", MigrationStatus.WAITTING),
+        ("#REF!", MigrationStatus.WAITTING),
+        ("#N/A", MigrationStatus.WAITTING),
+        ("#VALUE!", MigrationStatus.WAITTING),
+        ("#ERROR!", MigrationStatus.WAITTING),
     ],
 )
 def test_given_localized_sheet_label_when_parsing_status_then_returns_correct_migration_status(

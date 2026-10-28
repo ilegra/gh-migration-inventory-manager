@@ -188,6 +188,12 @@ def test_given_localized_status_label_when_converting_row_then_maps_to_migration
         == MigrationStatus.SKIPPED
     )
 
+    row_formula_ref = Row(data={"workflow_id": "w5", "migration_status": "#REF!"})
+    assert (
+        WorkflowRowConverter.to_pipeline_record(row_formula_ref).migration_status
+        == MigrationStatus.WAITTING
+    )
+
 
 # --- PipelineInventory Tests ---
 
