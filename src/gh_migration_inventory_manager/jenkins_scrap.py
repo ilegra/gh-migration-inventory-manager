@@ -208,6 +208,7 @@ class JenkinsPipelineScraper(PipelineScraper):
     """Platform discovery scraper for Jenkins CI/CD controllers."""
 
     scraper_type: str = "pipeline"
+    target_type: str = "pipeline"
 
     def __init__(
         self,
@@ -255,7 +256,6 @@ class JenkinsPipelineScraper(PipelineScraper):
         scm = definition.get("scm") or {}
         file_path = definition.get("scriptPath")
 
-        # 1. Inspect Git SCM / standard userRemoteConfigs
         remote_configs = scm.get("userRemoteConfigs") or []
         for rc in remote_configs:
             url = rc.get("url")
@@ -267,9 +267,7 @@ class JenkinsPipelineScraper(PipelineScraper):
                     branch_spec = branches[0].get("name", "")
                     branch = branch_spec.replace("*/", "").replace("refs/heads/", "")
 
-                repo_name = clean_url.rstrip("/").split("/")[-1]
-                if repo_name.endswith(".git"):
-                    repo_name = repo_name[:-4]
+                repo_name = clean_url.rstrip("/").split("/")[-1].removesuffix(".git")
 
                 repo = Repository(
                     name=repo_name,
@@ -278,7 +276,6 @@ class JenkinsPipelineScraper(PipelineScraper):
                 )
                 return repo, file_path, branch
 
-        # 2. Inspect SVN SCM / locations
         locations = scm.get("locations") or []
         for loc in locations:
             remote = loc.get("remote")
@@ -292,15 +289,12 @@ class JenkinsPipelineScraper(PipelineScraper):
                 )
                 return repo, file_path, "trunk"
 
-        # 3. Inspect MultiBranch sources
         for src_entry in sources:
             source = src_entry.get("source") or {}
             remote = source.get("remote")
             if remote:
                 clean_remote = str(remote).strip()
-                repo_name = clean_remote.rstrip("/").split("/")[-1]
-                if repo_name.endswith(".git"):
-                    repo_name = repo_name[:-4]
+                repo_name = clean_remote.rstrip("/").split("/")[-1].removesuffix(".git")
                 repo = Repository(
                     name=repo_name,
                     url=clean_remote,
@@ -345,34 +339,20 @@ class JenkinsPipelineScraper(PipelineScraper):
         """Extract referenced shared libraries from actions, properties, or scripts."""
         libs: set[str] = set()
 
-        # 1. From lastBuild actions libraries
         last_build = job_data.get("lastBuild") or {}
         actions = last_build.get("actions") or []
-        for act in actions:
-            if not isinstance(act, dict):
-                continue
-            raw_libs = act.get("libraries") or []
-            for lib in raw_libs:
-                if isinstance(lib, dict) and lib.get("name"):
-                    name = str(lib["name"]).strip()
-                    if name:
-                        libs.add(name)
-
-        # 2. From job property libraries
         properties = job_data.get("property") or []
         if isinstance(properties, dict):
             properties = [properties]
-        for prop in properties:
-            if not isinstance(prop, dict):
-                continue
-            raw_libs = prop.get("libraries") or []
-            for lib in raw_libs:
-                if isinstance(lib, dict) and lib.get("name"):
-                    name = str(lib["name"]).strip()
-                    if name:
-                        libs.add(name)
 
-        # 3. From definition.script via regex
+        for container in (*actions, *properties):
+            if isinstance(container, dict):
+                for lib in container.get("libraries") or []:
+                    if isinstance(lib, dict) and lib.get("name"):
+                        name = str(lib["name"]).strip()
+                        if name:
+                            libs.add(name)
+
         definition = job_data.get("definition") or {}
         script = definition.get("script")
         if script and isinstance(script, str):
@@ -393,19 +373,16 @@ class JenkinsPipelineScraper(PipelineScraper):
         """Extract runner/agent labels from assigned labels, expressions, or scripts."""
         labels: set[str] = set()
 
-        # 1. From assignedLabel
         assigned_label = job_data.get("assignedLabel")
         if isinstance(assigned_label, dict):
             name = assigned_label.get("name")
             if name and isinstance(name, str) and name.strip():
                 labels.add(name.strip())
 
-        # 2. From labelExpression
         label_expr = job_data.get("labelExpression")
         if label_expr and isinstance(label_expr, str) and label_expr.strip():
             labels.add(label_expr.strip())
 
-        # 3. From definition.script
         definition = job_data.get("definition") or {}
         script = definition.get("script")
         if script and isinstance(script, str):
@@ -418,7 +395,6 @@ class JenkinsPipelineScraper(PipelineScraper):
                 if val:
                     labels.add(val)
 
-        # 4. From lastBuild.builtOn
         last_build = job_data.get("lastBuild") or {}
         built_on = last_build.get("builtOn")
         if built_on and isinstance(built_on, str):
@@ -467,7 +443,6 @@ class JenkinsPipelineScraper(PipelineScraper):
 
             full_path = f"{folder_path}/{name}" if folder_path else name
 
-            # 1. Folder traversal
             is_folder = (
                 "folder" in job_class.lower()
                 or "organizationfolder" in job_class.lower()
@@ -477,7 +452,6 @@ class JenkinsPipelineScraper(PipelineScraper):
                 pipelines.extend(sub_pipelines)
                 continue
 
-            # 2. Pipeline Job processing
             definition = job.get("definition") or {}
             sources = job.get("sources") or []
             pipeline_type = self._resolve_pipeline_type(job_class, definition)
@@ -489,7 +463,6 @@ class JenkinsPipelineScraper(PipelineScraper):
             shared_components = self._extract_shared_libraries(job)
             execution_environment = self._extract_agent_labels(job)
 
-            # Build timestamp and status
             last_build = job.get("lastBuild") or {}
             ts_millis = last_build.get("timestamp")
             last_build_dt: datetime | None = None
@@ -501,7 +474,6 @@ class JenkinsPipelineScraper(PipelineScraper):
             last_status = last_build.get("result")
             disabled = bool(job.get("disabled", False))
 
-            # Staleness evaluation
             is_stale = False
             if self.staleness_days > 0 and last_build_dt:
                 age_days = (now - last_build_dt).days

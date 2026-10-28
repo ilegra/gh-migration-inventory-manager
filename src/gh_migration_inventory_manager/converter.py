@@ -10,6 +10,7 @@ from gh_migration_inventory_manager.inventory import (
     InventoryRecord,
     MigrationStatus,
     PipelineRecord,
+    validate_migration_status,
 )
 from gh_migration_inventory_manager.scrap import Pipeline, Repository, format_stacks
 
@@ -22,46 +23,7 @@ class RepositoryConverter:
 
     def _validate_status(self, status: Any) -> MigrationStatus:
         """Validate that status is a valid MigrationStatus or valid status string."""
-        if isinstance(status, MigrationStatus):
-            return status
-
-        valid_display = ", ".join(
-            f"'{v}'" for v in sorted({s.value for s in MigrationStatus})
-        )
-
-        if status is None:
-            raise ValueError(
-                "Invalid migration status: None. Status cannot be None. "
-                f"Expected a valid MigrationStatus or one of: {valid_display}."
-            )
-
-        if isinstance(status, str):
-            clean = status.strip()
-            if not clean:
-                raise ValueError(
-                    "Invalid migration status: status cannot be empty. "
-                    f"Expected a valid MigrationStatus or one of: {valid_display}."
-                )
-
-            try:
-                return MigrationStatus(clean.lower())
-            except ValueError:
-                pass
-
-            try:
-                return MigrationStatus[clean.upper()]
-            except KeyError:
-                pass
-
-            raise ValueError(
-                f"Invalid migration status: '{status}'. "
-                f"Expected a valid MigrationStatus or one of: {valid_display}."
-            )
-
-        raise ValueError(
-            f"Invalid migration status type: '{type(status).__name__}'. "
-            f"Expected MigrationStatus or one of: {valid_display}."
-        )
+        return validate_migration_status(status)
 
     def _apply_status_timestamps(
         self, record: InventoryRecord, status: MigrationStatus
@@ -150,6 +112,17 @@ class RepositoryConverter:
         ]
 
 
+def _format_delimited_string(raw: Any) -> str:
+    """Format a string or iterable of items into a sorted comma-delimited string."""
+    if isinstance(raw, str):
+        return raw.strip()
+    if isinstance(raw, Iterable):
+        return ", ".join(
+            sorted({str(item).strip() for item in raw if str(item).strip()})
+        )
+    return str(raw).strip() if raw is not None else ""
+
+
 class PipelineConverter:
     """Conversion adapter for CI/CD pipeline discovery models and inventory entities."""
 
@@ -158,46 +131,7 @@ class PipelineConverter:
 
     def _validate_status(self, status: Any) -> MigrationStatus:
         """Validate that status is a valid MigrationStatus or valid status string."""
-        if isinstance(status, MigrationStatus):
-            return status
-
-        valid_display = ", ".join(
-            f"'{v}'" for v in sorted({s.value for s in MigrationStatus})
-        )
-
-        if status is None:
-            raise ValueError(
-                "Invalid migration status: None. Status cannot be None. "
-                f"Expected a valid MigrationStatus or one of: {valid_display}."
-            )
-
-        if isinstance(status, str):
-            clean = status.strip()
-            if not clean:
-                raise ValueError(
-                    "Invalid migration status: status cannot be empty. "
-                    f"Expected a valid MigrationStatus or one of: {valid_display}."
-                )
-
-            try:
-                return MigrationStatus(clean.lower())
-            except ValueError:
-                pass
-
-            try:
-                return MigrationStatus[clean.upper()]
-            except KeyError:
-                pass
-
-            raise ValueError(
-                f"Invalid migration status: '{status}'. "
-                f"Expected a valid MigrationStatus or one of: {valid_display}."
-            )
-
-        raise ValueError(
-            f"Invalid migration status type: '{type(status).__name__}'. "
-            f"Expected MigrationStatus or one of: {valid_display}."
-        )
+        return validate_migration_status(status)
 
     def to_pipeline_record(
         self,
@@ -244,26 +178,12 @@ class PipelineConverter:
                 branch = str(repo.default_branch)
 
         file_path = str(getattr(pipeline, "file_path", "") or "").strip()
-
-        raw_shared = getattr(pipeline, "shared_components", None) or []
-        if isinstance(raw_shared, str):
-            shared_components = raw_shared.strip()
-        elif isinstance(raw_shared, Iterable):
-            shared_components = ", ".join(
-                sorted({str(item).strip() for item in raw_shared if str(item).strip()})
-            )
-        else:
-            shared_components = str(raw_shared).strip()
-
-        raw_env = getattr(pipeline, "execution_environment", None) or []
-        if isinstance(raw_env, str):
-            execution_env = raw_env.strip()
-        elif isinstance(raw_env, Iterable):
-            execution_env = ", ".join(
-                sorted({str(item).strip() for item in raw_env if str(item).strip()})
-            )
-        else:
-            execution_env = str(raw_env).strip()
+        shared_components = _format_delimited_string(
+            getattr(pipeline, "shared_components", None) or []
+        )
+        execution_env = _format_delimited_string(
+            getattr(pipeline, "execution_environment", None) or []
+        )
 
         last_build = getattr(pipeline, "last_build_timestamp", None)
         last_status = str(getattr(pipeline, "last_status", "") or "").strip()

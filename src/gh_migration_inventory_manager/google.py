@@ -12,13 +12,13 @@ from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
 
 from gh_migration_inventory_manager.inventory import (
-    Inventory,
     InventoryAccessError,
     InventoryError,
     InventoryNotFoundError,
     InventoryRecord,
     MigrationStatus,
     PipelineRecord,
+    _from_sheet_label,
     format_migration_month,
 )
 
@@ -52,6 +52,7 @@ _HEADERS = [
     "Status da Migração",
     "Mês de Migração",
 ]
+HEADERS = _HEADERS
 
 _COLUMN_ALIAS_MAP: dict[str, int] = {
     "project": 0,
@@ -123,6 +124,15 @@ _WORKFLOW_HEADERS = [
     "Status do Último Build",
     "Status da Migração",
 ]
+WORKFLOW_HEADERS = _WORKFLOW_HEADERS
+
+
+def _format_status_label(status_val: Any) -> str:
+    """Format migration status into localized spreadsheet label."""
+    if isinstance(status_val, MigrationStatus):
+        return status_val.to_sheet_label()
+    return _from_sheet_label(str(status_val)).to_sheet_label()
+
 
 _WORKFLOW_COLUMN_ALIAS_MAP: dict[str, int] = {
     "workflow_id": 0,
@@ -189,7 +199,7 @@ class WorkflowRowConverter:
             raise ValueError("Row cannot be None.")
         status = row.data.get("migration_status", MigrationStatus.WAITTING)
         if isinstance(status, str):
-            status = Inventory._from_sheet_label(status)
+            status = _from_sheet_label(status)
 
         shared_components = str(
             row.data.get("shared_components")
@@ -251,7 +261,7 @@ class RowConverter:
         """Convert a Row instance to an InventoryRecord instance."""
         status = row.data.get("migration_status", MigrationStatus.WAITTING)
         if isinstance(status, str):
-            status = Inventory._from_sheet_label(status)
+            status = _from_sheet_label(status)
 
         return InventoryRecord(
             name=str(row.data.get("name", "")),
@@ -438,14 +448,9 @@ class Spreadsheet:
             branch = str(row.data.get("branch", ""))
             last_build_str = _format_date(row.data.get("last_build"))
             last_status = str(row.data.get("last_status", ""))
-
-            status_val = row.data.get("migration_status", MigrationStatus.WAITTING)
-            if isinstance(status_val, MigrationStatus):
-                status_str = status_val.to_sheet_label()
-            else:
-                status_str = Inventory._from_sheet_label(
-                    str(status_val)
-                ).to_sheet_label()
+            status_str = _format_status_label(
+                row.data.get("migration_status", MigrationStatus.WAITTING)
+            )
 
             return [
                 workflow_id,
@@ -470,12 +475,9 @@ class Spreadsheet:
         gh_mig = row.data.get("gh_migratation") or row.data.get("gh_migration")
         gh_mig_str = _format_date(gh_mig)
         origin_deact_str = _format_date(row.data.get("origin_deactivation"))
-
-        status_val = row.data.get("migration_status", MigrationStatus.WAITTING)
-        if isinstance(status_val, MigrationStatus):
-            status_str = status_val.to_sheet_label()
-        else:
-            status_str = Inventory._from_sheet_label(str(status_val)).to_sheet_label()
+        status_str = _format_status_label(
+            row.data.get("migration_status", MigrationStatus.WAITTING)
+        )
 
         month_str = str(row.data.get("migration_month", ""))
         if not month_str and gh_mig and isinstance(gh_mig, datetime):
@@ -508,7 +510,7 @@ class Spreadsheet:
                 "branch": padded[8],
                 "last_build": _parse_date(padded[9]),
                 "last_status": padded[10],
-                "migration_status": Inventory._from_sheet_label(padded[11]),
+                "migration_status": _from_sheet_label(padded[11]),
             }
             return Row(row_index=row_index, data=data, values=values)
 
@@ -520,10 +522,15 @@ class Spreadsheet:
             "last_commit": _parse_date(padded[3]),
             "gh_migratation": _parse_date(padded[4]),
             "origin_deactivation": _parse_date(padded[5]),
-            "migration_status": Inventory._from_sheet_label(padded[6]),
+            "migration_status": _from_sheet_label(padded[6]),
             "migration_month": padded[7],
         }
         return Row(row_index=row_index, data=data, values=values)
+
+    @property
+    def _end_column(self) -> str:
+        """Return the last column letter based on the current sheet structure."""
+        return "L" if self._is_workflow_sheet() else "H"
 
     def find_by(
         self,
@@ -547,8 +554,7 @@ class Spreadsheet:
         if col_idx is None:
             raise ValueError(f"Unknown column identifier: '{target_col}'")
 
-        col_letter = "L" if self._is_workflow_sheet() else "H"
-        read_range = f"{self.sheet_name}!A2:{col_letter}"
+        read_range = f"{self.sheet_name}!A2:{self._end_column}"
         resp = (
             self._service.spreadsheets()
             .values()
@@ -574,8 +580,7 @@ class Spreadsheet:
     def add(self, row: Row) -> Row:
         """Append a new row to the spreadsheet and update its row_index."""
         values = self._to_sheet_row(row)
-        col_letter = "L" if self._is_workflow_sheet() else "H"
-        append_range = f"{self.sheet_name}!A:{col_letter}"
+        append_range = f"{self.sheet_name}!A:{self._end_column}"
         body = {"values": [values]}
 
         res = (
@@ -605,8 +610,9 @@ class Spreadsheet:
             raise ValueError("Cannot update row without a valid row_index.")
 
         values = self._to_sheet_row(row)
-        col_letter = "L" if self._is_workflow_sheet() else "H"
-        target_range = f"{self.sheet_name}!A{row.row_index}:{col_letter}{row.row_index}"
+        target_range = (
+            f"{self.sheet_name}!A{row.row_index}:{self._end_column}{row.row_index}"
+        )
         body = {"values": [values]}
 
         self._service.spreadsheets().values().update(
@@ -621,8 +627,7 @@ class Spreadsheet:
 
     def clear_row(self, row_index: int) -> None:
         """Clear all cell values in the specified row."""
-        col_letter = "L" if self._is_workflow_sheet() else "H"
-        target_range = f"{self.sheet_name}!A{row_index}:{col_letter}{row_index}"
+        target_range = f"{self.sheet_name}!A{row_index}:{self._end_column}{row_index}"
         self._service.spreadsheets().values().clear(
             spreadsheetId=self.id, range=target_range, body={}
         ).execute()

@@ -21,8 +21,6 @@ from gh_migration_inventory_manager.inventory import (
     PipelineInventory,
 )
 from gh_migration_inventory_manager.scrap import (
-    PipelineScraper,
-    RepositoryScraper,
     ScraperAuthenticationError,
     ScraperConnectionError,
     ScraperError,
@@ -136,74 +134,65 @@ def run_cli(
     active_inv: Any = None
 
     is_pipeline = (
-        getattr(scraper, "scraper_type", None) == "pipeline"
+        getattr(scraper, "target_type", None) == "pipeline"
+        or getattr(scraper, "scraper_type", None) == "pipeline"
         or getattr(provider, "target_type", None) == "pipeline"
-        or (
-            isinstance(scraper, PipelineScraper)
-            and not isinstance(scraper, RepositoryScraper)
-        )
     )
 
-    try:
-        if is_pipeline:
-            sheet_name = getattr(args, "sheet_name", None) or "Workflows"
-            p_conv = (
-                pipeline_converter
-                if pipeline_converter is not None
-                else PipelineConverter()
-            )
-            p_records = p_conv.to_pipeline_records(items, initial_status=initial_status)
-
-            p_inv = pipeline_inventory
-            if p_inv is not None and not hasattr(p_inv, "sync_records"):
-                p_inv = PipelineInventory(spreadsheet=p_inv, converter=p_conv)
-            elif p_inv is None:
-                p_inv = PipelineInventory(
-                    spreadsheet=spreadsheet,
-                    spreadsheet_id=getattr(args, "spreadsheet_id", None),
-                    credentials_path=getattr(args, "credentials_path", None),
-                    sheet_name=sheet_name,
-                    converter=p_conv,
-                )
-            active_inv = p_inv
-            synced_records = p_inv.sync_records(p_records)
-        else:
-            sheet_name = getattr(args, "sheet_name", None) or "Inventario"
-            r_conv = conv
-            records = r_conv.to_inventory_records(items, initial_status=initial_status)
-
-            r_inv = inventory
-            if r_inv is not None and not hasattr(r_inv, "sync_records"):
-                r_inv = Inventory(spreadsheet=r_inv, converter=r_conv)
-            elif r_inv is None:
-                r_inv = Inventory(
-                    spreadsheet=spreadsheet,
-                    spreadsheet_id=getattr(args, "spreadsheet_id", None),
-                    credentials_path=getattr(args, "credentials_path", None),
-                    sheet_name=sheet_name,
-                    converter=r_conv,
-                )
-            active_inv = r_inv
-            synced_records = r_inv.sync_records(records)
-    except InventoryNotFoundError as exc:
-        target = (
+    def _extract_target(exc: Exception) -> str:
+        return (
             getattr(args, "spreadsheet_id", None)
             or getattr(active_inv, "spreadsheet_id", None)
             or getattr(inventory, "spreadsheet_id", None)
             or (str(exc).split("'")[1] if "'" in str(exc) else "")
         )
+
+    try:
+        inv_cls: type[PipelineInventory] | type[Inventory]
+        if is_pipeline:
+            sheet_name = getattr(args, "sheet_name", None) or "Workflows"
+            active_converter = (
+                pipeline_converter
+                if pipeline_converter is not None
+                else PipelineConverter()
+            )
+            records = active_converter.to_pipeline_records(
+                items, initial_status=initial_status
+            )
+            inv_cls = PipelineInventory
+            injected_inv = pipeline_inventory
+        else:
+            sheet_name = getattr(args, "sheet_name", None) or "Inventario"
+            active_converter = conv
+            records = active_converter.to_inventory_records(
+                items, initial_status=initial_status
+            )
+            inv_cls = Inventory
+            injected_inv = inventory
+
+        if injected_inv is not None and not hasattr(injected_inv, "sync_records"):
+            active_inv = inv_cls(spreadsheet=injected_inv, converter=active_converter)
+        elif injected_inv is None:
+            active_inv = inv_cls(
+                spreadsheet=spreadsheet,
+                spreadsheet_id=getattr(args, "spreadsheet_id", None),
+                credentials_path=getattr(args, "credentials_path", None),
+                sheet_name=sheet_name,
+                converter=active_converter,
+            )
+        else:
+            active_inv = injected_inv
+
+        synced_records = active_inv.sync_records(records)
+    except InventoryNotFoundError as exc:
+        target = _extract_target(exc)
         print(
             f"Error: Inventory not found: '{target}'.",
             file=err,
         )
         return None
     except InventoryAccessError as exc:
-        target = (
-            getattr(args, "spreadsheet_id", None)
-            or getattr(active_inv, "spreadsheet_id", None)
-            or getattr(inventory, "spreadsheet_id", None)
-            or (str(exc).split("'")[1] if "'" in str(exc) else "")
-        )
+        target = _extract_target(exc)
         print(
             f"Error: Access denied to inventory: '{target}'.",
             file=err,

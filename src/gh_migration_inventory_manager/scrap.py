@@ -202,6 +202,7 @@ class PipelineScraper(Scraper[Pipeline], Protocol):
     """Protocol defining the pipeline scraper contract for CI/CD platforms."""
 
     scraper_type: str = "pipeline"
+    target_type: str = "pipeline"
 
     def scrape(self) -> list[Pipeline]:
         """Discover and return CI/CD pipelines from the downstream platform.

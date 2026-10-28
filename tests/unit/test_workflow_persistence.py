@@ -8,7 +8,7 @@ from unittest.mock import MagicMock
 import pytest
 
 from gh_migration_inventory_manager.google import (
-    _WORKFLOW_HEADERS,
+    WORKFLOW_HEADERS,
     Credentials,
     Row,
     Spreadsheet,
@@ -396,7 +396,6 @@ def test_given_ensure_sheet_when_workflows_tab_missing_then_adds_sheet_with_head
 
     mock_batch.assert_called_once()
     mock_update.assert_called_once()
-    # Check that _WORKFLOW_HEADERS was written to A1:L1
     call_kwargs = mock_update.call_args[1]
     assert call_kwargs["range"] == "Workflows!A1:L1"
-    assert call_kwargs["body"]["values"] == [_WORKFLOW_HEADERS]
+    assert call_kwargs["body"]["values"] == [WORKFLOW_HEADERS]
