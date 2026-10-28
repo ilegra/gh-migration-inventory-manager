@@ -248,7 +248,7 @@ class Inventory:
     def _from_sheet_label(label: str) -> MigrationStatus:
         """Parse spreadsheet label into the corresponding MigrationStatus."""
         clean = (label or "").strip().lower()
-        if not clean or clean.startswith("#"):
+        if not clean:
             return MigrationStatus.WAITTING
         if "somente github" in clean or clean in ("migrated", "migrados"):
             return MigrationStatus.MIGRATED
