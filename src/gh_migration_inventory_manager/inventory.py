@@ -114,6 +114,22 @@ class InventoryRecord:
         return format_migration_month(self.gh_migratation)
 
 
+@dataclass
+class PipelineRecord:
+    """Represents a CI/CD pipeline item in the workflows inventory."""
+
+    workflow_id: str
+    platform: str = "jenkins"
+    pipeline_type: str = ""
+    repository_association: str = ""
+    repository_url: str = ""
+    file_path: str = ""
+    branch: str = ""
+    last_build: datetime | None = None
+    last_status: str = ""
+    migration_status: MigrationStatus = MigrationStatus.WAITTING
+
+
 class Inventory:
     """Core inventory manager backed by a Google Spreadsheet."""
 
@@ -517,6 +533,207 @@ class Inventory:
                     for r in repositories
                 ]
         return self.sync_records(records)
+
+
+class PipelineInventory:
+    """Workflows and pipelines inventory manager backed by a Google Spreadsheet tab."""
+
+    def __init__(
+        self,
+        spreadsheet: SpreadsheetClient | Any = None,
+        spreadsheet_id: str | None = None,
+        credentials_path: str | None = None,
+        sheet_name: str = "Workflows",
+        credentials: Any = None,
+        converter: Any = None,
+    ) -> None:
+        self.spreadsheet = spreadsheet
+        self.spreadsheet_id = spreadsheet_id
+        self.credentials_path = credentials_path
+        self.sheet_name = sheet_name
+        self.credentials = credentials
+        if converter is not None:
+            self.converter = converter
+        else:
+            from gh_migration_inventory_manager.converter import (
+                PipelineConverter as _PipelineConverter,
+            )
+
+            self.converter = _PipelineConverter()
+
+    def _validate_and_build_credentials(self) -> Any:
+        """Validate credentials configuration and build Credentials instance."""
+        if self.credentials is not None:
+            if self.credentials_path is not None:
+                configured_path = getattr(self.credentials, "credentials_path", None)
+                if (
+                    configured_path
+                    and configured_path != str(self.credentials_path).strip()
+                ):
+                    raise ValueError(
+                        "Inconsistent credentials configuration: "
+                        f"credentials.credentials_path '{configured_path}' "
+                        f"does not match credentials_path '{self.credentials_path}'."
+                    )
+            return self.credentials
+
+        if not self.credentials_path or not str(self.credentials_path).strip():
+            raise ValueError(
+                "Missing Google credentials path. Pass --credentials-path."
+            )
+
+        clean_path = str(self.credentials_path).strip()
+        from pathlib import Path
+
+        if not Path(clean_path).exists():
+            raise FileNotFoundError(
+                f"Google credentials file not found: '{clean_path}'."
+            )
+
+        from gh_migration_inventory_manager.google import Credentials
+
+        self.credentials = Credentials(credentials_path=clean_path)
+        return self.credentials
+
+    def _validate_and_build_spreadsheet(self) -> SpreadsheetClient:
+        """Validate spreadsheet configuration and build Spreadsheet instance."""
+        if self.spreadsheet is not None:
+            if self.spreadsheet_id is not None:
+                configured_id = getattr(self.spreadsheet, "id", None)
+                if configured_id and configured_id != str(self.spreadsheet_id).strip():
+                    raise ValueError(
+                        "Inconsistent spreadsheet configuration: "
+                        f"spreadsheet.id '{configured_id}' "
+                        f"does not match spreadsheet_id '{self.spreadsheet_id}'."
+                    )
+            if hasattr(self.spreadsheet, "validate") and callable(
+                self.spreadsheet.validate
+            ):
+                self.spreadsheet.validate()
+            if hasattr(self.spreadsheet, "ensure_sheet") and callable(
+                self.spreadsheet.ensure_sheet
+            ):
+                self.spreadsheet.ensure_sheet(self.sheet_name)
+            return self.spreadsheet
+
+        if not self.spreadsheet_id or not str(self.spreadsheet_id).strip():
+            raise ValueError("Missing Google Spreadsheet ID. Pass --spreadsheet-id.")
+
+        clean_id = str(self.spreadsheet_id).strip()
+        creds = self._validate_and_build_credentials()
+
+        from gh_migration_inventory_manager.google import Spreadsheet
+
+        sheet = Spreadsheet(
+            id=clean_id,
+            credentials=creds,
+            sheet_name=self.sheet_name,
+        )
+        sheet.validate()
+        sheet.ensure_sheet(self.sheet_name)
+        self.spreadsheet = sheet
+        return self.spreadsheet
+
+    def _get_spreadsheet(self) -> SpreadsheetClient:
+        """Retrieve, validate, and return the underlying Spreadsheet client."""
+        if self.spreadsheet is not None:
+            if hasattr(self.spreadsheet, "validate") and callable(
+                self.spreadsheet.validate
+            ):
+                self.spreadsheet.validate()
+            if hasattr(self.spreadsheet, "ensure_sheet") and callable(
+                self.spreadsheet.ensure_sheet
+            ):
+                self.spreadsheet.ensure_sheet(self.sheet_name)
+            return self.spreadsheet
+        return self._validate_and_build_spreadsheet()
+
+    def _find_row(self, workflow_id: str) -> Any | None:
+        """Find a row matching workflow ID."""
+        sheet = self._get_spreadsheet()
+        clean_id = workflow_id.strip() if isinstance(workflow_id, str) else ""
+        if not clean_id:
+            raise ValueError("Workflow ID cannot be empty.")
+
+        matching_rows = sheet.find_by("workflow_id", clean_id)
+        return matching_rows[0] if matching_rows else None
+
+    def register_record(self, record: PipelineRecord) -> PipelineRecord:
+        """Register or synchronize a PipelineRecord in the inventory.
+
+        If the workflow is already recorded, its migration status is strictly
+        preserved, while metadata (last_build, last_status, etc.) are updated.
+        """
+        from gh_migration_inventory_manager.google import WorkflowRowConverter
+
+        if record is None:
+            raise ValueError("PipelineRecord cannot be None.")
+
+        clean_id = str(record.workflow_id).strip() if record.workflow_id else ""
+        if not clean_id:
+            raise ValueError("Pipeline workflow_id cannot be empty.")
+
+        sheet = self._get_spreadsheet()
+
+        existing_row = self._find_row(clean_id)
+        if existing_row is not None:
+            existing_record = WorkflowRowConverter.to_pipeline_record(existing_row)
+            # Preserve existing migration status
+            record.migration_status = existing_record.migration_status
+            row = WorkflowRowConverter.from_pipeline_record(
+                record, row_index=existing_row.row_index
+            )
+            saved_row = sheet.update_row(row)
+        else:
+            row = WorkflowRowConverter.from_pipeline_record(record, row_index=None)
+            saved_row = sheet.add(row)
+
+        return WorkflowRowConverter.to_pipeline_record(saved_row)
+
+    def update_progress(
+        self,
+        workflow_id: str,
+        status: MigrationStatus | str,
+    ) -> PipelineRecord:
+        """Update migration progress for a pipeline in the inventory."""
+        from gh_migration_inventory_manager.google import WorkflowRowConverter
+
+        clean_id = workflow_id.strip() if isinstance(workflow_id, str) else ""
+        if not clean_id:
+            raise ValueError("Workflow ID cannot be empty.")
+
+        valid_status = Inventory._validate_status(status)
+        existing_row = self._find_row(clean_id)
+
+        if not existing_row:
+            record = PipelineRecord(
+                workflow_id=clean_id,
+                migration_status=valid_status,
+            )
+            row_index = None
+        else:
+            record = WorkflowRowConverter.to_pipeline_record(existing_row)
+            record.migration_status = valid_status
+            row_index = existing_row.row_index
+
+        row = WorkflowRowConverter.from_pipeline_record(record, row_index=row_index)
+        sheet = self._get_spreadsheet()
+        saved_row = sheet.update_row(row) if row_index is not None else sheet.add(row)
+        return WorkflowRowConverter.to_pipeline_record(saved_row)
+
+    def get_pipeline(self, workflow_id: str) -> PipelineRecord | None:
+        """Find a pipeline record by workflow ID."""
+        from gh_migration_inventory_manager.google import WorkflowRowConverter
+
+        row = self._find_row(workflow_id)
+        return WorkflowRowConverter.to_pipeline_record(row) if row is not None else None
+
+    def sync_records(self, records: list[PipelineRecord]) -> list[PipelineRecord]:
+        """Synchronize a collection of PipelineRecord instances."""
+        if records is None:
+            raise ValueError("Records collection cannot be None.")
+        self._get_spreadsheet()
+        return [self.register_record(rec) for rec in records]
 
 
 def __getattr__(name: str) -> Any:

@@ -18,6 +18,7 @@ from gh_migration_inventory_manager.inventory import (
     InventoryNotFoundError,
     InventoryRecord,
     MigrationStatus,
+    PipelineRecord,
     format_migration_month,
 )
 
@@ -106,6 +107,100 @@ class Row:
     row_index: int | None = None
     data: dict[str, Any] = field(default_factory=dict)
     values: list[str] = field(default_factory=list)
+
+
+_WORKFLOW_HEADERS = [
+    "ID do Workflow",
+    "Plataforma",
+    "Tipo de Pipeline",
+    "Repositório Associado",
+    "URL do Repositório",
+    "Caminho do Workflow",
+    "Branch Padrão",
+    "Último Build",
+    "Status do Último Build",
+    "Status da Migração",
+]
+
+_WORKFLOW_COLUMN_ALIAS_MAP: dict[str, int] = {
+    "workflow_id": 0,
+    "id do workflow": 0,
+    "id": 0,
+    "name": 0,
+    "platform": 1,
+    "plataforma": 1,
+    "pipeline_type": 2,
+    "tipo de pipeline": 2,
+    "type": 2,
+    "repository_association": 3,
+    "repositório associado": 3,
+    "repositorio associado": 3,
+    "repository_url": 4,
+    "url do repositório": 4,
+    "url do repositorio": 4,
+    "file_path": 5,
+    "caminho do workflow": 5,
+    "path": 5,
+    "branch": 6,
+    "branch padrão": 6,
+    "branch padrao": 6,
+    "last_build": 7,
+    "último build": 7,
+    "ultimo build": 7,
+    "last_status": 8,
+    "status do último build": 8,
+    "status do ultimo build": 8,
+    "migration_status": 9,
+    "status da migração": 9,
+    "status": 9,
+}
+
+
+class WorkflowRowConverter:
+    """Conversion utility between Row and PipelineRecord instances."""
+
+    @staticmethod
+    def to_pipeline_record(row: Row) -> PipelineRecord:
+        """Convert a Row instance to a PipelineRecord instance."""
+        if row is None:
+            raise ValueError("Row cannot be None.")
+        status = row.data.get("migration_status", MigrationStatus.WAITTING)
+        if isinstance(status, str):
+            status = Inventory._from_sheet_label(status)
+
+        return PipelineRecord(
+            workflow_id=str(row.data.get("workflow_id", "")),
+            platform=str(row.data.get("platform", "jenkins")),
+            pipeline_type=str(row.data.get("pipeline_type", "")),
+            repository_association=str(row.data.get("repository_association", "")),
+            repository_url=str(row.data.get("repository_url", "")),
+            file_path=str(row.data.get("file_path", "")),
+            branch=str(row.data.get("branch", "")),
+            last_build=_parse_date(row.data.get("last_build")),
+            last_status=str(row.data.get("last_status", "")),
+            migration_status=status,
+        )
+
+    @staticmethod
+    def from_pipeline_record(
+        record: PipelineRecord, row_index: int | None = None
+    ) -> Row:
+        """Construct a Row instance from a PipelineRecord."""
+        if record is None:
+            raise ValueError("PipelineRecord cannot be None.")
+        data: dict[str, Any] = {
+            "workflow_id": record.workflow_id,
+            "platform": record.platform,
+            "pipeline_type": record.pipeline_type,
+            "repository_association": record.repository_association,
+            "repository_url": record.repository_url,
+            "file_path": record.file_path,
+            "branch": record.branch,
+            "last_build": record.last_build,
+            "last_status": record.last_status,
+            "migration_status": record.migration_status,
+        }
+        return Row(row_index=row_index, data=data)
 
 
 class RowConverter:
@@ -225,11 +320,94 @@ class Spreadsheet:
                 f"Error accessing spreadsheet '{clean_id}': {err}"
             ) from err
 
+    def _is_workflow_sheet(self) -> bool:
+        return (self.sheet_name or "").strip().lower() in ("workflows", "pipelines")
+
+    def ensure_sheet(
+        self,
+        sheet_name: str | None = None,
+        headers: list[str] | None = None,
+    ) -> None:
+        """Ensure the target sheet tab exists, creating it with headers if missing."""
+        target = sheet_name or self.sheet_name
+        hdrs = headers
+        if hdrs is None:
+            if (target or "").strip().lower() in ("workflows", "pipelines"):
+                hdrs = _WORKFLOW_HEADERS
+            else:
+                hdrs = _HEADERS
+
+        clean_id = (self.id or "").strip()
+        if not clean_id:
+            return
+
+        try:
+            meta = (
+                self._service.spreadsheets()
+                .get(spreadsheetId=clean_id, fields="sheets.properties.title")
+                .execute()
+            )
+            existing_sheets = [
+                s.get("properties", {}).get("title")
+                for s in meta.get("sheets", [])
+                if s.get("properties", {}).get("title")
+            ]
+            if target not in existing_sheets:
+                req = {"addSheet": {"properties": {"title": target}}}
+                self._service.spreadsheets().batchUpdate(
+                    spreadsheetId=clean_id,
+                    body={"requests": [req]},
+                ).execute()
+
+                if hdrs:
+                    end_col = chr(ord("A") + len(hdrs) - 1)
+                    header_range = f"{target}!A1:{end_col}1"
+                    self._service.spreadsheets().values().update(
+                        spreadsheetId=clean_id,
+                        range=header_range,
+                        valueInputOption="USER_ENTERED",
+                        body={"values": [hdrs]},
+                    ).execute()
+        except Exception as err:
+            raise SpreadsheetError(f"Error ensuring sheet '{target}': {err}") from err
+
     def _to_sheet_row(self, row: Row) -> list[str]:
         """Convert row data to an ordered list of cell string values.
 
         Values are formatted for Google Sheets columns.
         """
+        if self._is_workflow_sheet():
+            workflow_id = str(row.data.get("workflow_id", ""))
+            platform = str(row.data.get("platform", "jenkins"))
+            pipeline_type = str(row.data.get("pipeline_type", ""))
+            repo_assoc = str(row.data.get("repository_association", ""))
+            repo_url = str(row.data.get("repository_url", ""))
+            file_path = str(row.data.get("file_path", ""))
+            branch = str(row.data.get("branch", ""))
+            last_build_str = _format_date(row.data.get("last_build"))
+            last_status = str(row.data.get("last_status", ""))
+
+            status_val = row.data.get("migration_status", MigrationStatus.WAITTING)
+            if isinstance(status_val, MigrationStatus):
+                status_str = status_val.to_sheet_label()
+            else:
+                status_str = Inventory._from_sheet_label(
+                    str(status_val)
+                ).to_sheet_label()
+
+            return [
+                workflow_id,
+                platform,
+                pipeline_type,
+                repo_assoc,
+                repo_url,
+                file_path,
+                branch,
+                last_build_str,
+                last_status,
+                status_str,
+            ]
+
         project = str(row.data.get("project", ""))
         name = str(row.data.get("name", ""))
         stack = str(row.data.get("stack", ""))
@@ -262,8 +440,24 @@ class Spreadsheet:
 
     def _from_sheet_row(self, values: list[str], row_index: int | None = None) -> Row:
         """Parse raw sheet cell values into a Row."""
+        if self._is_workflow_sheet():
+            padded = values + [""] * max(0, len(_WORKFLOW_HEADERS) - len(values))
+            data: dict[str, Any] = {
+                "workflow_id": padded[0],
+                "platform": padded[1],
+                "pipeline_type": padded[2],
+                "repository_association": padded[3],
+                "repository_url": padded[4],
+                "file_path": padded[5],
+                "branch": padded[6],
+                "last_build": _parse_date(padded[7]),
+                "last_status": padded[8],
+                "migration_status": Inventory._from_sheet_label(padded[9]),
+            }
+            return Row(row_index=row_index, data=data, values=values)
+
         padded = values + [""] * max(0, len(_HEADERS) - len(values))
-        data: dict[str, Any] = {
+        data = {
             "project": padded[0],
             "name": padded[1],
             "stack": padded[2],
@@ -287,12 +481,18 @@ class Spreadsheet:
         if target_col is None:
             raise ValueError("Column name cannot be None.")
         clean_col = target_col.strip().lower()
-        col_idx = _COLUMN_ALIAS_MAP.get(clean_col)
+        alias_map = (
+            _WORKFLOW_COLUMN_ALIAS_MAP
+            if self._is_workflow_sheet()
+            else _COLUMN_ALIAS_MAP
+        )
+        col_idx = alias_map.get(clean_col)
 
         if col_idx is None:
             raise ValueError(f"Unknown column identifier: '{target_col}'")
 
-        read_range = f"{self.sheet_name}!A2:H"
+        col_letter = "J" if self._is_workflow_sheet() else "H"
+        read_range = f"{self.sheet_name}!A2:{col_letter}"
         resp = (
             self._service.spreadsheets()
             .values()
@@ -318,7 +518,8 @@ class Spreadsheet:
     def add(self, row: Row) -> Row:
         """Append a new row to the spreadsheet and update its row_index."""
         values = self._to_sheet_row(row)
-        append_range = f"{self.sheet_name}!A:H"
+        col_letter = "J" if self._is_workflow_sheet() else "H"
+        append_range = f"{self.sheet_name}!A:{col_letter}"
         body = {"values": [values]}
 
         res = (
@@ -348,7 +549,8 @@ class Spreadsheet:
             raise ValueError("Cannot update row without a valid row_index.")
 
         values = self._to_sheet_row(row)
-        target_range = f"{self.sheet_name}!A{row.row_index}:H{row.row_index}"
+        col_letter = "J" if self._is_workflow_sheet() else "H"
+        target_range = f"{self.sheet_name}!A{row.row_index}:{col_letter}{row.row_index}"
         body = {"values": [values]}
 
         self._service.spreadsheets().values().update(
@@ -363,7 +565,8 @@ class Spreadsheet:
 
     def clear_row(self, row_index: int) -> None:
         """Clear all cell values in the specified row."""
-        target_range = f"{self.sheet_name}!A{row_index}:H{row_index}"
+        col_letter = "J" if self._is_workflow_sheet() else "H"
+        target_range = f"{self.sheet_name}!A{row_index}:{col_letter}{row_index}"
         self._service.spreadsheets().values().clear(
             spreadsheetId=self.id, range=target_range, body={}
         ).execute()

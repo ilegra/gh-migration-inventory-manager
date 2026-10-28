@@ -10,21 +10,26 @@ This document outlines key architectural principles and testing conventions to a
 
 ```
 src/gh_migration_inventory_manager/
-├── scrap.py                # Canonical domain models (Repository, Stack) & contracts
-├── <platform>_scrap.py     # Platform discovery adapters & transport clients (e.g. svn_scrap.py)
-├── inventory.py            # Migration lifecycle orchestration & progress coordination
-└── google.py               # Inventory persistence backend (Google Sheets)
+├── scrap.py                # Canonical domain models (Repository, Pipeline, Stack) & protocols (Scraper, ScraperProvider)
+├── converter.py            # Domain-to-inventory converters (RepositoryConverter, PipelineConverter)
+├── <platform>_scrap.py     # Platform discovery adapters & transport clients (svn_scrap.py, jenkins_scrap.py)
+├── inventory.py            # Migration lifecycle orchestration (Inventory, PipelineInventory)
+├── google.py               # Inventory persistence backend (Google Sheets: Inventario & Workflows tabs)
+└── cli.py                  # Unified CLI entrypoint and platform subcommands
 tests/
 ├── unit/                   # Fast, offline validation via client dependency injection
-└── integration/            # End-to-end verification against external environments
+└── integration/            # End-to-end verification against external environments (Docker SVN/Jenkins, Google Sheets)
 ```
 
 - **Core Architectural Strategy**:
-  - **Decoupled Source Discovery**: Scrapers act strictly as discovery adapters. They normalize external platform structures into standard repository instances without awareness of the spreadsheet or migration tracking logic.
+  - **Decoupled Source Discovery**: Scrapers act strictly as discovery adapters. They normalize external platform structures into standard domain instances (`Repository` for VCS, `Pipeline` for CI/CD) without awareness of the spreadsheet or migration tracking logic.
   - **Two-Tier Platform Design**: Each platform module separates raw communication from domain parsing:
-    - *Transport Client*: Handles network protocol operations, raw payload retrieval, and authentication with the remote platform.
-    - *Platform Scraper*: Traverses platform hierarchies, resolves structural layouts (e.g., standard vs multi-project), detects technology stacks, and normalizes repositories.
-  - **Hierarchy Flattening**: External platforms organize code under diverse grouping structures (e.g., SVN standard trunks vs multi-project folders, GitLab subgroups, Bitbucket projects). The platform scraper is responsible for traversing and flattening these hierarchies into discrete, trackable migration units.
+    - *Transport Client*: Handles network protocol operations, raw payload retrieval, standard library retries/exponential backoff (`urllib3.util.Retry`), and authentication with the remote platform.
+    - *Platform Scraper*: Traverses platform hierarchies (SVN repository trees or Jenkins folder hierarchies), resolves structural layouts or pipeline types (declarative, scripted, multibranch, freestyle), extracts SCM repository linkages, detects technology stacks, and normalizes items.
+  - **Dual Discovery Abstractions**:
+    - `RepositoryScraper(Scraper[Repository])`: Discovers source repositories from VCS platforms (SVN, GitLab, Bitbucket).
+    - `PipelineScraper(Scraper[Pipeline])`: Discovers CI/CD workflows and pipelines from orchestration platforms (Jenkins, GitLab CI, GitHub Actions).
+  - **Hierarchy Flattening**: External platforms organize code and jobs under diverse grouping structures (e.g., SVN standard trunks vs multi-project folders, Jenkins nested folders and organization folders, GitLab subgroups). The platform scraper is responsible for traversing and flattening these hierarchies into discrete, trackable migration units.
   - **Injectable Transports**: Scrapers must receive their transport client through dependency injection to allow comprehensive offline unit testing without live network services.
 
 ### 2. Data Classes & Separation of Concerns

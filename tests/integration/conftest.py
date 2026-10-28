@@ -253,6 +253,132 @@ def svn_auth(svn_server: dict[str, Any]) -> BasicAuthenticator:
     return BasicAuthenticator(svn_server["username"], svn_server["password"])
 
 
+@pytest.fixture(scope="module")
+def jenkins_server() -> Generator[dict[str, Any], None, None]:
+    """Pytest module-scoped fixture spinning up a Jenkins Docker container."""
+    if not _is_docker_available():
+        pytest.skip("Docker is not available; skipping live Jenkins integration tests.")
+
+    # Image available locally
+    image = "test-jenkins:latest"
+    run_cmd = [
+        "docker",
+        "run",
+        "-d",
+        "--rm",
+        "-p",
+        "0:8080",
+        "-e",
+        "CASC_JENKINS_CONFIG=",
+        "-e",
+        "JAVA_OPTS=-Djenkins.install.runSetupWizard=false -Dhudson.security.csrf.GlobalCrumbIssuerConfiguration.DISABLE_CSRF_PROTECTION=true",
+        image,
+    ]
+    container_id: str | None = None
+    try:
+        proc = subprocess.run(run_cmd, capture_output=True, text=True, check=True)  # nosec B603
+        container_id = proc.stdout.strip()
+    except subprocess.CalledProcessError as e:
+        pytest.skip(f"Failed to start Jenkins container: {e.stderr}")
+
+    if not container_id:
+        pytest.skip("Failed to start Jenkins container: container ID is empty.")
+
+    try:
+        port_proc = subprocess.run(  # nosec B603
+            ["docker", "port", container_id, "8080/tcp"],
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        port_line = port_proc.stdout.strip().splitlines()[0]
+        host_port = int(port_line.split(":")[-1])
+        base_url = f"http://127.0.0.1:{host_port}"
+
+        # Wait for Jenkins API to be ready
+        ready = False
+        for _ in range(60):
+            try:
+                req = urllib.request.Request(f"{base_url}/api/json")
+                with urllib.request.urlopen(req, timeout=2) as resp:  # nosec B310
+                    if resp.status == 200:
+                        ready = True
+                        break
+            except (
+                urllib.error.HTTPError,
+                urllib.error.URLError,
+                TimeoutError,
+                OSError,
+            ):
+                time.sleep(1)
+
+        if not ready:
+            pytest.fail("Timed out waiting for Jenkins Docker container to start.")
+
+        # Seed test jobs into Jenkins
+        # 1. Freestyle Job
+        freestyle_xml = """<?xml version='1.1' encoding='UTF-8'?>
+<project>
+  <description>Sample integration test freestyle job</description>
+  <scm class="hudson.scm.NullSCM"/>
+</project>"""
+        req_f = urllib.request.Request(
+            f"{base_url}/createItem?name=sample-freestyle-job",
+            data=freestyle_xml.encode("utf-8"),
+            headers={"Content-Type": "application/xml"},
+        )
+        try:
+            with urllib.request.urlopen(req_f, timeout=5):  # nosec B310
+                pass
+        except Exception:
+            pass
+
+        # 2. Pipeline Job (declarative / workflow job)
+        pipeline_xml = """<?xml version='1.1' encoding='UTF-8'?>
+<flow-definition plugin="workflow-job">
+  <description>Sample integration test pipeline job</description>
+  <definition class="org.jenkinsci.plugins.workflow.cps.CpsFlowDefinition" plugin="workflow-cps">
+    <script>pipeline { agent any; stages { stage('Build') { steps { echo 'Building...' } } } }</script>
+    <sandbox>true</sandbox>
+  </definition>
+</flow-definition>"""
+        req_p = urllib.request.Request(
+            f"{base_url}/createItem?name=sample-pipeline-job",
+            data=pipeline_xml.encode("utf-8"),
+            headers={"Content-Type": "application/xml"},
+        )
+        try:
+            with urllib.request.urlopen(req_p, timeout=5):  # nosec B310
+                pass
+        except Exception:
+            pass
+
+        # Trigger a build on sample-pipeline-job so lastBuild is populated
+        req_b = urllib.request.Request(
+            f"{base_url}/job/sample-pipeline-job/build",
+            data=b"",
+        )
+        try:
+            with urllib.request.urlopen(req_b, timeout=5):  # nosec B310
+                pass
+            time.sleep(3)
+        except Exception:
+            pass
+
+        yield {
+            "base_url": base_url,
+            "container_id": container_id,
+        }
+    finally:
+        if container_id is not None:
+            subprocess.run(  # nosec B603
+                ["docker", "rm", "-f", container_id],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                check=False,
+            )
+
+
 _DEFAULT_SPREADSHEET_ID = "1Z0PAjv8KK6WBrS2356gtR3VE0ulD1-8LM4DPQiG-Nkk"
 
 
