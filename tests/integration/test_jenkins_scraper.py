@@ -97,3 +97,19 @@ def test_given_live_jenkins_server_when_syncing_with_pipeline_inventory_then_per
     assert len(synced) == len(records)
     assert any(r.workflow_id == "sample-pipeline-job" for r in synced)
     assert any(r.workflow_id == "sample-freestyle-job" for r in synced)
+
+
+def test_given_live_jenkins_server_and_small_page_size_when_scraping_then_paginates_and_discovers_all_jobs(
+    jenkins_server: dict[str, Any],
+) -> None:
+    """Verify windowed pagination works against a live Jenkins server with small page size."""
+    base_url = jenkins_server["base_url"]
+    client = JenkinsClient(base_url=base_url)
+    scraper = JenkinsPipelineScraper(client=client, tree_depth=3, page_size=1)
+
+    pipelines = scraper.scrape()
+
+    assert len(pipelines) >= 2
+    names = [p.name for p in pipelines]
+    assert "sample-freestyle-job" in names
+    assert "sample-pipeline-job" in names

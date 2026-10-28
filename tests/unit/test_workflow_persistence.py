@@ -31,6 +31,8 @@ def sample_pipeline_record() -> PipelineRecord:
         repository_association="org/prod-deploy-scripts",
         repository_url="https://github.com/org/prod-deploy-scripts.git",
         file_path="Jenkinsfile",
+        shared_components="pipeline-lib",
+        execution_environment="docker, linux",
         branch="main",
         last_build=datetime(2026, 10, 27, 10, 0, 0, tzinfo=timezone.utc),
         last_status="SUCCESS",
@@ -52,12 +54,12 @@ def mock_workflow_spreadsheet(mock_sheets_service: MagicMock) -> Spreadsheet:
 # --- WorkflowRowConverter Tests ---
 
 
-def test_given_pipeline_record_when_converting_to_row_then_maps_all_ten_columns(
+def test_given_pipeline_record_when_converting_to_row_then_maps_all_twelve_columns(
     sample_pipeline_record: PipelineRecord,
     mock_workflow_spreadsheet: Spreadsheet,
     mock_sheets_service: MagicMock,
 ) -> None:
-    """Test WorkflowRowConverter creates a Row and Spreadsheet serializes all 10 columns."""
+    """Test WorkflowRowConverter creates a Row and Spreadsheet serializes all 12 columns."""
     row = WorkflowRowConverter.from_pipeline_record(sample_pipeline_record, row_index=5)
 
     assert row.row_index == 5
@@ -69,6 +71,8 @@ def test_given_pipeline_record_when_converting_to_row_then_maps_all_ten_columns(
         row.data["repository_url"] == "https://github.com/org/prod-deploy-scripts.git"
     )
     assert row.data["file_path"] == "Jenkinsfile"
+    assert row.data["shared_components"] == "pipeline-lib"
+    assert row.data["execution_environment"] == "docker, linux"
     assert row.data["branch"] == "main"
     assert row.data["last_status"] == "SUCCESS"
     assert row.data["migration_status"] == MigrationStatus.ACTIVE_IN_BOTH
@@ -77,21 +81,23 @@ def test_given_pipeline_record_when_converting_to_row_then_maps_all_ten_columns(
         mock_sheets_service.spreadsheets.return_value.values.return_value.append
     )
     mock_append.return_value.execute.return_value = {
-        "updates": {"updatedRange": "Workflows!A5:J5"}
+        "updates": {"updatedRange": "Workflows!A5:L5"}
     }
 
     added_row = mock_workflow_spreadsheet.add(row)
-    assert len(added_row.values) == 10
+    assert len(added_row.values) == 12
     assert added_row.values[0] == "deployments/prod-deploy"
     assert added_row.values[1] == "jenkins"
     assert added_row.values[2] == "declarative"
     assert added_row.values[3] == "org/prod-deploy-scripts"
     assert added_row.values[4] == "https://github.com/org/prod-deploy-scripts.git"
     assert added_row.values[5] == "Jenkinsfile"
-    assert added_row.values[6] == "main"
-    assert "27/10/2026" in added_row.values[7]
-    assert added_row.values[8] == "SUCCESS"
-    assert added_row.values[9] == "Migrando (Ativos em Ambas)"
+    assert added_row.values[6] == "pipeline-lib"
+    assert added_row.values[7] == "docker, linux"
+    assert added_row.values[8] == "main"
+    assert "27/10/2026" in added_row.values[9]
+    assert added_row.values[10] == "SUCCESS"
+    assert added_row.values[11] == "Migrando (Ativos em Ambas)"
 
 
 def test_given_row_when_converting_to_pipeline_record_then_populates_pipeline_record() -> (
@@ -106,6 +112,8 @@ def test_given_row_when_converting_to_pipeline_record_then_populates_pipeline_re
             "repository_association": "fintech/auth-service",
             "repository_url": "https://github.com/fintech/auth-service.git",
             "file_path": "Jenkinsfile",
+            "shared_components": "common-security-lib",
+            "execution_environment": "k8s-agent",
             "branch": "develop",
             "last_build": "2026-10-25T14:30:00",
             "last_status": "FAILURE",
@@ -122,6 +130,8 @@ def test_given_row_when_converting_to_pipeline_record_then_populates_pipeline_re
     assert record.repository_association == "fintech/auth-service"
     assert record.repository_url == "https://github.com/fintech/auth-service.git"
     assert record.file_path == "Jenkinsfile"
+    assert record.shared_components == "common-security-lib"
+    assert record.execution_environment == "k8s-agent"
     assert record.branch == "develop"
     assert record.last_status == "FAILURE"
     assert record.migration_status == MigrationStatus.MIGRATED
@@ -331,10 +341,10 @@ def test_given_empty_workflow_id_when_updating_pipeline_progress_then_raises_val
 # --- Multi-tab Spreadsheet Tests ---
 
 
-def test_given_workflows_sheet_name_when_finding_row_then_queries_ten_column_range(
+def test_given_workflows_sheet_name_when_finding_row_then_queries_twelve_column_range(
     mock_workflow_spreadsheet: Spreadsheet, mock_sheets_service: MagicMock
 ) -> None:
-    """Test find_by on 'Workflows' tab uses A2:J 10-column range."""
+    """Test find_by on 'Workflows' tab uses A2:L 12-column range."""
     mock_get = mock_sheets_service.spreadsheets.return_value.values.return_value.get
     mock_get.return_value.execute.return_value = {
         "values": [
@@ -345,6 +355,8 @@ def test_given_workflows_sheet_name_when_finding_row_then_queries_ten_column_ran
                 "org/repo",
                 "https://github.com/org/repo.git",
                 "Jenkinsfile",
+                "shared-lib",
+                "linux-docker",
                 "main",
                 "2026-10-27 10:00:00",
                 "SUCCESS",
@@ -357,16 +369,18 @@ def test_given_workflows_sheet_name_when_finding_row_then_queries_ten_column_ran
 
     assert len(results) == 1
     assert results[0].data["workflow_id"] == "ci/deploy"
+    assert results[0].data["shared_components"] == "shared-lib"
+    assert results[0].data["execution_environment"] == "linux-docker"
     mock_get.assert_called_once_with(
         spreadsheetId="workflows-sheet-id",
-        range="Workflows!A2:J",
+        range="Workflows!A2:L",
     )
 
 
 def test_given_ensure_sheet_when_workflows_tab_missing_then_adds_sheet_with_headers(
     mock_workflow_spreadsheet: Spreadsheet, mock_sheets_service: MagicMock
 ) -> None:
-    """Test ensure_sheet provisions the 'Workflows' tab and initializes 10 header columns."""
+    """Test ensure_sheet provisions the 'Workflows' tab and initializes 12 header columns."""
     mock_get = mock_sheets_service.spreadsheets.return_value.get
     mock_get.return_value.execute.return_value = {
         "sheets": [{"properties": {"title": "Inventario"}}]
@@ -382,7 +396,7 @@ def test_given_ensure_sheet_when_workflows_tab_missing_then_adds_sheet_with_head
 
     mock_batch.assert_called_once()
     mock_update.assert_called_once()
-    # Check that _WORKFLOW_HEADERS was written to A1:J1
+    # Check that _WORKFLOW_HEADERS was written to A1:L1
     call_kwargs = mock_update.call_args[1]
-    assert call_kwargs["range"] == "Workflows!A1:J1"
+    assert call_kwargs["range"] == "Workflows!A1:L1"
     assert call_kwargs["body"]["values"] == [_WORKFLOW_HEADERS]

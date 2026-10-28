@@ -244,6 +244,27 @@ class PipelineConverter:
                 branch = str(repo.default_branch)
 
         file_path = str(getattr(pipeline, "file_path", "") or "").strip()
+
+        raw_shared = getattr(pipeline, "shared_components", None) or []
+        if isinstance(raw_shared, str):
+            shared_components = raw_shared.strip()
+        elif isinstance(raw_shared, Iterable):
+            shared_components = ", ".join(
+                sorted({str(item).strip() for item in raw_shared if str(item).strip()})
+            )
+        else:
+            shared_components = str(raw_shared).strip()
+
+        raw_env = getattr(pipeline, "execution_environment", None) or []
+        if isinstance(raw_env, str):
+            execution_env = raw_env.strip()
+        elif isinstance(raw_env, Iterable):
+            execution_env = ", ".join(
+                sorted({str(item).strip() for item in raw_env if str(item).strip()})
+            )
+        else:
+            execution_env = str(raw_env).strip()
+
         last_build = getattr(pipeline, "last_build_timestamp", None)
         last_status = str(getattr(pipeline, "last_status", "") or "").strip()
         valid_status = self._validate_status(initial_status)
@@ -255,6 +276,8 @@ class PipelineConverter:
             repository_association=repo_assoc,
             repository_url=repo_url,
             file_path=file_path,
+            shared_components=shared_components,
+            execution_environment=execution_env,
             branch=branch,
             last_build=last_build,
             last_status=last_status,

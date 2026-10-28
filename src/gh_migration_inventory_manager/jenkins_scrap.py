@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import base64
 import json
+import re
 import urllib.parse
 from datetime import datetime, timezone
 from typing import Any, Protocol, runtime_checkable
@@ -185,13 +186,22 @@ class JenkinsClient:
 
 
 _TREE_QUERY = (
-    "jobs[name,url,color,_class,disabled,"
-    "lastBuild[timestamp,result,number],"
+    "jobs[name,url,color,_class,disabled,assignedLabel[name],labelExpression,"
+    "lastBuild[timestamp,result,number,builtOn,actions[libraries[name,defaultVersion,version]]],"
     "actions[causes[shortDescription,_class]],"
-    "property[_class,branchConfigs[name]],"
+    "property[_class,branchConfigs[name],libraries[name,defaultVersion]],"
     "definition[_class,script,scriptPath,scm[_class,userRemoteConfigs[url],branches[name],locations[remote]]],"
     "sources[source[_class,remote,credentialsId]]]"
 )
+
+_LIBRARY_ANNOTATION_PATTERN = re.compile(
+    r"@Library\s*\(\s*(?:\[([^\]]+)\]|['\"]([^'\"]+)['\"])\s*\)"
+)
+_QUOTED_STRING_PATTERN = re.compile(r"['\"]([^'\"]+)['\"]")
+_AGENT_LABEL_PATTERN = re.compile(
+    r"agent\s*\{[^}]*?label\s*['\"]([^'\"]+)['\"]", re.DOTALL | re.IGNORECASE
+)
+_NODE_CALL_PATTERN = re.compile(r"\bnode\s*\(\s*['\"]([^'\"]+)['\"]\s*\)")
 
 
 class JenkinsPipelineScraper(PipelineScraper):
@@ -204,15 +214,19 @@ class JenkinsPipelineScraper(PipelineScraper):
         client: JenkinsClient | JenkinsTransport,
         tree_depth: int = 5,
         staleness_days: int = 180,
+        page_size: int = 250,
     ) -> None:
         if tree_depth < 1:
             raise ValueError("Tree depth must be at least 1.")
         if staleness_days < 0:
             raise ValueError("Staleness days cannot be negative.")
+        if page_size < 1:
+            raise ValueError("Page size must be at least 1.")
 
         self.client = client
         self.tree_depth = tree_depth
         self.staleness_days = staleness_days
+        self.page_size = page_size
 
     def _resolve_pipeline_type(
         self, job_class: str, definition: dict[str, Any]
@@ -327,13 +341,118 @@ class JenkinsPipelineScraper(PipelineScraper):
                         triggers.append(PipelineTrigger.SCM_POLLING)
         return triggers
 
+    def _extract_shared_libraries(self, job_data: dict[str, Any]) -> list[str]:
+        """Extract referenced shared libraries from actions, properties, or scripts."""
+        libs: set[str] = set()
+
+        # 1. From lastBuild actions libraries
+        last_build = job_data.get("lastBuild") or {}
+        actions = last_build.get("actions") or []
+        for act in actions:
+            if not isinstance(act, dict):
+                continue
+            raw_libs = act.get("libraries") or []
+            for lib in raw_libs:
+                if isinstance(lib, dict) and lib.get("name"):
+                    name = str(lib["name"]).strip()
+                    if name:
+                        libs.add(name)
+
+        # 2. From job property libraries
+        properties = job_data.get("property") or []
+        if isinstance(properties, dict):
+            properties = [properties]
+        for prop in properties:
+            if not isinstance(prop, dict):
+                continue
+            raw_libs = prop.get("libraries") or []
+            for lib in raw_libs:
+                if isinstance(lib, dict) and lib.get("name"):
+                    name = str(lib["name"]).strip()
+                    if name:
+                        libs.add(name)
+
+        # 3. From definition.script via regex
+        definition = job_data.get("definition") or {}
+        script = definition.get("script")
+        if script and isinstance(script, str):
+            for match in _LIBRARY_ANNOTATION_PATTERN.finditer(script):
+                if match.group(1):
+                    for item in _QUOTED_STRING_PATTERN.findall(match.group(1)):
+                        clean_lib = item.strip().split("@")[0]
+                        if clean_lib:
+                            libs.add(clean_lib)
+                elif match.group(2):
+                    clean_lib = match.group(2).strip().split("@")[0]
+                    if clean_lib:
+                        libs.add(clean_lib)
+
+        return sorted(libs)
+
+    def _extract_agent_labels(self, job_data: dict[str, Any]) -> list[str]:
+        """Extract runner/agent labels from assigned labels, expressions, or scripts."""
+        labels: set[str] = set()
+
+        # 1. From assignedLabel
+        assigned_label = job_data.get("assignedLabel")
+        if isinstance(assigned_label, dict):
+            name = assigned_label.get("name")
+            if name and isinstance(name, str) and name.strip():
+                labels.add(name.strip())
+
+        # 2. From labelExpression
+        label_expr = job_data.get("labelExpression")
+        if label_expr and isinstance(label_expr, str) and label_expr.strip():
+            labels.add(label_expr.strip())
+
+        # 3. From definition.script
+        definition = job_data.get("definition") or {}
+        script = definition.get("script")
+        if script and isinstance(script, str):
+            for match in _AGENT_LABEL_PATTERN.finditer(script):
+                val = match.group(1).strip()
+                if val:
+                    labels.add(val)
+            for match in _NODE_CALL_PATTERN.finditer(script):
+                val = match.group(1).strip()
+                if val:
+                    labels.add(val)
+
+        # 4. From lastBuild.builtOn
+        last_build = job_data.get("lastBuild") or {}
+        built_on = last_build.get("builtOn")
+        if built_on and isinstance(built_on, str):
+            clean_built = built_on.strip()
+            if clean_built and clean_built.lower() not in ("master", "built-in"):
+                labels.add(clean_built)
+
+        return sorted(labels)
+
     def _traverse_folder(self, folder_path: str, current_depth: int) -> list[Pipeline]:
         """Recursively query Jenkins folders and discover pipeline entities."""
         if current_depth > self.tree_depth:
             return []
 
-        payload = self.client.get_json(folder_path, tree=_TREE_QUERY)
-        raw_jobs = payload.get("jobs", [])
+        raw_jobs: list[dict[str, Any]] = []
+        start = 0
+        while True:
+            end = start + self.page_size
+            paginated_tree = f"{_TREE_QUERY}{{{start},{end}}}"
+            try:
+                payload = self.client.get_json(folder_path, tree=paginated_tree)
+            except ScraperError as err:
+                if start > 0 and ("500" in str(err) or "IndexOutOfBounds" in str(err)):
+                    break
+                raise
+
+            batch = payload.get("jobs", [])
+            if not isinstance(batch, list) or not batch:
+                break
+            raw_jobs.extend(batch)
+            if len(batch) < self.page_size:
+                break
+            start = end
+
         pipelines: list[Pipeline] = []
 
         now = datetime.now(timezone.utc)
@@ -367,6 +486,8 @@ class JenkinsPipelineScraper(PipelineScraper):
                 definition, sources
             )
             triggers = self._extract_triggers(job)
+            shared_components = self._extract_shared_libraries(job)
+            execution_environment = self._extract_agent_labels(job)
 
             # Build timestamp and status
             last_build = job.get("lastBuild") or {}
@@ -398,6 +519,8 @@ class JenkinsPipelineScraper(PipelineScraper):
                 file_path=file_path,
                 branch=branch,
                 triggers=triggers,
+                shared_components=shared_components,
+                execution_environment=execution_environment,
                 last_build_timestamp=last_build_dt,
                 last_status=str(last_status) if last_status else None,
                 disabled=disabled,
@@ -464,6 +587,12 @@ class JenkinsScraperProvider(ScraperProvider):
             default=180,
             help="Age threshold in days to flag inactive jobs (default: 180)",
         )
+        parser.add_argument(
+            "--page-size",
+            type=int,
+            default=250,
+            help="Maximum jobs fetched per page in folder queries (default: 250)",
+        )
 
     def create_scraper(self, args: Any) -> JenkinsPipelineScraper:
         """Build JenkinsPipelineScraper from parsed CLI arguments."""
@@ -485,11 +614,13 @@ class JenkinsScraperProvider(ScraperProvider):
 
         tree_depth = getattr(args, "tree_depth", 5) or 5
         staleness_days = getattr(args, "staleness_days", 180) or 180
+        page_size = getattr(args, "page_size", 250) or 250
 
         return JenkinsPipelineScraper(
             client=client,
             tree_depth=int(tree_depth),
             staleness_days=int(staleness_days),
+            page_size=int(page_size),
         )
 
 

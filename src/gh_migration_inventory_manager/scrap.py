@@ -82,6 +82,8 @@ class Pipeline:
     file_path: str | None = None
     branch: str | None = None
     triggers: list[PipelineTrigger] = field(default_factory=list)
+    shared_components: list[str] = field(default_factory=list)
+    execution_environment: list[str] = field(default_factory=list)
     last_build_timestamp: datetime | None = None
     last_status: str | None = None
     disabled: bool = False

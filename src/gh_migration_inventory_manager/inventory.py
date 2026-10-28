@@ -124,6 +124,8 @@ class PipelineRecord:
     repository_association: str = ""
     repository_url: str = ""
     file_path: str = ""
+    shared_components: str = ""
+    execution_environment: str = ""
     branch: str = ""
     last_build: datetime | None = None
     last_status: str = ""

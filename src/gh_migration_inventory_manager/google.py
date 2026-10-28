@@ -116,6 +116,8 @@ _WORKFLOW_HEADERS = [
     "Repositório Associado",
     "URL do Repositório",
     "Caminho do Workflow",
+    "Componentes Compartilhados",
+    "Ambiente de Execução",
     "Branch Padrão",
     "Último Build",
     "Status do Último Build",
@@ -141,18 +143,39 @@ _WORKFLOW_COLUMN_ALIAS_MAP: dict[str, int] = {
     "file_path": 5,
     "caminho do workflow": 5,
     "path": 5,
-    "branch": 6,
-    "branch padrão": 6,
-    "branch padrao": 6,
-    "last_build": 7,
-    "último build": 7,
-    "ultimo build": 7,
-    "last_status": 8,
-    "status do último build": 8,
-    "status do ultimo build": 8,
-    "migration_status": 9,
-    "status da migração": 9,
-    "status": 9,
+    "shared_components": 6,
+    "componentes compartilhados": 6,
+    "componentes_compartilhados": 6,
+    "bibliotecas compartilhadas": 6,
+    "bibliotecas_compartilhadas": 6,
+    "shared_libraries": 6,
+    "templates": 6,
+    "includes": 6,
+    "reusable_workflows": 6,
+    "execution_environment": 7,
+    "ambiente de execução": 7,
+    "ambiente de execucao": 7,
+    "ambiente_de_execucao": 7,
+    "labels de agentes": 7,
+    "agent_labels": 7,
+    "runs_on": 7,
+    "runner_labels": 7,
+    "tags": 7,
+    "pool": 7,
+    "branch": 8,
+    "branch padrão": 8,
+    "branch padrao": 8,
+    "default_branch": 8,
+    "last_build": 9,
+    "último build": 9,
+    "ultimo build": 9,
+    "last_status": 10,
+    "status do último build": 10,
+    "status do ultimo build": 10,
+    "migration_status": 11,
+    "status da migração": 11,
+    "status da migracao": 11,
+    "status": 11,
 }
 
 
@@ -168,6 +191,19 @@ class WorkflowRowConverter:
         if isinstance(status, str):
             status = Inventory._from_sheet_label(status)
 
+        shared_components = str(
+            row.data.get("shared_components")
+            or row.data.get("componentes compartilhados")
+            or row.data.get("bibliotecas compartilhadas")
+            or ""
+        )
+        execution_env = str(
+            row.data.get("execution_environment")
+            or row.data.get("ambiente de execução")
+            or row.data.get("labels de agentes")
+            or ""
+        )
+
         return PipelineRecord(
             workflow_id=str(row.data.get("workflow_id", "")),
             platform=str(row.data.get("platform", "jenkins")),
@@ -175,6 +211,8 @@ class WorkflowRowConverter:
             repository_association=str(row.data.get("repository_association", "")),
             repository_url=str(row.data.get("repository_url", "")),
             file_path=str(row.data.get("file_path", "")),
+            shared_components=shared_components,
+            execution_environment=execution_env,
             branch=str(row.data.get("branch", "")),
             last_build=_parse_date(row.data.get("last_build")),
             last_status=str(row.data.get("last_status", "")),
@@ -195,6 +233,8 @@ class WorkflowRowConverter:
             "repository_association": record.repository_association,
             "repository_url": record.repository_url,
             "file_path": record.file_path,
+            "shared_components": record.shared_components,
+            "execution_environment": record.execution_environment,
             "branch": record.branch,
             "last_build": record.last_build,
             "last_status": record.last_status,
@@ -383,6 +423,18 @@ class Spreadsheet:
             repo_assoc = str(row.data.get("repository_association", ""))
             repo_url = str(row.data.get("repository_url", ""))
             file_path = str(row.data.get("file_path", ""))
+            shared_components = str(
+                row.data.get("shared_components")
+                or row.data.get("componentes compartilhados")
+                or row.data.get("bibliotecas compartilhadas")
+                or ""
+            )
+            execution_env = str(
+                row.data.get("execution_environment")
+                or row.data.get("ambiente de execução")
+                or row.data.get("labels de agentes")
+                or ""
+            )
             branch = str(row.data.get("branch", ""))
             last_build_str = _format_date(row.data.get("last_build"))
             last_status = str(row.data.get("last_status", ""))
@@ -402,6 +454,8 @@ class Spreadsheet:
                 repo_assoc,
                 repo_url,
                 file_path,
+                shared_components,
+                execution_env,
                 branch,
                 last_build_str,
                 last_status,
@@ -449,10 +503,12 @@ class Spreadsheet:
                 "repository_association": padded[3],
                 "repository_url": padded[4],
                 "file_path": padded[5],
-                "branch": padded[6],
-                "last_build": _parse_date(padded[7]),
-                "last_status": padded[8],
-                "migration_status": Inventory._from_sheet_label(padded[9]),
+                "shared_components": padded[6],
+                "execution_environment": padded[7],
+                "branch": padded[8],
+                "last_build": _parse_date(padded[9]),
+                "last_status": padded[10],
+                "migration_status": Inventory._from_sheet_label(padded[11]),
             }
             return Row(row_index=row_index, data=data, values=values)
 
@@ -491,7 +547,7 @@ class Spreadsheet:
         if col_idx is None:
             raise ValueError(f"Unknown column identifier: '{target_col}'")
 
-        col_letter = "J" if self._is_workflow_sheet() else "H"
+        col_letter = "L" if self._is_workflow_sheet() else "H"
         read_range = f"{self.sheet_name}!A2:{col_letter}"
         resp = (
             self._service.spreadsheets()
@@ -518,7 +574,7 @@ class Spreadsheet:
     def add(self, row: Row) -> Row:
         """Append a new row to the spreadsheet and update its row_index."""
         values = self._to_sheet_row(row)
-        col_letter = "J" if self._is_workflow_sheet() else "H"
+        col_letter = "L" if self._is_workflow_sheet() else "H"
         append_range = f"{self.sheet_name}!A:{col_letter}"
         body = {"values": [values]}
 
@@ -549,7 +605,7 @@ class Spreadsheet:
             raise ValueError("Cannot update row without a valid row_index.")
 
         values = self._to_sheet_row(row)
-        col_letter = "J" if self._is_workflow_sheet() else "H"
+        col_letter = "L" if self._is_workflow_sheet() else "H"
         target_range = f"{self.sheet_name}!A{row.row_index}:{col_letter}{row.row_index}"
         body = {"values": [values]}
 
@@ -565,7 +621,7 @@ class Spreadsheet:
 
     def clear_row(self, row_index: int) -> None:
         """Clear all cell values in the specified row."""
-        col_letter = "J" if self._is_workflow_sheet() else "H"
+        col_letter = "L" if self._is_workflow_sheet() else "H"
         target_range = f"{self.sheet_name}!A{row_index}:{col_letter}{row_index}"
         self._service.spreadsheets().values().clear(
             spreadsheetId=self.id, range=target_range, body={}

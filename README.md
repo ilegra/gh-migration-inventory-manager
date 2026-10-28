@@ -88,13 +88,15 @@ The template contains tracking worksheets designed for enterprise migrations:
 
    ![Inventario Tab Example](docs/images/inventory-spreadsheet-example.png)
 
-2. **`Workflows`**: The CI/CD workflows tracking tab populated with 10 standard columns:
+2. **`Workflows`**: The CI/CD workflows tracking tab populated with 12 standard columns:
    - `ID do Workflow`: Full job identifier/path (e.g., `services/payment/payment-service-build`).
-   - `Plataforma`: CI/CD platform (`jenkins`).
+   - `Plataforma`: CI/CD platform (`jenkins`, `gitlab`, `azure_devops`, `github_actions`).
    - `Tipo de Pipeline`: Pipeline classification (`declarative`, `scripted`, `multibranch`, `freestyle`, `matrix`).
    - `Repositório Associado`: Linked SCM repository name or identifier (`org/repo`).
    - `URL do Repositório`: Git or SVN clone/remote URL for the repository.
    - `Caminho do Workflow`: Path to workflow file in repository (e.g., `Jenkinsfile`).
+   - `Componentes Compartilhados`: Referenced shared libraries, templates, or reusable workflows.
+   - `Ambiente de Execução`: Runner labels, agent labels, runner tags, or pool demands.
    - `Branch Padrão`: Target or default branch configured for the job (e.g., `main`).
    - `Último Build`: Formatted date/timestamp of the most recent build execution.
    - `Status do Último Build`: Outcome of the most recent build (`SUCCESS`, `FAILURE`, `UNSTABLE`).
@@ -138,7 +140,7 @@ poetry run gh-migration-inventory scrape jenkins \
 ```
 
 > [!TIP]
-> When scraping Jenkins without `--sheet-name`, the CLI automatically defaults to the `Workflows` tab, auto-provisioning the tab and initializing its 10 header columns if it doesn't already exist.
+> When scraping Jenkins without `--sheet-name`, the CLI automatically defaults to the `Workflows` tab, auto-provisioning the tab and initializing its 12 header columns if it doesn't already exist.
 
 ##### Command Output
 
@@ -164,6 +166,7 @@ gh-migration-inventory scrape <platform> [OPTIONS]
 | `--token <TOKEN>` | — | Jenkins API token or Bearer token |
 | `--tree-depth <N>` | `5` | Maximum recursion depth for nested folder hierarchies |
 | `--staleness-days <DAYS>` | `180` | Age threshold in days to flag/decommission inactive jobs |
+| `--page-size <N>` | `250` | Maximum number of jobs fetched per page in folder queries (windowed slice pagination) |
 
 ##### Platform Options (SVN)
 

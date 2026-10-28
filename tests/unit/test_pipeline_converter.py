@@ -173,6 +173,46 @@ def test_given_invalid_migration_status_when_converting_then_raises_value_error(
         converter.to_pipeline_record(pipeline, initial_status=None)  # type: ignore[arg-type]
 
 
+def test_given_pipeline_with_shared_components_and_execution_env_when_converting_then_formats_sorted_and_deduplicated() -> (
+    None
+):
+    """Test shared components and execution environment lists are deduplicated and sorted."""
+    converter = PipelineConverter()
+    pipeline = Pipeline(
+        name="complex-pipeline",
+        platform="jenkins",
+        full_path="services/complex-pipeline",
+        url="http://jenkins/services/complex-pipeline",
+        shared_components=["security-lib", "build-utils", "security-lib"],
+        execution_environment=["linux", "docker", "linux", "gpu"],
+    )
+
+    record = converter.to_pipeline_record(pipeline)
+
+    assert record.shared_components == "build-utils, security-lib"
+    assert record.execution_environment == "docker, gpu, linux"
+
+
+def test_given_pipeline_with_string_components_and_env_when_converting_then_preserves_strings() -> (
+    None
+):
+    """Test string representations for shared components and execution environment are preserved."""
+    converter = PipelineConverter()
+    pipeline = Pipeline(
+        name="string-pipeline",
+        platform="jenkins",
+        full_path="string-pipeline",
+        url="http://jenkins/string-pipeline",
+        shared_components="single-lib",  # type: ignore[arg-type]
+        execution_environment="custom-runner",  # type: ignore[arg-type]
+    )
+
+    record = converter.to_pipeline_record(pipeline)
+
+    assert record.shared_components == "single-lib"
+    assert record.execution_environment == "custom-runner"
+
+
 def test_given_collection_of_pipelines_when_converting_then_returns_list_of_records() -> (
     None
 ):

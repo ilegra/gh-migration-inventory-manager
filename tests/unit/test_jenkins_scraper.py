@@ -508,3 +508,251 @@ def test_given_token_only_when_creating_scraper_then_configures_token_authentica
     scraper = provider.create_scraper(args)
     assert isinstance(scraper.client, JenkinsClient)
     assert isinstance(scraper.client.auth, TokenAuthenticator)
+
+
+def test_given_job_with_shared_libraries_when_scraping_then_extracts_all_shared_components() -> (
+    None
+):
+    """Test extracting shared libraries from build actions, properties, and script annotations."""
+    mock_transport = MagicMock(spec=JenkinsTransport)
+    mock_transport.base_url = "http://jenkins:8080"
+    script_content = """
+        @Library('script-lib-single@1.0') _
+        @Library(['script-lib-array-1', 'script-lib-array-2@v2']) import com.corp.Utils
+
+        pipeline {
+            agent any
+            stages {
+                stage('Build') { steps { echo 'Building' } }
+            }
+        }
+    """
+    mock_transport.get_json.return_value = {
+        "jobs": [
+            {
+                "name": "modular-pipeline",
+                "url": "http://jenkins:8080/job/modular-pipeline/",
+                "_class": "org.jenkinsci.plugins.workflow.job.WorkflowJob",
+                "lastBuild": {
+                    "actions": [
+                        {
+                            "libraries": [
+                                {"name": "action-lib"},
+                                {"name": "script-lib-single"},
+                            ]
+                        }
+                    ]
+                },
+                "property": [
+                    {
+                        "libraries": [
+                            {"name": "property-lib"},
+                        ]
+                    }
+                ],
+                "definition": {
+                    "_class": "org.jenkinsci.plugins.workflow.cps.CpsFlowDefinition",
+                    "script": script_content,
+                },
+            }
+        ]
+    }
+
+    scraper = JenkinsPipelineScraper(client=mock_transport)
+    pipelines = scraper.scrape()
+
+    assert len(pipelines) == 1
+    pipe = pipelines[0]
+    expected_libs = [
+        "action-lib",
+        "property-lib",
+        "script-lib-array-1",
+        "script-lib-array-2",
+        "script-lib-single",
+    ]
+    assert pipe.shared_components == expected_libs
+
+
+def test_given_job_with_agent_labels_when_scraping_then_extracts_all_execution_environments() -> (
+    None
+):
+    """Test extracting execution environments from assignedLabel, labelExpression, builtOn, and scripts."""
+    mock_transport = MagicMock(spec=JenkinsTransport)
+    mock_transport.base_url = "http://jenkins:8080"
+    script_content = """
+        pipeline {
+            agent {
+                label 'k8s-pod'
+            }
+            stages {
+                stage('Test') {
+                    steps {
+                        echo 'testing'
+                    }
+                }
+            }
+        }
+        node('windows-runner') {
+            echo 'on windows'
+        }
+    """
+    mock_transport.get_json.return_value = {
+        "jobs": [
+            {
+                "name": "multi-agent-job",
+                "url": "http://jenkins:8080/job/multi-agent-job/",
+                "_class": "org.jenkinsci.plugins.workflow.job.WorkflowJob",
+                "assignedLabel": {"name": "assigned-label-docker"},
+                "labelExpression": "linux && high-memory",
+                "lastBuild": {
+                    "builtOn": "agent-worker-42",
+                },
+                "definition": {
+                    "_class": "org.jenkinsci.plugins.workflow.cps.CpsFlowDefinition",
+                    "script": script_content,
+                },
+            }
+        ]
+    }
+
+    scraper = JenkinsPipelineScraper(client=mock_transport)
+    pipelines = scraper.scrape()
+
+    assert len(pipelines) == 1
+    pipe = pipelines[0]
+    expected_env = [
+        "agent-worker-42",
+        "assigned-label-docker",
+        "k8s-pod",
+        "linux && high-memory",
+        "windows-runner",
+    ]
+    assert pipe.execution_environment == expected_env
+
+
+def test_given_large_number_of_jobs_when_scraping_then_paginates_with_page_size() -> (
+    None
+):
+    """Test windowed slice pagination fetches all pages until batch size < page_size."""
+    mock_transport = MagicMock(spec=JenkinsTransport)
+    mock_transport.base_url = "http://jenkins:8080"
+
+    # 5 jobs across 3 pages with page_size=2: [2, 2, 1]
+    mock_transport.get_json.side_effect = [
+        {
+            "jobs": [
+                {
+                    "name": "job-1",
+                    "url": "http://jenkins/job-1",
+                    "_class": "hudson.model.FreeStyleProject",
+                },
+                {
+                    "name": "job-2",
+                    "url": "http://jenkins/job-2",
+                    "_class": "hudson.model.FreeStyleProject",
+                },
+            ]
+        },
+        {
+            "jobs": [
+                {
+                    "name": "job-3",
+                    "url": "http://jenkins/job-3",
+                    "_class": "hudson.model.FreeStyleProject",
+                },
+                {
+                    "name": "job-4",
+                    "url": "http://jenkins/job-4",
+                    "_class": "hudson.model.FreeStyleProject",
+                },
+            ]
+        },
+        {
+            "jobs": [
+                {
+                    "name": "job-5",
+                    "url": "http://jenkins/job-5",
+                    "_class": "hudson.model.FreeStyleProject",
+                },
+            ]
+        },
+    ]
+
+    scraper = JenkinsPipelineScraper(client=mock_transport, page_size=2)
+    pipelines = scraper.scrape()
+
+    assert len(pipelines) == 5
+    assert [p.name for p in pipelines] == [
+        "job-1",
+        "job-2",
+        "job-3",
+        "job-4",
+        "job-5",
+    ]
+    assert mock_transport.get_json.call_count == 3
+
+
+def test_given_folder_exact_multiple_of_page_size_when_next_page_returns_http_500_then_terminates_gracefully() -> (
+    None
+):
+    """Test Jenkins Stapler HTTP 500 IndexOutOfBoundsException on boundary terminates pagination."""
+    mock_transport = MagicMock(spec=JenkinsTransport)
+    mock_transport.base_url = "http://jenkins:8080"
+
+    mock_transport.get_json.side_effect = [
+        {
+            "jobs": [
+                {
+                    "name": "job-1",
+                    "url": "http://jenkins/job-1",
+                    "_class": "hudson.model.FreeStyleProject",
+                },
+                {
+                    "name": "job-2",
+                    "url": "http://jenkins/job-2",
+                    "_class": "hudson.model.FreeStyleProject",
+                },
+            ]
+        },
+        ScraperError(
+            "Jenkins API returned HTTP 500 for endpoint '': IndexOutOfBoundsException: 2"
+        ),
+    ]
+
+    scraper = JenkinsPipelineScraper(client=mock_transport, page_size=2)
+    pipelines = scraper.scrape()
+
+    assert len(pipelines) == 2
+    assert [p.name for p in pipelines] == ["job-1", "job-2"]
+    assert mock_transport.get_json.call_count == 2
+
+
+def test_given_invalid_page_size_when_initializing_scraper_then_raises_value_error() -> (
+    None
+):
+    """Test page_size less than 1 raises ValueError."""
+    mock_transport = MagicMock(spec=JenkinsTransport)
+    with pytest.raises(ValueError, match="Page size must be at least 1"):
+        JenkinsPipelineScraper(client=mock_transport, page_size=0)
+
+    with pytest.raises(ValueError, match="Page size must be at least 1"):
+        JenkinsPipelineScraper(client=mock_transport, page_size=-10)
+
+
+def test_given_cli_page_size_arg_when_creating_scraper_then_configures_page_size() -> (
+    None
+):
+    """Test JenkinsScraperProvider configures page_size from CLI argument."""
+    provider = JenkinsScraperProvider()
+    args = argparse.Namespace(
+        url="http://jenkins:8080",
+        username=None,
+        password=None,
+        token=None,
+        tree_depth=5,
+        staleness_days=180,
+        page_size=500,
+    )
+
+    scraper = provider.create_scraper(args)
+    assert scraper.page_size == 500
