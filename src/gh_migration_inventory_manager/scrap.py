@@ -5,7 +5,9 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
-from typing import Any, Protocol, runtime_checkable
+from typing import Any, Protocol, TypeVar, runtime_checkable
+
+T = TypeVar("T")
 
 
 class Stack(str, Enum):
@@ -40,6 +42,57 @@ class Repository:
         """Return an unambiguous, fully-qualified name for inventory tracking."""
         parts = [p for p in (self.organization, self.project, self.name) if p]
         return "/".join(parts) if parts else self.name
+
+
+class PipelineType(str, Enum):
+    """Execution model or configuration paradigm of a CI/CD pipeline."""
+
+    DECLARATIVE = "declarative"
+    SCRIPTED = "scripted"
+    YAML = "yaml"
+    FREESTYLE = "freestyle"
+    MULTIBRANCH = "multibranch"
+    MATRIX = "matrix"
+    UNKNOWN = "unknown"
+
+
+class PipelineTrigger(str, Enum):
+    """Trigger mechanisms initiating pipeline execution."""
+
+    PUSH = "push"
+    PULL_REQUEST = "pull_request"
+    SCHEDULE = "schedule"
+    WEBHOOK = "webhook"
+    MANUAL = "manual"
+    UPSTREAM = "upstream"
+    SCM_POLLING = "scm_polling"
+    UNKNOWN = "unknown"
+
+
+@dataclass
+class Pipeline:
+    """Pure data container representing a discovered CI/CD pipeline or workflow."""
+
+    name: str
+    platform: str
+    full_path: str
+    url: str
+    pipeline_type: PipelineType = PipelineType.UNKNOWN
+    repository: Repository | None = None
+    file_path: str | None = None
+    branch: str | None = None
+    triggers: list[PipelineTrigger] = field(default_factory=list)
+    shared_components: list[str] = field(default_factory=list)
+    execution_environment: list[str] = field(default_factory=list)
+    last_build_timestamp: datetime | None = None
+    last_status: str | None = None
+    disabled: bool = False
+    metadata: dict[str, Any] = field(default_factory=dict)
+
+    @property
+    def qualified_name(self) -> str:
+        """Return an unambiguous fully-qualified pipeline identifier."""
+        return self.full_path if self.full_path else self.name
 
 
 @dataclass(frozen=True)
@@ -113,7 +166,23 @@ class BasicAuthenticator:
 
 
 @runtime_checkable
-class RepositoryScraper(Protocol):
+class Scraper(Protocol[T]):
+    """High-level abstraction for all platform discovery scrapers."""
+
+    def scrape(self) -> list[T]:
+        """Discover and return domain entities from the downstream platform.
+
+        Returns:
+            A list of discovered domain entities, or an empty list if none found.
+
+        Raises:
+            ScraperError: If an error occurs communicating with downstream platform.
+        """
+        raise NotImplementedError
+
+
+@runtime_checkable
+class RepositoryScraper(Scraper[Repository], Protocol):
     """Protocol defining the repository scraper contract for VCS platforms."""
 
     def scrape(self) -> list[Repository]:
@@ -121,6 +190,25 @@ class RepositoryScraper(Protocol):
 
         Returns:
             A list of discovered Repository instances, or an empty list if none found.
+
+        Raises:
+            ScraperError: If an error occurs communicating with downstream API.
+        """
+        raise NotImplementedError
+
+
+@runtime_checkable
+class PipelineScraper(Scraper[Pipeline], Protocol):
+    """Protocol defining the pipeline scraper contract for CI/CD platforms."""
+
+    scraper_type: str = "pipeline"
+    target_type: str = "pipeline"
+
+    def scrape(self) -> list[Pipeline]:
+        """Discover and return CI/CD pipelines from the downstream platform.
+
+        Returns:
+            A list of discovered Pipeline instances, or an empty list if none found.
 
         Raises:
             ScraperError: If an error occurs communicating with downstream API.
@@ -167,13 +255,13 @@ class ScraperProvider(Protocol):
         """Configure platform-specific CLI arguments on the provided subparser."""
         raise NotImplementedError
 
-    def create_scraper(self, args: Any) -> RepositoryScraper:
-        """Instantiate a RepositoryScraper from parsed CLI arguments."""
+    def create_scraper(self, args: Any) -> Scraper[Any]:
+        """Instantiate a Scraper from parsed CLI arguments."""
         raise NotImplementedError
 
 
 class ScraperRegistry:
-    """Registry maintaining available VCS platform scraper providers."""
+    """Registry maintaining available VCS and CI/CD platform scraper providers."""
 
     def __init__(self) -> None:
         self._providers: dict[str, ScraperProvider] = {}
@@ -217,8 +305,13 @@ __all__ = [
     "AuthCredentials",
     "Authenticator",
     "BasicAuthenticator",
+    "Pipeline",
+    "PipelineScraper",
+    "PipelineTrigger",
+    "PipelineType",
     "Repository",
     "RepositoryScraper",
+    "Scraper",
     "ScraperAuthenticationError",
     "ScraperConnectionError",
     "ScraperError",

@@ -12,12 +12,13 @@ from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
 
 from gh_migration_inventory_manager.inventory import (
-    Inventory,
     InventoryAccessError,
     InventoryError,
     InventoryNotFoundError,
     InventoryRecord,
     MigrationStatus,
+    PipelineRecord,
+    _from_sheet_label,
     format_migration_month,
 )
 
@@ -51,6 +52,7 @@ _HEADERS = [
     "Status da Migração",
     "Mês de Migração",
 ]
+HEADERS = _HEADERS
 
 _COLUMN_ALIAS_MAP: dict[str, int] = {
     "project": 0,
@@ -108,6 +110,149 @@ class Row:
     values: list[str] = field(default_factory=list)
 
 
+_WORKFLOW_HEADERS = [
+    "ID do Workflow",
+    "Plataforma",
+    "Tipo de Pipeline",
+    "Repositório Associado",
+    "URL do Repositório",
+    "Caminho do Workflow",
+    "Componentes Compartilhados",
+    "Ambiente de Execução",
+    "Branch Padrão",
+    "Último Build",
+    "Status do Último Build",
+    "Status da Migração",
+]
+WORKFLOW_HEADERS = _WORKFLOW_HEADERS
+
+
+def _format_status_label(status_val: Any) -> str:
+    """Format migration status into localized spreadsheet label."""
+    if isinstance(status_val, MigrationStatus):
+        return status_val.to_sheet_label()
+    return _from_sheet_label(str(status_val)).to_sheet_label()
+
+
+_WORKFLOW_COLUMN_ALIAS_MAP: dict[str, int] = {
+    "workflow_id": 0,
+    "id do workflow": 0,
+    "id": 0,
+    "name": 0,
+    "platform": 1,
+    "plataforma": 1,
+    "pipeline_type": 2,
+    "tipo de pipeline": 2,
+    "type": 2,
+    "repository_association": 3,
+    "repositório associado": 3,
+    "repositorio associado": 3,
+    "repository_url": 4,
+    "url do repositório": 4,
+    "url do repositorio": 4,
+    "file_path": 5,
+    "caminho do workflow": 5,
+    "path": 5,
+    "shared_components": 6,
+    "componentes compartilhados": 6,
+    "componentes_compartilhados": 6,
+    "bibliotecas compartilhadas": 6,
+    "bibliotecas_compartilhadas": 6,
+    "shared_libraries": 6,
+    "templates": 6,
+    "includes": 6,
+    "reusable_workflows": 6,
+    "execution_environment": 7,
+    "ambiente de execução": 7,
+    "ambiente de execucao": 7,
+    "ambiente_de_execucao": 7,
+    "labels de agentes": 7,
+    "agent_labels": 7,
+    "runs_on": 7,
+    "runner_labels": 7,
+    "tags": 7,
+    "pool": 7,
+    "branch": 8,
+    "branch padrão": 8,
+    "branch padrao": 8,
+    "default_branch": 8,
+    "last_build": 9,
+    "último build": 9,
+    "ultimo build": 9,
+    "last_status": 10,
+    "status do último build": 10,
+    "status do ultimo build": 10,
+    "migration_status": 11,
+    "status da migração": 11,
+    "status da migracao": 11,
+    "status": 11,
+}
+
+
+class WorkflowRowConverter:
+    """Conversion utility between Row and PipelineRecord instances."""
+
+    @staticmethod
+    def to_pipeline_record(row: Row) -> PipelineRecord:
+        """Convert a Row instance to a PipelineRecord instance."""
+        if row is None:
+            raise ValueError("Row cannot be None.")
+        status = row.data.get("migration_status", MigrationStatus.WAITTING)
+        if isinstance(status, str):
+            status = _from_sheet_label(status)
+
+        shared_components = str(
+            row.data.get("shared_components")
+            or row.data.get("componentes compartilhados")
+            or row.data.get("bibliotecas compartilhadas")
+            or ""
+        )
+        execution_env = str(
+            row.data.get("execution_environment")
+            or row.data.get("ambiente de execução")
+            or row.data.get("labels de agentes")
+            or ""
+        )
+
+        return PipelineRecord(
+            workflow_id=str(row.data.get("workflow_id", "")),
+            platform=str(row.data.get("platform", "jenkins")),
+            pipeline_type=str(row.data.get("pipeline_type", "")),
+            repository_association=str(row.data.get("repository_association", "")),
+            repository_url=str(row.data.get("repository_url", "")),
+            file_path=str(row.data.get("file_path", "")),
+            shared_components=shared_components,
+            execution_environment=execution_env,
+            branch=str(row.data.get("branch", "")),
+            last_build=_parse_date(row.data.get("last_build")),
+            last_status=str(row.data.get("last_status", "")),
+            migration_status=status,
+        )
+
+    @staticmethod
+    def from_pipeline_record(
+        record: PipelineRecord, row_index: int | None = None
+    ) -> Row:
+        """Construct a Row instance from a PipelineRecord."""
+        if record is None:
+            raise ValueError("PipelineRecord cannot be None.")
+        data: dict[str, Any] = {
+            "workflow_id": record.workflow_id,
+            "platform": record.platform,
+            "pipeline_type": record.pipeline_type,
+            "repository_association": record.repository_association,
+            "repository_url": record.repository_url,
+            "file_path": record.file_path,
+            "shared_components": record.shared_components,
+            "execution_environment": record.execution_environment,
+            "branch": record.branch,
+            "last_build": record.last_build,
+            "last_status": record.last_status,
+            "migration_status": record.migration_status,
+        }
+        return Row(row_index=row_index, data=data)
+
+
 class RowConverter:
     """Conversion utility between Row and InventoryRecord instances."""
 
@@ -116,7 +261,7 @@ class RowConverter:
         """Convert a Row instance to an InventoryRecord instance."""
         status = row.data.get("migration_status", MigrationStatus.WAITTING)
         if isinstance(status, str):
-            status = Inventory._from_sheet_label(status)
+            status = _from_sheet_label(status)
 
         return InventoryRecord(
             name=str(row.data.get("name", "")),
@@ -225,11 +370,103 @@ class Spreadsheet:
                 f"Error accessing spreadsheet '{clean_id}': {err}"
             ) from err
 
+    def _is_workflow_sheet(self) -> bool:
+        return (self.sheet_name or "").strip().lower() in ("workflows", "pipelines")
+
+    def ensure_sheet(
+        self,
+        sheet_name: str | None = None,
+        headers: list[str] | None = None,
+    ) -> None:
+        """Ensure the target sheet tab exists, creating it with headers if missing."""
+        target = sheet_name or self.sheet_name
+        hdrs = headers
+        if hdrs is None:
+            if (target or "").strip().lower() in ("workflows", "pipelines"):
+                hdrs = _WORKFLOW_HEADERS
+            else:
+                hdrs = _HEADERS
+
+        clean_id = (self.id or "").strip()
+        if not clean_id:
+            return
+
+        try:
+            meta = (
+                self._service.spreadsheets()
+                .get(spreadsheetId=clean_id, fields="sheets.properties.title")
+                .execute()
+            )
+            existing_sheets = [
+                s.get("properties", {}).get("title")
+                for s in meta.get("sheets", [])
+                if s.get("properties", {}).get("title")
+            ]
+            if target not in existing_sheets:
+                req = {"addSheet": {"properties": {"title": target}}}
+                self._service.spreadsheets().batchUpdate(
+                    spreadsheetId=clean_id,
+                    body={"requests": [req]},
+                ).execute()
+
+                if hdrs:
+                    end_col = chr(ord("A") + len(hdrs) - 1)
+                    header_range = f"{target}!A1:{end_col}1"
+                    self._service.spreadsheets().values().update(
+                        spreadsheetId=clean_id,
+                        range=header_range,
+                        valueInputOption="USER_ENTERED",
+                        body={"values": [hdrs]},
+                    ).execute()
+        except Exception as err:
+            raise SpreadsheetError(f"Error ensuring sheet '{target}': {err}") from err
+
     def _to_sheet_row(self, row: Row) -> list[str]:
         """Convert row data to an ordered list of cell string values.
 
         Values are formatted for Google Sheets columns.
         """
+        if self._is_workflow_sheet():
+            workflow_id = str(row.data.get("workflow_id", ""))
+            platform = str(row.data.get("platform", "jenkins"))
+            pipeline_type = str(row.data.get("pipeline_type", ""))
+            repo_assoc = str(row.data.get("repository_association", ""))
+            repo_url = str(row.data.get("repository_url", ""))
+            file_path = str(row.data.get("file_path", ""))
+            shared_components = str(
+                row.data.get("shared_components")
+                or row.data.get("componentes compartilhados")
+                or row.data.get("bibliotecas compartilhadas")
+                or ""
+            )
+            execution_env = str(
+                row.data.get("execution_environment")
+                or row.data.get("ambiente de execução")
+                or row.data.get("labels de agentes")
+                or ""
+            )
+            branch = str(row.data.get("branch", ""))
+            last_build_str = _format_date(row.data.get("last_build"))
+            last_status = str(row.data.get("last_status", ""))
+            status_str = _format_status_label(
+                row.data.get("migration_status", MigrationStatus.WAITTING)
+            )
+
+            return [
+                workflow_id,
+                platform,
+                pipeline_type,
+                repo_assoc,
+                repo_url,
+                file_path,
+                shared_components,
+                execution_env,
+                branch,
+                last_build_str,
+                last_status,
+                status_str,
+            ]
+
         project = str(row.data.get("project", ""))
         name = str(row.data.get("name", ""))
         stack = str(row.data.get("stack", ""))
@@ -238,12 +475,9 @@ class Spreadsheet:
         gh_mig = row.data.get("gh_migratation") or row.data.get("gh_migration")
         gh_mig_str = _format_date(gh_mig)
         origin_deact_str = _format_date(row.data.get("origin_deactivation"))
-
-        status_val = row.data.get("migration_status", MigrationStatus.WAITTING)
-        if isinstance(status_val, MigrationStatus):
-            status_str = status_val.to_sheet_label()
-        else:
-            status_str = Inventory._from_sheet_label(str(status_val)).to_sheet_label()
+        status_str = _format_status_label(
+            row.data.get("migration_status", MigrationStatus.WAITTING)
+        )
 
         month_str = str(row.data.get("migration_month", ""))
         if not month_str and gh_mig and isinstance(gh_mig, datetime):
@@ -262,18 +496,41 @@ class Spreadsheet:
 
     def _from_sheet_row(self, values: list[str], row_index: int | None = None) -> Row:
         """Parse raw sheet cell values into a Row."""
+        if self._is_workflow_sheet():
+            padded = values + [""] * max(0, len(_WORKFLOW_HEADERS) - len(values))
+            data: dict[str, Any] = {
+                "workflow_id": padded[0],
+                "platform": padded[1],
+                "pipeline_type": padded[2],
+                "repository_association": padded[3],
+                "repository_url": padded[4],
+                "file_path": padded[5],
+                "shared_components": padded[6],
+                "execution_environment": padded[7],
+                "branch": padded[8],
+                "last_build": _parse_date(padded[9]),
+                "last_status": padded[10],
+                "migration_status": _from_sheet_label(padded[11]),
+            }
+            return Row(row_index=row_index, data=data, values=values)
+
         padded = values + [""] * max(0, len(_HEADERS) - len(values))
-        data: dict[str, Any] = {
+        data = {
             "project": padded[0],
             "name": padded[1],
             "stack": padded[2],
             "last_commit": _parse_date(padded[3]),
             "gh_migratation": _parse_date(padded[4]),
             "origin_deactivation": _parse_date(padded[5]),
-            "migration_status": Inventory._from_sheet_label(padded[6]),
+            "migration_status": _from_sheet_label(padded[6]),
             "migration_month": padded[7],
         }
         return Row(row_index=row_index, data=data, values=values)
+
+    @property
+    def _end_column(self) -> str:
+        """Return the last column letter based on the current sheet structure."""
+        return "L" if self._is_workflow_sheet() else "H"
 
     def find_by(
         self,
@@ -287,12 +544,17 @@ class Spreadsheet:
         if target_col is None:
             raise ValueError("Column name cannot be None.")
         clean_col = target_col.strip().lower()
-        col_idx = _COLUMN_ALIAS_MAP.get(clean_col)
+        alias_map = (
+            _WORKFLOW_COLUMN_ALIAS_MAP
+            if self._is_workflow_sheet()
+            else _COLUMN_ALIAS_MAP
+        )
+        col_idx = alias_map.get(clean_col)
 
         if col_idx is None:
             raise ValueError(f"Unknown column identifier: '{target_col}'")
 
-        read_range = f"{self.sheet_name}!A2:H"
+        read_range = f"{self.sheet_name}!A2:{self._end_column}"
         resp = (
             self._service.spreadsheets()
             .values()
@@ -318,7 +580,7 @@ class Spreadsheet:
     def add(self, row: Row) -> Row:
         """Append a new row to the spreadsheet and update its row_index."""
         values = self._to_sheet_row(row)
-        append_range = f"{self.sheet_name}!A:H"
+        append_range = f"{self.sheet_name}!A:{self._end_column}"
         body = {"values": [values]}
 
         res = (
@@ -348,7 +610,9 @@ class Spreadsheet:
             raise ValueError("Cannot update row without a valid row_index.")
 
         values = self._to_sheet_row(row)
-        target_range = f"{self.sheet_name}!A{row.row_index}:H{row.row_index}"
+        target_range = (
+            f"{self.sheet_name}!A{row.row_index}:{self._end_column}{row.row_index}"
+        )
         body = {"values": [values]}
 
         self._service.spreadsheets().values().update(
@@ -363,7 +627,7 @@ class Spreadsheet:
 
     def clear_row(self, row_index: int) -> None:
         """Clear all cell values in the specified row."""
-        target_range = f"{self.sheet_name}!A{row_index}:H{row_index}"
+        target_range = f"{self.sheet_name}!A{row_index}:{self._end_column}{row_index}"
         self._service.spreadsheets().values().clear(
             spreadsheetId=self.id, range=target_range, body={}
         ).execute()

@@ -513,3 +513,109 @@ def test_given_custom_converter_when_running_cli_then_uses_injected_converter(
     mock_converter.to_inventory_records.assert_called_once()
     assert result == 1
     assert out.getvalue().strip() == "1"
+
+
+def test_given_jenkins_platform_when_building_parser_then_defaults_to_workflows_sheet_name() -> (
+    None
+):
+    """Test build_parser sets default sheet-name to Workflows for jenkins platform."""
+    parser = build_parser()
+    args = parser.parse_args(["scrape", "jenkins", "--url", "http://jenkins:8080"])
+    assert args.sheet_name == "Workflows"
+    assert args.platform == "jenkins"
+    assert args.url == "http://jenkins:8080"
+
+
+def test_given_jenkins_args_and_mock_services_when_running_cli_then_synchronizes_pipelines_with_workflows_tab() -> (
+    None
+):
+    """Test executing run_cli with jenkins platform invokes pipeline sync flow."""
+    from gh_migration_inventory_manager.inventory import PipelineRecord
+    from gh_migration_inventory_manager.jenkins_scrap import JenkinsPipelineScraper
+    from gh_migration_inventory_manager.scrap import Pipeline, PipelineType
+
+    mock_scraper = MagicMock(spec=JenkinsPipelineScraper)
+    mock_scraper.scraper_type = "pipeline"
+    mock_pipeline = Pipeline(
+        name="api-ci",
+        platform="jenkins",
+        full_path="api-ci",
+        url="http://jenkins:8080/job/api-ci",
+        pipeline_type=PipelineType.DECLARATIVE,
+    )
+    mock_scraper.scrape.return_value = [mock_pipeline]
+
+    mock_p_inv = MagicMock()
+    mock_p_inv.sync_records.return_value = [
+        PipelineRecord(workflow_id="api-ci", platform="jenkins")
+    ]
+
+    parser = build_parser()
+    args = parser.parse_args(["scrape", "jenkins", "--url", "http://jenkins:8080"])
+
+    with patch(
+        "gh_migration_inventory_manager.jenkins_scrap.JenkinsScraperProvider.create_scraper",
+        return_value=mock_scraper,
+    ):
+        out = io.StringIO()
+        result = run_cli(
+            args,
+            pipeline_inventory=mock_p_inv,
+            out_stream=out,
+        )
+
+    mock_p_inv.sync_records.assert_called_once()
+    assert result == 1
+    assert out.getvalue().strip() == "1"
+
+
+def test_given_custom_sheet_name_for_jenkins_when_running_cli_then_honors_sheet_name_override() -> (
+    None
+):
+    """Test passing --sheet-name explicitly overrides default Workflows tab for Jenkins."""
+    from gh_migration_inventory_manager.jenkins_scrap import JenkinsPipelineScraper
+    from gh_migration_inventory_manager.scrap import Pipeline
+
+    mock_scraper = MagicMock(spec=JenkinsPipelineScraper)
+    mock_scraper.scraper_type = "pipeline"
+    mock_scraper.scrape.return_value = [
+        Pipeline(
+            name="job-1",
+            platform="jenkins",
+            full_path="job-1",
+            url="http://jenkins:8080/job/job-1",
+        )
+    ]
+
+    mock_sheet = MagicMock(spec=Spreadsheet)
+    mock_sheet.id = "custom-sheet-id"
+    mock_sheet.find_by.return_value = []
+    mock_sheet.add.return_value = MagicMock(row_index=2)
+
+    parser = build_parser()
+    args = parser.parse_args(
+        [
+            "scrape",
+            "jenkins",
+            "--url",
+            "http://jenkins:8080",
+            "--sheet-name",
+            "CustomPipelinesTab",
+            "--spreadsheet-id",
+            "custom-sheet-id",
+        ]
+    )
+
+    with patch(
+        "gh_migration_inventory_manager.jenkins_scrap.JenkinsScraperProvider.create_scraper",
+        return_value=mock_scraper,
+    ):
+        out = io.StringIO()
+        result = run_cli(
+            args,
+            spreadsheet=mock_sheet,
+            out_stream=out,
+        )
+
+    mock_sheet.ensure_sheet.assert_called_with("CustomPipelinesTab")
+    assert result == 1

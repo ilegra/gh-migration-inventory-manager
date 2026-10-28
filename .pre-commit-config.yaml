@@ -28,5 +28,5 @@ repos:
     rev: v1.13.0
     hooks:
       - id: mypy
-        additional_dependencies: [pytest>=8.0.0]
+        additional_dependencies: [pytest>=8.0.0, "urllib3>=2.0.0"]
         args: [--config-file=pyproject.toml]

@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from enum import Enum
+from pathlib import Path
 from typing import Any, Protocol
 
 
@@ -87,6 +88,66 @@ _VALID_STATUS_DISPLAY: str = ", ".join(
 )
 
 
+def _from_sheet_label(label: str) -> MigrationStatus:
+    """Parse spreadsheet label into the corresponding MigrationStatus."""
+    clean = (label or "").strip().lower()
+    if not clean:
+        return MigrationStatus.WAITTING
+    if "somente github" in clean or clean in ("migrated", "migrados"):
+        return MigrationStatus.MIGRATED
+    if "ativos em ambas" in clean or "migrando" in clean or clean == "active_in_both":
+        return MigrationStatus.ACTIVE_IN_BOTH
+    if "ignorado" in clean or "não migrar" in clean or clean == "skipped":
+        return MigrationStatus.SKIPPED
+    if "aguardando" in clean or clean in ("waitting", "waiting"):
+        return MigrationStatus.WAITTING
+
+    try:
+        return MigrationStatus(clean)
+    except ValueError as err:
+        raise ValueError(f"Invalid migration status label: '{label}'.") from err
+
+
+def validate_migration_status(status: Any) -> MigrationStatus:
+    """Validate and resolve status into a valid MigrationStatus."""
+    if isinstance(status, MigrationStatus):
+        return status
+
+    if status is None:
+        raise ValueError(
+            "Invalid migration status: None. Status cannot be None. "
+            f"Expected a valid MigrationStatus or one of: {_VALID_STATUS_DISPLAY}."
+        )
+
+    if isinstance(status, str):
+        clean = status.strip()
+        if not clean:
+            raise ValueError(
+                "Invalid migration status: status cannot be empty. "
+                f"Expected a valid MigrationStatus or one of: {_VALID_STATUS_DISPLAY}."
+            )
+
+        try:
+            return MigrationStatus(clean.lower())
+        except ValueError:
+            pass
+
+        try:
+            return MigrationStatus[clean.upper()]
+        except KeyError:
+            pass
+
+        raise ValueError(
+            f"Invalid migration status: '{status}'. "
+            f"Expected a valid MigrationStatus or one of: {_VALID_STATUS_DISPLAY}."
+        )
+
+    raise ValueError(
+        f"Invalid migration status type: '{type(status).__name__}'. "
+        f"Expected MigrationStatus or one of: {_VALID_STATUS_DISPLAY}."
+    )
+
+
 @dataclass
 class InventoryRecord:
     """Represents an item in the inventory: a repository migrated or to be migrated."""
@@ -112,6 +173,49 @@ class InventoryRecord:
     def migration_month(self) -> str:
         """Return the formatted migration month (e.g. 'Outubro/2026')."""
         return format_migration_month(self.gh_migratation)
+
+
+@dataclass
+class PipelineRecord:
+    """Represents a CI/CD pipeline item in the workflows inventory."""
+
+    workflow_id: str
+    platform: str = "jenkins"
+    pipeline_type: str = ""
+    repository_association: str = ""
+    repository_url: str = ""
+    file_path: str = ""
+    shared_components: str = ""
+    execution_environment: str = ""
+    branch: str = ""
+    last_build: datetime | None = None
+    last_status: str = ""
+    migration_status: MigrationStatus = MigrationStatus.WAITTING
+
+
+def _build_credentials(credentials: Any, credentials_path: str | None) -> Any:
+    """Validate credentials configuration and build Credentials instance."""
+    if credentials is not None:
+        if credentials_path is not None:
+            configured_path = getattr(credentials, "credentials_path", None)
+            if configured_path and configured_path != str(credentials_path).strip():
+                raise ValueError(
+                    "Inconsistent credentials configuration: "
+                    f"credentials.credentials_path '{configured_path}' "
+                    f"does not match credentials_path '{credentials_path}'."
+                )
+        return credentials
+
+    if not credentials_path or not str(credentials_path).strip():
+        raise ValueError("Missing Google credentials path. Pass --credentials-path.")
+
+    clean_path = str(credentials_path).strip()
+    if not Path(clean_path).exists():
+        raise FileNotFoundError(f"Google credentials file not found: '{clean_path}'.")
+
+    from gh_migration_inventory_manager.google import Credentials
+
+    return Credentials(credentials_path=clean_path)
 
 
 class Inventory:
@@ -142,42 +246,8 @@ class Inventory:
             self.converter = _RepoConverter()
 
     def _validate_and_build_credentials(self) -> Any:
-        """Validate credentials configuration and build Credentials instance.
-
-        Raises:
-            ValueError: If credentials configuration is inconsistent, missing, or empty.
-            FileNotFoundError: If the specified credentials path does not exist.
-        """
-        if self.credentials is not None:
-            if self.credentials_path is not None:
-                configured_path = getattr(self.credentials, "credentials_path", None)
-                if (
-                    configured_path
-                    and configured_path != str(self.credentials_path).strip()
-                ):
-                    raise ValueError(
-                        "Inconsistent credentials configuration: "
-                        f"credentials.credentials_path '{configured_path}' "
-                        f"does not match credentials_path '{self.credentials_path}'."
-                    )
-            return self.credentials
-
-        if not self.credentials_path or not str(self.credentials_path).strip():
-            raise ValueError(
-                "Missing Google credentials path. Pass --credentials-path."
-            )
-
-        clean_path = str(self.credentials_path).strip()
-        from pathlib import Path
-
-        if not Path(clean_path).exists():
-            raise FileNotFoundError(
-                f"Google credentials file not found: '{clean_path}'."
-            )
-
-        from gh_migration_inventory_manager.google import Credentials
-
-        self.credentials = Credentials(credentials_path=clean_path)
+        """Validate credentials configuration and build Credentials instance."""
+        self.credentials = _build_credentials(self.credentials, self.credentials_path)
         return self.credentials
 
     _build_credentials = _validate_and_build_credentials
@@ -229,72 +299,12 @@ class Inventory:
     @staticmethod
     def _from_sheet_label(label: str) -> MigrationStatus:
         """Parse spreadsheet label into the corresponding MigrationStatus."""
-        clean = (label or "").strip().lower()
-        if not clean:
-            return MigrationStatus.WAITTING
-        if "somente github" in clean or clean in ("migrated", "migrados"):
-            return MigrationStatus.MIGRATED
-        if (
-            "ativos em ambas" in clean
-            or "migrando" in clean
-            or clean == "active_in_both"
-        ):
-            return MigrationStatus.ACTIVE_IN_BOTH
-        if "ignorado" in clean or "não migrar" in clean or clean == "skipped":
-            return MigrationStatus.SKIPPED
-        if "aguardando" in clean or clean in ("waitting", "waiting"):
-            return MigrationStatus.WAITTING
-
-        try:
-            return MigrationStatus(clean)
-        except ValueError as err:
-            raise ValueError(f"Invalid migration status label: '{label}'.") from err
+        return _from_sheet_label(label)
 
     @staticmethod
     def _validate_status(status: Any) -> MigrationStatus:
-        """Validate that status is a valid MigrationStatus or valid status string.
-
-        Raises:
-            ValueError: If status is not provided, is of an invalid type,
-                or is not a recognized migration status.
-        """
-        if isinstance(status, MigrationStatus):
-            return status
-
-        if status is None:
-            raise ValueError(
-                "Invalid migration status: None. Status cannot be None. "
-                f"Expected a valid MigrationStatus or one of: {_VALID_STATUS_DISPLAY}."
-            )
-
-        if isinstance(status, str):
-            clean = status.strip()
-            if not clean:
-                raise ValueError(
-                    "Invalid migration status: status cannot be empty. "
-                    "Expected a valid MigrationStatus or one of: "
-                    f"{_VALID_STATUS_DISPLAY}."
-                )
-
-            try:
-                return MigrationStatus(clean.lower())
-            except ValueError:
-                pass
-
-            try:
-                return MigrationStatus[clean.upper()]
-            except KeyError:
-                pass
-
-            raise ValueError(
-                f"Invalid migration status: '{status}'. "
-                f"Expected a valid MigrationStatus or one of: {_VALID_STATUS_DISPLAY}."
-            )
-
-        raise ValueError(
-            f"Invalid migration status type: '{type(status).__name__}'. "
-            f"Expected MigrationStatus or one of: {_VALID_STATUS_DISPLAY}."
-        )
+        """Validate that status is a valid MigrationStatus or valid status string."""
+        return validate_migration_status(status)
 
     def _find_row(self, name: str, project: str | None = None) -> Any | None:
         """Find a row matching repository name and optional project."""
@@ -517,6 +527,181 @@ class Inventory:
                     for r in repositories
                 ]
         return self.sync_records(records)
+
+
+class PipelineInventory:
+    """Workflows and pipelines inventory manager backed by a Google Spreadsheet tab."""
+
+    def __init__(
+        self,
+        spreadsheet: SpreadsheetClient | Any = None,
+        spreadsheet_id: str | None = None,
+        credentials_path: str | None = None,
+        sheet_name: str = "Workflows",
+        credentials: Any = None,
+        converter: Any = None,
+    ) -> None:
+        self.spreadsheet = spreadsheet
+        self.spreadsheet_id = spreadsheet_id
+        self.credentials_path = credentials_path
+        self.sheet_name = sheet_name
+        self.credentials = credentials
+        if converter is not None:
+            self.converter = converter
+        else:
+            from gh_migration_inventory_manager.converter import (
+                PipelineConverter as _PipelineConverter,
+            )
+
+            self.converter = _PipelineConverter()
+
+    def _validate_and_build_credentials(self) -> Any:
+        """Validate credentials configuration and build Credentials instance."""
+        self.credentials = _build_credentials(self.credentials, self.credentials_path)
+        return self.credentials
+
+    def _validate_and_build_spreadsheet(self) -> SpreadsheetClient:
+        """Validate spreadsheet configuration and build Spreadsheet instance."""
+        if self.spreadsheet is not None:
+            if self.spreadsheet_id is not None:
+                configured_id = getattr(self.spreadsheet, "id", None)
+                if configured_id and configured_id != str(self.spreadsheet_id).strip():
+                    raise ValueError(
+                        "Inconsistent spreadsheet configuration: "
+                        f"spreadsheet.id '{configured_id}' "
+                        f"does not match spreadsheet_id '{self.spreadsheet_id}'."
+                    )
+            if hasattr(self.spreadsheet, "validate") and callable(
+                self.spreadsheet.validate
+            ):
+                self.spreadsheet.validate()
+            if hasattr(self.spreadsheet, "ensure_sheet") and callable(
+                self.spreadsheet.ensure_sheet
+            ):
+                self.spreadsheet.ensure_sheet(self.sheet_name)
+            self._spreadsheet_initialized = True
+            return self.spreadsheet
+
+        if not self.spreadsheet_id or not str(self.spreadsheet_id).strip():
+            raise ValueError("Missing Google Spreadsheet ID. Pass --spreadsheet-id.")
+
+        clean_id = str(self.spreadsheet_id).strip()
+        creds = self._validate_and_build_credentials()
+
+        from gh_migration_inventory_manager.google import Spreadsheet
+
+        sheet = Spreadsheet(
+            id=clean_id,
+            credentials=creds,
+            sheet_name=self.sheet_name,
+        )
+        sheet.validate()
+        sheet.ensure_sheet(self.sheet_name)
+        self.spreadsheet = sheet
+        self._spreadsheet_initialized = True
+        return self.spreadsheet
+
+    def _get_spreadsheet(self) -> SpreadsheetClient:
+        """Retrieve, validate, and return the underlying Spreadsheet client."""
+        if self.spreadsheet is not None:
+            if not getattr(self, "_spreadsheet_initialized", False):
+                if hasattr(self.spreadsheet, "validate") and callable(
+                    self.spreadsheet.validate
+                ):
+                    self.spreadsheet.validate()
+                if hasattr(self.spreadsheet, "ensure_sheet") and callable(
+                    self.spreadsheet.ensure_sheet
+                ):
+                    self.spreadsheet.ensure_sheet(self.sheet_name)
+                self._spreadsheet_initialized = True
+            return self.spreadsheet
+        return self._validate_and_build_spreadsheet()
+
+    def _find_row(self, workflow_id: str) -> Any | None:
+        """Find a row matching workflow ID."""
+        sheet = self._get_spreadsheet()
+        clean_id = workflow_id.strip() if isinstance(workflow_id, str) else ""
+        if not clean_id:
+            raise ValueError("Workflow ID cannot be empty.")
+
+        matching_rows = sheet.find_by("workflow_id", clean_id)
+        return matching_rows[0] if matching_rows else None
+
+    def register_record(self, record: PipelineRecord) -> PipelineRecord:
+        """Register or synchronize a PipelineRecord in the inventory.
+
+        If the workflow is already recorded, its migration status is strictly
+        preserved, while metadata (last_build, last_status, etc.) are updated.
+        """
+        from gh_migration_inventory_manager.google import WorkflowRowConverter
+
+        if record is None:
+            raise ValueError("PipelineRecord cannot be None.")
+
+        clean_id = str(record.workflow_id).strip() if record.workflow_id else ""
+        if not clean_id:
+            raise ValueError("Pipeline workflow_id cannot be empty.")
+
+        sheet = self._get_spreadsheet()
+
+        existing_row = self._find_row(clean_id)
+        if existing_row is not None:
+            existing_record = WorkflowRowConverter.to_pipeline_record(existing_row)
+            record.migration_status = existing_record.migration_status
+            row = WorkflowRowConverter.from_pipeline_record(
+                record, row_index=existing_row.row_index
+            )
+            saved_row = sheet.update_row(row)
+        else:
+            row = WorkflowRowConverter.from_pipeline_record(record, row_index=None)
+            saved_row = sheet.add(row)
+
+        return WorkflowRowConverter.to_pipeline_record(saved_row)
+
+    def update_progress(
+        self,
+        workflow_id: str,
+        status: MigrationStatus | str,
+    ) -> PipelineRecord:
+        """Update migration progress for a pipeline in the inventory."""
+        from gh_migration_inventory_manager.google import WorkflowRowConverter
+
+        clean_id = workflow_id.strip() if isinstance(workflow_id, str) else ""
+        if not clean_id:
+            raise ValueError("Workflow ID cannot be empty.")
+
+        valid_status = validate_migration_status(status)
+        existing_row = self._find_row(clean_id)
+
+        if not existing_row:
+            record = PipelineRecord(
+                workflow_id=clean_id,
+                migration_status=valid_status,
+            )
+            row_index = None
+        else:
+            record = WorkflowRowConverter.to_pipeline_record(existing_row)
+            record.migration_status = valid_status
+            row_index = existing_row.row_index
+
+        row = WorkflowRowConverter.from_pipeline_record(record, row_index=row_index)
+        sheet = self._get_spreadsheet()
+        saved_row = sheet.update_row(row) if row_index is not None else sheet.add(row)
+        return WorkflowRowConverter.to_pipeline_record(saved_row)
+
+    def get_pipeline(self, workflow_id: str) -> PipelineRecord | None:
+        """Find a pipeline record by workflow ID."""
+        from gh_migration_inventory_manager.google import WorkflowRowConverter
+
+        row = self._find_row(workflow_id)
+        return WorkflowRowConverter.to_pipeline_record(row) if row is not None else None
+
+    def sync_records(self, records: list[PipelineRecord]) -> list[PipelineRecord]:
+        """Synchronize a collection of PipelineRecord instances."""
+        if records is None:
+            raise ValueError("Records collection cannot be None.")
+        self._get_spreadsheet()
+        return [self.register_record(rec) for rec in records]
 
 
 def __getattr__(name: str) -> Any:

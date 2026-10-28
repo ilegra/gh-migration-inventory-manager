@@ -1,20 +1,20 @@
 # GitHub Migration Inventory Manager
 
-**GitHub Migration Inventory Manager** is a specialized CLI tool and Python library designed to automate the discovery of repositories across legacy version control systems (such as Subversion / SVN), register and maintain a centralized inventory in Google Sheets, and programmatically track repository migration lifecycles during large-scale enterprise GitHub migrations.
+**GitHub Migration Inventory Manager** is a specialized CLI tool and Python library designed to automate the discovery of source code repositories (such as Subversion / SVN) and CI/CD pipelines (such as Jenkins controllers), register and maintain a centralized inventory in Google Sheets, and programmatically track migration lifecycles during large-scale enterprise GitHub migrations.
 
 ---
 
 ## Why It Was Created
 
-In enterprise GitHub migration initiatives, organizations often need to migrate hundreds or thousands of repositories scattered across legacy VCS platforms (e.g., Subversion / SVN, GitLab, Bitbucket). These migrations present critical operational challenges:
+In enterprise GitHub migration initiatives, organizations often need to migrate hundreds or thousands of repositories and CI/CD workflows scattered across legacy VCS platforms (e.g., Subversion / SVN, GitLab, Bitbucket) and CI/CD controllers (e.g., Jenkins). These migrations present critical operational challenges:
 
-- **Lack of Central Visibility**: Legacy servers frequently host undocumented repositories, complex grouping hierarchies (such as multi-project repositories or flat directory trees), and unidentified technology stacks. Engineering leadership lacks an authoritative, single source of truth detailing what exists, who owns it, and whether repositories are active or dormant.
-- **Tracking Migration Progress Across Lifecycle States**: Migrations are iterative, phased operations rather than instantaneous cutovers. Repositories transition through progressive lifecycle stages:
+- **Lack of Central Visibility**: Legacy servers frequently host undocumented repositories, complex grouping hierarchies (such as multi-project repositories or flat directory trees), deeply nested Jenkins job folders, and unidentified technology stacks. Engineering leadership lacks an authoritative, single source of truth detailing what exists, who owns it, and whether repositories or pipelines are active or dormant.
+- **Tracking Migration Progress Across Lifecycle States**: Migrations are iterative, phased operations rather than instantaneous cutovers. Repositories and workflows transition through progressive lifecycle stages:
   1. `Aguardando Migração` (*Waiting*): Discovered in the legacy system and queued for migration.
-  2. `Migrando (Ativos em Ambas)` (*Active in Both*): Synchronized or mirrored to GitHub; active development or verification occurs in both systems during the transition window.
-  3. `Migrados (Somente GitHub)` (*Migrated*): Migration complete and verified; the legacy origin repository is deactivated or archived.
-  4. `Ignorado` (*Skipped*): Deprecated, empty, or obsolete codebases explicitly excluded from migration.
-- **Keeping the Inventory Continuously Up to Date**: Without automation, static tracking sheets fall out of sync almost immediately. Migration teams need a live, automated inventory connected directly into their migration pipelines to update repository statuses, record exact migration and deactivation dates, generate monthly cohorts, and provide executive visibility through real-time analytics.
+  2. `Migrando (Ativos em Ambas)` (*Active in Both*): Synchronized or mirrored to GitHub / GitHub Actions; active development or verification occurs in both systems during the transition window.
+  3. `Migrados (Somente GitHub)` (*Migrated*): Migration complete and verified; the legacy origin repository or Jenkins job is deactivated or archived.
+  4. `Ignorado` (*Skipped*): Deprecated, empty, or obsolete codebases and jobs explicitly excluded from migration.
+- **Keeping the Inventory Continuously Up to Date**: Without automation, static tracking sheets fall out of sync almost immediately. Migration teams need a live, automated inventory connected directly into their migration pipelines to update repository and workflow statuses, record exact migration and deactivation dates, generate monthly cohorts, and provide executive visibility through real-time analytics.
 
 ---
 
@@ -25,24 +25,29 @@ The project is structured around two distinct operational modes that cover the e
 ```mermaid
 flowchart LR
     subgraph Mode1["Mode 1: Building the Inventory (CLI Discovery)"]
-        A["Legacy VCS (e.g. SVN)"] -->|"gh-migration-inventory scrape"| B["Scraper / Layout & Stack Detection"]
-        B -->|"Seed / Register"| C[("Google Sheets Inventory")]
+        A["Legacy VCS (e.g. SVN)"] -->|"gh-migration-inventory scrape svn"| B["Repo Scraper / Stack Detection"]
+        J["Jenkins Controller"] -->|"gh-migration-inventory scrape jenkins"| JS["Pipeline Scraper / Job Detection"]
+        B -->|"Seed / Register"| C[("Google Sheets: Inventario")]
+        JS -->|"Seed / Register"| W[("Google Sheets: Workflows")]
     end
 
     subgraph Mode2["Mode 2: Updating the Inventory (Embedded Library)"]
-        D["Migration Pipeline / Runner"] -->|"inventory.update_progress()"| C
+        D["Migration Runner / GitHub Actions"] -->|"Inventory / PipelineInventory"| C
+        D -->|"update_progress()"| W
         C -->|"Analytics & Metrics"| E["Executive Dashboard"]
     end
 ```
 
 ### 1. Building the Inventory (Discovery & Scraper Mode)
 - **Form**: Command-Line Interface (`gh-migration-inventory scrape <platform>`).
-- **Role**: Traverses remote VCS servers, inspects layouts (`standard`, `multi_project`, `flat`, `collection`), identifies technology stacks (Java, Python, TypeScript, C#, Bash, Terraform), extracts last commit dates, and seeds or synchronizes the Google Sheets inventory with an initial status (`waitting`).
-- **Idempotency**: Running discovery multiple times is non-destructive—newly discovered repositories are added, while existing repositories maintain their current migration statuses and historical timestamps.
+- **Role**:
+  - **Repositories (`scrape svn`)**: Traverses remote VCS servers, inspects layouts (`standard`, `multi_project`, `flat`, `collection`), identifies technology stacks (Java, Python, TypeScript, C#, Bash, Terraform), extracts last commit dates, and seeds or synchronizes the `Inventario` tab.
+  - **Workflows (`scrape jenkins`)**: Recursively traverses Jenkins controllers and nested folders, classifies pipeline archetypes (Declarative, Scripted, Multibranch, Freestyle), extracts associated SCM repository URLs and Jenkinsfile paths, detects build staleness, and seeds or synchronizes the `Workflows` tab.
+- **Idempotency**: Running discovery multiple times is non-destructive—newly discovered items are added, while existing items maintain their current migration statuses and historical timestamps.
 
 ### 2. Updating the Inventory (Lifecycle Tracking via Embedded Library)
 - **Form**: Python library ([`gh_migration_inventory_manager`](file:///media/jackson/support-storage/git-repos/ilegra/gh-migration-inventory-manager/src/gh_migration_inventory_manager)) embedded directly into migration pipelines, GitHub Actions workflows, Jenkins jobs, or automation scripts.
-- **Role**: Programmatically advances repository statuses as migration steps complete (`waitting` → `active_in_both` → `migrated`). It automatically handles timestamp tracking (`Data de Migração (GitHub)`, `Data de Desativação (Origem)`) and calculates the migration month (`Mês de Migração`).
+- **Role**: Programmatically advances repository and pipeline statuses as migration steps complete (`waitting` → `active_in_both` → `migrated`) via [`Inventory`](file:///media/jackson/support-storage/git-repos/ilegra/gh-migration-inventory-manager/src/gh_migration_inventory_manager/inventory.py) and [`PipelineInventory`](file:///media/jackson/support-storage/git-repos/ilegra/gh-migration-inventory-manager/src/gh_migration_inventory_manager/inventory.py). It automatically handles timestamp tracking (`Data de Migração (GitHub)`, `Data de Desativação (Origem)`) and calculates the migration month (`Mês de Migração`).
 
 ---
 
@@ -69,9 +74,9 @@ You can use the provided example template spreadsheet as the foundation for your
 
 ##### Spreadsheet Structure
 
-The template contains two worksheets:
+The template contains tracking worksheets designed for enterprise migrations:
 
-1. **`Inventario`**: The core tracking tab populated with 8 standard columns:
+1. **`Inventario`**: The repository tracking tab populated with 8 standard columns:
    - `Projeto`: Project or business unit grouping.
    - `Nome do Repositório`: Repository or component identifier.
    - `Tecnologia`: Detected technology stack (e.g., `Java`, `Python`, `Node.js`, `Terraform`).
@@ -83,7 +88,21 @@ The template contains two worksheets:
 
    ![Inventario Tab Example](docs/images/inventory-spreadsheet-example.png)
 
-2. **`Analytics`**: Executive dashboard with consolidated metrics and charts:
+2. **`Workflows`**: The CI/CD workflows tracking tab populated with 12 standard columns:
+   - `ID do Workflow`: Full job identifier/path (e.g., `services/payment/payment-service-build`).
+   - `Plataforma`: CI/CD platform (`jenkins`, `gitlab`, `azure_devops`, `github_actions`).
+   - `Tipo de Pipeline`: Pipeline classification (`declarative`, `scripted`, `multibranch`, `freestyle`, `matrix`).
+   - `Repositório Associado`: Linked SCM repository name or identifier (`org/repo`).
+   - `URL do Repositório`: Git or SVN clone/remote URL for the repository.
+   - `Caminho do Workflow`: Path to workflow file in repository (e.g., `Jenkinsfile`).
+   - `Componentes Compartilhados`: Referenced shared libraries, templates, or reusable workflows.
+   - `Ambiente de Execução`: Runner labels, agent labels, runner tags, or pool demands.
+   - `Branch Padrão`: Target or default branch configured for the job (e.g., `main`).
+   - `Último Build`: Formatted date/timestamp of the most recent build execution.
+   - `Status do Último Build`: Outcome of the most recent build (`SUCCESS`, `FAILURE`, `UNSTABLE`).
+   - `Status da Migração`: Current lifecycle state (`Aguardando Migração`, `Migrando (Ativos em Ambas)`, `Migrados (Somente GitHub)`, `Ignorado`).
+
+3. **`Analytics`**: Executive dashboard with consolidated metrics and charts:
    - Commit staleness indicators (*Sem Commit há > 1 Ano*, *Sem Commit há > 6 Meses*).
    - Migration status distribution chart.
    - Monthly migration progress timeline.
@@ -92,7 +111,9 @@ The template contains two worksheets:
 
 #### Step 2: Run the Scraper CLI
 
-Run the scraper CLI to discover repositories on the remote VCS and synchronize them directly to your Google Sheet:
+Run the scraper CLI to discover repositories or CI/CD pipelines on the remote platform and synchronize them directly to your Google Sheet:
+
+##### A. Scraping Subversion Repositories (`scrape svn`)
 
 ```bash
 poetry run gh-migration-inventory scrape svn \
@@ -104,6 +125,22 @@ poetry run gh-migration-inventory scrape svn \
   --credentials-path "./gcp-key.json" \
   --sheet-name "Inventario"
 ```
+
+##### B. Scraping Jenkins Pipelines (`scrape jenkins`)
+
+```bash
+poetry run gh-migration-inventory scrape jenkins \
+  --url https://jenkins.internal.company.com \
+  --username "$JENKINS_USER" \
+  --password "$JENKINS_API_TOKEN" \
+  --tree-depth 5 \
+  --staleness-days 180 \
+  --spreadsheet-id "$SPREADSHEET_ID" \
+  --credentials-path "./gcp-key.json"
+```
+
+> [!TIP]
+> When scraping Jenkins without `--sheet-name`, the CLI automatically defaults to the `Workflows` tab, auto-provisioning the tab and initializing its 12 header columns if it doesn't already exist.
 
 ##### Command Output
 
@@ -119,6 +156,18 @@ Upon successful completion, the CLI prints the total count of inventoried items:
 gh-migration-inventory scrape <platform> [OPTIONS]
 ```
 
+##### Platform Options (Jenkins CI/CD)
+
+| Option | Default | Description |
+| :--- | :--- | :--- |
+| `--url <URL>` | *(Required)* | Jenkins controller base URL (`http://` or `https://`) |
+| `--username <USER>` | — | Jenkins authentication username |
+| `--password <PASS>` | — | Jenkins authentication password or API token |
+| `--token <TOKEN>` | — | Jenkins API token or Bearer token |
+| `--tree-depth <N>` | `5` | Maximum recursion depth for nested folder hierarchies |
+| `--staleness-days <DAYS>` | `180` | Age threshold in days to flag/decommission inactive jobs |
+| `--page-size <N>` | `250` | Maximum number of jobs fetched per page in folder queries (windowed slice pagination) |
+
 ##### Platform Options (SVN)
 
 | Option | Default | Description |
@@ -130,6 +179,15 @@ gh-migration-inventory scrape <platform> [OPTIONS]
 | `--token <TOKEN>` | — | HTTP Bearer/PAT token |
 | `--organization <ORG>` | — | Organization name tag for discovered repositories |
 | `--project <PROJECT>` | — | Project name override for discovered repositories |
+
+##### Google Sheets Synchronization Options (Shared)
+
+| Option | Default | Description |
+| :--- | :--- | :--- |
+| `--spreadsheet-id <ID>` | *(Required)* | Target Google Spreadsheet ID |
+| `--credentials-path <PATH>` | *(Required)* | Path to GCP Service Account JSON key file |
+| `--sheet-name <NAME>` | Platform Default | Google Sheets worksheet/tab name (`Inventario` for SVN, `Workflows` for Jenkins) |
+| `--initial-status <STATUS>` | `waitting` | Initial status for newly discovered items (`waitting`, `waiting`, `active_in_both`, `migrated`, `skipped`) |
 
 ##### SVN Layout Types
 
@@ -218,10 +276,11 @@ if existing:
 
 The library uses a decoupled provider architecture ([`ScraperProvider`](file:///media/jackson/support-storage/git-repos/ilegra/gh-migration-inventory-manager/src/gh_migration_inventory_manager/scrap.py) & [`ScraperRegistry`](file:///media/jackson/support-storage/git-repos/ilegra/gh-migration-inventory-manager/src/gh_migration_inventory_manager/scrap.py)) where scrapers act as discovery adapters. They normalize external platform structures into standard repository representations ([`Repository`](file:///media/jackson/support-storage/git-repos/ilegra/gh-migration-inventory-manager/src/gh_migration_inventory_manager/scrap.py)) and detect technology stacks, independent of the inventory tracking backend.
 
-| Platform | Scraper Identifier | Status | Layout Detection | Tech Stack Detection |
+| Platform | Scraper Identifier | Status | Discovery Capabilities | Archetypes / Stacks Detected |
 | :--- | :--- | :--- | :--- | :--- |
-| **Subversion (SVN)** | `svn` | Built-in | `auto`, `standard`, `multi_project`, `flat`, `collection` | Java, Python, TypeScript, C#/.NET Core, Bash, Terraform |
-| **Custom / External Platforms** | Pluggable | Supported via `ScraperRegistry` | User-defined | Adapter-defined |
+| **Subversion (SVN)** | `svn` | Built-in | Layout detection (`auto`, `standard`, `multi_project`, `flat`, `collection`) | Java, Python, TypeScript, C#/.NET Core, Bash, Terraform |
+| **Jenkins CI/CD** | `jenkins` | Built-in | Folder traversal (recursive depth), SCM linkage, staleness filtering, urllib3 retries | Declarative, Scripted, Multibranch, Freestyle, Matrix |
+| **Custom Platforms** | Pluggable | Supported via `ScraperRegistry` | User-defined via `RepositoryScraper` or `PipelineScraper` | Adapter-defined |
 
 ---
 
