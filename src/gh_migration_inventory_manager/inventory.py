@@ -1008,14 +1008,13 @@ class PolicyInventory:
             return self.spreadsheet
         return self._validate_and_build_spreadsheet()
 
-    def _find_row(
+    def _validate_policy_key(
         self,
-        policy_scope: str,
-        target_ref_pattern: str,
-        normalized_rule_type: str,
-    ) -> Any | None:
-        """Find a row matching composite key (scope, ref_pattern, rule_type)."""
-        sheet = self._get_spreadsheet()
+        policy_scope: Any,
+        target_ref_pattern: Any,
+        normalized_rule_type: Any,
+    ) -> tuple[str, str, str]:
+        """Validate and sanitize policy composite key."""
         clean_scope = str(policy_scope).strip() if policy_scope is not None else ""
         if not clean_scope:
             raise ValueError("Policy scope cannot be empty.")
@@ -1026,13 +1025,29 @@ class PolicyInventory:
         if not clean_target:
             raise ValueError("Target ref pattern cannot be empty.")
 
-        clean_rule = (
-            str(normalized_rule_type).strip()
-            if normalized_rule_type is not None
-            else ""
-        )
-        if not clean_rule:
+        if normalized_rule_type is None or not str(normalized_rule_type).strip():
             raise ValueError("Normalized rule type cannot be empty.")
+
+        try:
+            from gh_migration_inventory_manager.scrap import normalize_rule_type
+
+            clean_rule = normalize_rule_type(normalized_rule_type).value
+        except (ValueError, TypeError):
+            clean_rule = str(normalized_rule_type).strip()
+
+        return clean_scope, clean_target, clean_rule
+
+    def _find_row(
+        self,
+        policy_scope: str,
+        target_ref_pattern: str,
+        normalized_rule_type: str,
+    ) -> Any | None:
+        """Find a row matching composite key (scope, ref_pattern, rule_type)."""
+        sheet = self._get_spreadsheet()
+        clean_scope, clean_target, clean_rule = self._validate_policy_key(
+            policy_scope, target_ref_pattern, normalized_rule_type
+        )
 
         matching_rows = sheet.find_by("policy_scope", clean_scope)
         if not matching_rows:
@@ -1060,23 +1075,11 @@ class PolicyInventory:
         if record is None:
             raise ValueError("PolicyRecord cannot be None.")
 
-        clean_scope = str(record.policy_scope).strip() if record.policy_scope else ""
-        if not clean_scope:
-            raise ValueError("Policy scope cannot be empty.")
-
-        clean_target = (
-            str(record.target_ref_pattern).strip() if record.target_ref_pattern else ""
+        clean_scope, clean_target, clean_rule = self._validate_policy_key(
+            record.policy_scope,
+            record.target_ref_pattern,
+            record.normalized_rule_type,
         )
-        if not clean_target:
-            raise ValueError("Target ref pattern cannot be empty.")
-
-        clean_rule = (
-            str(record.normalized_rule_type).strip()
-            if record.normalized_rule_type
-            else ""
-        )
-        if not clean_rule:
-            raise ValueError("Normalized rule type cannot be empty.")
 
         sheet = self._get_spreadsheet()
         existing_row = self._find_row(clean_scope, clean_target, clean_rule)
@@ -1089,13 +1092,12 @@ class PolicyInventory:
                 or existing_record.bypass_team_slugs != record.bypass_team_slugs
                 or existing_record.origin_raw_policy != record.origin_raw_policy
             )
-            if changed:
-                row = PolicyRowConverter.from_policy_record(
-                    record, row_index=existing_row.row_index
-                )
-                saved_row = sheet.update_row(row)
-            else:
-                saved_row = existing_row
+            if not changed:
+                return existing_record
+            row = PolicyRowConverter.from_policy_record(
+                record, row_index=existing_row.row_index
+            )
+            saved_row = sheet.update_row(row)
         else:
             row = PolicyRowConverter.from_policy_record(record, row_index=None)
             saved_row = sheet.add(row)
@@ -1112,24 +1114,9 @@ class PolicyInventory:
         """Update migration progress for a branch governance policy."""
         from gh_migration_inventory_manager.google import PolicyRowConverter
 
-        clean_scope = str(policy_scope).strip() if policy_scope is not None else ""
-        if not clean_scope:
-            raise ValueError("Policy scope cannot be empty.")
-
-        clean_target = (
-            str(target_ref_pattern).strip() if target_ref_pattern is not None else ""
+        clean_scope, clean_target, clean_rule = self._validate_policy_key(
+            policy_scope, target_ref_pattern, normalized_rule_type
         )
-        if not clean_target:
-            raise ValueError("Target ref pattern cannot be empty.")
-
-        clean_rule = (
-            str(normalized_rule_type).strip()
-            if normalized_rule_type is not None
-            else ""
-        )
-        if not clean_rule:
-            raise ValueError("Normalized rule type cannot be empty.")
-
         valid_status = validate_migration_status(status)
         existing_row = self._find_row(clean_scope, clean_target, clean_rule)
 

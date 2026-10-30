@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import base64
 import json
-import logging
 from typing import Any, Protocol, cast, runtime_checkable
 
 import urllib3
@@ -24,8 +23,6 @@ from gh_migration_inventory_manager.scrap import (
     default_scraper_registry,
     slugify,
 )
-
-logger = logging.getLogger(__name__)
 
 
 @runtime_checkable
@@ -87,8 +84,11 @@ class BitbucketClient(BitbucketTransport):
 
     def _build_auth_headers(self) -> dict[str, str]:
         """Resolve authentication credentials and return HTTP headers."""
+        if hasattr(self, "_cached_auth_headers"):
+            return self._cached_auth_headers
         if self.auth is None:
-            return {}
+            self._cached_auth_headers: dict[str, str] = {}
+            return self._cached_auth_headers
         creds = self.auth.resolve_credentials()
         headers: dict[str, str] = {}
         if creds.token and not creds.username:
@@ -98,6 +98,7 @@ class BitbucketClient(BitbucketTransport):
             raw_cred = f"{creds.username}:{secret}".encode()
             encoded = base64.b64encode(raw_cred).decode("ascii")
             headers["Authorization"] = f"Basic {encoded}"
+        self._cached_auth_headers = headers
         return headers
 
     def _request_json(
@@ -179,7 +180,7 @@ class BitbucketClient(BitbucketTransport):
                 all_values.extend(values)
                 if first_page.get("isLastPage", True):
                     return all_values
-                start += len(values)
+                start = first_page.get("nextPageStart", start + len(values))
                 break
 
         if selected_path is None:
@@ -194,7 +195,7 @@ class BitbucketClient(BitbucketTransport):
             all_values.extend(values)
             if page.get("isLastPage", True) or not values:
                 break
-            start += len(values)
+            start = page.get("nextPageStart", start + len(values))
 
         return all_values
 
@@ -210,13 +211,13 @@ class BitbucketClient(BitbucketTransport):
 
         if clean_repo:
             paths = [
-                f"rest/api/latest/projects/{clean_project}/repos/{clean_repo}/settings/pull-requests",
                 f"rest/api/1.0/projects/{clean_project}/repos/{clean_repo}/settings/pull-requests",
+                f"rest/api/latest/projects/{clean_project}/repos/{clean_repo}/settings/pull-requests",
             ]
         else:
             paths = [
-                f"rest/api/latest/projects/{clean_project}/settings/pull-requests",
                 f"rest/api/1.0/projects/{clean_project}/settings/pull-requests",
+                f"rest/api/latest/projects/{clean_project}/settings/pull-requests",
             ]
 
         for p in paths:
@@ -248,6 +249,15 @@ class BitbucketPolicyScraper(PolicyScraper):
         self.repo_slug = repo_slug.strip() if repo_slug and repo_slug.strip() else None
         self.client = client
         self.default_branch = default_branch.strip() if default_branch else "main"
+
+    @staticmethod
+    def _extract_enabled_count(setting: Any) -> int | None:
+        """Extract positive numeric count from dict config or number."""
+        if isinstance(setting, dict) and setting.get("enabled"):
+            return int(setting.get("count", 1))
+        if isinstance(setting, int | float) and setting > 0:
+            return int(setting)
+        return None
 
     def _canonicalize_ref(
         self, matcher_id: str, matcher_type_id: str | None = None
@@ -358,14 +368,9 @@ class BitbucketPolicyScraper(PolicyScraper):
             raw_pr_origin = json.dumps(pr_settings, sort_keys=True)
             default_ref = self._canonicalize_ref(self.default_branch)
 
-            # Minimum Approvers check
-            approvers = pr_settings.get("requiredApprovers")
-            min_count: int | None = None
-            if isinstance(approvers, dict) and approvers.get("enabled"):
-                min_count = int(approvers.get("count", 1))
-            elif isinstance(approvers, int | float) and approvers > 0:
-                min_count = int(approvers)
-
+            min_count = self._extract_enabled_count(
+                pr_settings.get("requiredApprovers")
+            )
             if min_count is not None:
                 all_tasks = bool(pr_settings.get("requiredAllTasksComplete", False))
                 all_approvers = bool(pr_settings.get("requiredAllApprovers", False))
@@ -384,14 +389,9 @@ class BitbucketPolicyScraper(PolicyScraper):
                     )
                 )
 
-            # Successful Builds check
-            builds = pr_settings.get("requiredSuccessfulBuilds")
-            build_count: int | None = None
-            if isinstance(builds, dict) and builds.get("enabled"):
-                build_count = int(builds.get("count", 1))
-            elif isinstance(builds, int | float) and builds > 0:
-                build_count = int(builds)
-
+            build_count = self._extract_enabled_count(
+                pr_settings.get("requiredSuccessfulBuilds")
+            )
             if build_count is not None:
                 policies.append(
                     BranchPolicy(

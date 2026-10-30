@@ -346,7 +346,7 @@ class PolicyConverter:
         else:
             items = [str(slugs).strip()]
 
-        normalized = {slugify(item) for item in items if slugify(item)}
+        normalized = {s for item in items if (s := slugify(item))}
         return ", ".join(sorted(normalized))
 
     def _format_origin_raw(self, raw: Any) -> str:

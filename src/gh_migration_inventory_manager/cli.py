@@ -202,18 +202,12 @@ def run_cli(
             injected_inv = team_inventory if team_inventory is not None else inventory
         elif is_policy:
             sheet_name = getattr(args, "sheet_name", None) or "Policies"
-            active_converter = (
-                policy_converter
-                if policy_converter is not None
-                else (converter if converter is not None else PolicyConverter())
-            )
+            active_converter = policy_converter or converter or PolicyConverter()
             records = active_converter.to_policy_records(
                 items, initial_status=initial_status
             )
             inv_cls = PolicyInventory
-            injected_inv = (
-                policy_inventory if policy_inventory is not None else inventory
-            )
+            injected_inv = policy_inventory or inventory
         else:
             sheet_name = getattr(args, "sheet_name", None) or "Inventario"
             active_converter = conv

@@ -45,6 +45,7 @@ def mock_policies_spreadsheet(mock_sheets_service: MagicMock) -> Spreadsheet:
 def test_given_policy_record_when_converting_to_row_then_maps_all_seven_columns(
     sample_policy_record: PolicyRecord,
     mock_policies_spreadsheet: Spreadsheet,
+    mock_sheets_service: MagicMock,
 ) -> None:
     """Test PolicyRowConverter creates a Row and Spreadsheet serializes all 7 columns."""
     row = PolicyRowConverter.from_policy_record(sample_policy_record, row_index=4)
@@ -58,15 +59,22 @@ def test_given_policy_record_when_converting_to_row_then_maps_all_seven_columns(
     assert row.data["origin_raw_policy"] == '{"id": 101, "type": "pull-request-only"}'
     assert row.data["migration_status"] == MigrationStatus.ACTIVE_IN_BOTH
 
-    sheet_cells = mock_policies_spreadsheet._to_sheet_row(row)
-    assert len(sheet_cells) == 7
-    assert sheet_cells[0] == "repo:payment-service"
-    assert sheet_cells[1] == "refs/heads/main"
-    assert sheet_cells[2] == "RequirePullRequest"
-    assert sheet_cells[3] == "min_approvals: 2; require_codeowners: true"
-    assert sheet_cells[4] == "core-devs, release-leads"
-    assert sheet_cells[5] == '{"id": 101, "type": "pull-request-only"}'
-    assert sheet_cells[6] == "Migrando (Ativos em Ambas)"
+    mock_append = (
+        mock_sheets_service.spreadsheets.return_value.values.return_value.append
+    )
+    mock_append.return_value.execute.return_value = {
+        "updates": {"updatedRange": "Policies!A4:G4"}
+    }
+
+    added_row = mock_policies_spreadsheet.add(row)
+    assert len(added_row.values) == 7
+    assert added_row.values[0] == "repo:payment-service"
+    assert added_row.values[1] == "refs/heads/main"
+    assert added_row.values[2] == "RequirePullRequest"
+    assert added_row.values[3] == "min_approvals: 2; require_codeowners: true"
+    assert added_row.values[4] == "core-devs, release-leads"
+    assert added_row.values[5] == '{"id": 101, "type": "pull-request-only"}'
+    assert added_row.values[6] == "Migrando (Ativos em Ambas)"
 
 
 def test_given_row_when_converting_to_policy_record_then_populates_record() -> None:
