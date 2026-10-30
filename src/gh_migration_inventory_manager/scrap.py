@@ -114,6 +114,100 @@ def normalize_role(role: Any) -> NormalizedRole:
     )
 
 
+class NormalizedRuleType(str, Enum):
+    """Canonical GitHub Ruleset rule archetype."""
+
+    REQUIRE_PULL_REQUEST = "RequirePullRequest"
+    BLOCK_FORCE_PUSH = "BlockForcePush"
+    PREVENT_BRANCH_DELETION = "PreventBranchDeletion"
+    REQUIRE_STATUS_CHECKS = "RequireStatusChecks"
+    REQUIRE_LINEAR_HISTORY = "RequireLinearHistory"
+    REQUIRE_SIGNED_COMMITS = "RequireSignedCommits"
+
+
+_NORMALIZED_RULE_TYPE_LOOKUP: dict[str, NormalizedRuleType] = {
+    "requirepullrequest": NormalizedRuleType.REQUIRE_PULL_REQUEST,
+    "require_pull_request": NormalizedRuleType.REQUIRE_PULL_REQUEST,
+    "require-pull-request": NormalizedRuleType.REQUIRE_PULL_REQUEST,
+    "pull_request": NormalizedRuleType.REQUIRE_PULL_REQUEST,
+    "pullrequest": NormalizedRuleType.REQUIRE_PULL_REQUEST,
+    "pull_request_only": NormalizedRuleType.REQUIRE_PULL_REQUEST,
+    "pull-request-only": NormalizedRuleType.REQUIRE_PULL_REQUEST,
+    "blockforcepush": NormalizedRuleType.BLOCK_FORCE_PUSH,
+    "block_force_push": NormalizedRuleType.BLOCK_FORCE_PUSH,
+    "block-force-push": NormalizedRuleType.BLOCK_FORCE_PUSH,
+    "force_push": NormalizedRuleType.BLOCK_FORCE_PUSH,
+    "fast_forward_only": NormalizedRuleType.BLOCK_FORCE_PUSH,
+    "fast-forward-only": NormalizedRuleType.BLOCK_FORCE_PUSH,
+    "read_only": NormalizedRuleType.BLOCK_FORCE_PUSH,
+    "read-only": NormalizedRuleType.BLOCK_FORCE_PUSH,
+    "preventbranchdeletion": NormalizedRuleType.PREVENT_BRANCH_DELETION,
+    "prevent_branch_deletion": NormalizedRuleType.PREVENT_BRANCH_DELETION,
+    "prevent-branch-deletion": NormalizedRuleType.PREVENT_BRANCH_DELETION,
+    "no_deletes": NormalizedRuleType.PREVENT_BRANCH_DELETION,
+    "no-deletes": NormalizedRuleType.PREVENT_BRANCH_DELETION,
+    "requirestatuschecks": NormalizedRuleType.REQUIRE_STATUS_CHECKS,
+    "require_status_checks": NormalizedRuleType.REQUIRE_STATUS_CHECKS,
+    "require-status-checks": NormalizedRuleType.REQUIRE_STATUS_CHECKS,
+    "status_checks": NormalizedRuleType.REQUIRE_STATUS_CHECKS,
+    "build_validation": NormalizedRuleType.REQUIRE_STATUS_CHECKS,
+    "requirelinearhistory": NormalizedRuleType.REQUIRE_LINEAR_HISTORY,
+    "require_linear_history": NormalizedRuleType.REQUIRE_LINEAR_HISTORY,
+    "require-linear-history": NormalizedRuleType.REQUIRE_LINEAR_HISTORY,
+    "linear_history": NormalizedRuleType.REQUIRE_LINEAR_HISTORY,
+    "requiresignedcommits": NormalizedRuleType.REQUIRE_SIGNED_COMMITS,
+    "require_signed_commits": NormalizedRuleType.REQUIRE_SIGNED_COMMITS,
+    "require-signed-commits": NormalizedRuleType.REQUIRE_SIGNED_COMMITS,
+    "signed_commits": NormalizedRuleType.REQUIRE_SIGNED_COMMITS,
+}
+
+
+def normalize_rule_type(rule: Any) -> NormalizedRuleType:
+    """Normalize a rule type representation into a NormalizedRuleType enum.
+
+    Args:
+        rule: String or enum representation of rule type.
+
+    Returns:
+        The matching NormalizedRuleType enum.
+
+    Raises:
+        ValueError: If rule cannot be mapped to a valid NormalizedRuleType.
+    """
+    if isinstance(rule, NormalizedRuleType):
+        return rule
+    if not rule or not str(rule).strip():
+        raise ValueError("Rule type cannot be empty.")
+    clean = str(rule).strip().lower()
+    if clean in _NORMALIZED_RULE_TYPE_LOOKUP:
+        return _NORMALIZED_RULE_TYPE_LOOKUP[clean]
+    raise ValueError(
+        f"Invalid normalized rule type: '{rule}'. Expected one of: "
+        f"{', '.join(r.value for r in NormalizedRuleType)}."
+    )
+
+
+def format_rule_parameters(params: dict[str, Any] | str | None) -> str:
+    """Format rule parameters into a canonical sorted semicolon-delimited string."""
+    if params is None:
+        return ""
+    if isinstance(params, str):
+        return params.strip()
+    if not isinstance(params, dict):
+        return str(params).strip()
+    items: list[str] = []
+    for k, v in sorted(params.items()):
+        clean_k = str(k).strip()
+        if isinstance(v, bool):
+            val_str = "true" if v else "false"
+        elif v is None:
+            val_str = ""
+        else:
+            val_str = str(v).strip()
+        items.append(f"{clean_k}: {val_str}")
+    return "; ".join(items)
+
+
 _SLUGIFY_NON_WORD = re.compile(r"[^\w\s-]")
 _SLUGIFY_HYPHENS = re.compile(r"[-\s]+")
 
@@ -124,6 +218,20 @@ def slugify(name: str) -> str:
         return ""
     cleaned = _SLUGIFY_NON_WORD.sub("", name.strip().lower())
     return _SLUGIFY_HYPHENS.sub("-", cleaned).strip("-")
+
+
+@dataclass
+class BranchPolicy:
+    """Pure data container representing a discovered branch governance policy."""
+
+    policy_scope: str
+    target_ref_pattern: str
+    normalized_rule_type: NormalizedRuleType
+    rule_parameters: dict[str, Any] | str = field(default_factory=dict)
+    bypass_team_slugs: list[str] = field(default_factory=list)
+    origin_raw_policy: str = ""
+    platform: str | None = None
+    metadata: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass
@@ -305,6 +413,25 @@ class TeamScraper(Scraper[TeamPermission], Protocol):
         raise NotImplementedError
 
 
+@runtime_checkable
+class PolicyScraper(Scraper[BranchPolicy], Protocol):
+    """Protocol defining the branch governance policy discovery contract."""
+
+    scraper_type: str = "policy"
+    target_type: str = "policy"
+
+    def scrape(self) -> list[BranchPolicy]:
+        """Discover and return branch policies from the downstream platform.
+
+        Returns:
+            A list of discovered BranchPolicy instances, or empty list if none found.
+
+        Raises:
+            ScraperError: If an error occurs communicating with downstream API.
+        """
+        raise NotImplementedError
+
+
 _STACK_DISPLAY_NAMES: dict[Stack, str] = {
     Stack.JAVA: "Java",
     Stack.PYTHON: "Python",
@@ -394,11 +521,14 @@ __all__ = [
     "AuthCredentials",
     "Authenticator",
     "BasicAuthenticator",
+    "BranchPolicy",
     "NormalizedRole",
+    "NormalizedRuleType",
     "Pipeline",
     "PipelineScraper",
     "PipelineTrigger",
     "PipelineType",
+    "PolicyScraper",
     "Repository",
     "RepositoryScraper",
     "Scraper",
@@ -412,7 +542,9 @@ __all__ = [
     "TeamScraper",
     "TokenAuthenticator",
     "default_scraper_registry",
+    "format_rule_parameters",
     "format_stacks",
     "normalize_role",
+    "normalize_rule_type",
     "slugify",
 ]

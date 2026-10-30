@@ -388,3 +388,71 @@ def test_given_live_svn_and_live_sheets_when_running_cli_svn_teams_then_synchron
     assert len(matching_core_devs) >= 1
     assert matching_core_devs[0].data["team_slug"] == "core-devs"
     assert matching_core_devs[0].data["normalized_role"] == "Write"
+
+
+def test_given_live_bitbucket_server_when_running_cli_scrape_policies_then_synchronizes_inventory(
+    bitbucket_server: dict[str, Any],
+) -> None:
+    """Verify CLI successfully scrapes policies from live Bitbucket container and outputs count."""
+    from unittest.mock import MagicMock
+
+    from gh_migration_inventory_manager.google import Row
+
+    parser = build_parser()
+    args = parser.parse_args(
+        [
+            "scrape",
+            "bitbucket-policies",
+            "--url",
+            bitbucket_server["base_url"],
+            "--project",
+            bitbucket_server["project_key"],
+            "--repo",
+            bitbucket_server["repo_slug"],
+            "--token",
+            bitbucket_server["discovery_token"],
+        ]
+    )
+
+    mock_sheet = MagicMock()
+    mock_sheet.find_by.return_value = []
+    mock_sheet.add.side_effect = lambda row: Row(
+        row_index=2,
+        data=row.data,
+        values=list(row.data.values()),
+    )
+
+    out_stream = io.StringIO()
+    result = run_cli(
+        args,
+        spreadsheet=mock_sheet,
+        out_stream=out_stream,
+    )
+
+    assert result == 4
+    assert int(out_stream.getvalue().strip()) == 4
+
+
+def test_given_invalid_bitbucket_token_when_running_cli_then_logs_auth_error_and_exits_with_code_1(
+    bitbucket_server: dict[str, Any],
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Verify CLI maps live Bitbucket authentication failure to exit code 1."""
+    exit_code = main(
+        [
+            "scrape",
+            "bitbucket-policies",
+            "--url",
+            bitbucket_server["base_url"],
+            "--project",
+            bitbucket_server["project_key"],
+            "--repo",
+            bitbucket_server["repo_slug"],
+            "--token",
+            "invalid_token_bb_401",
+        ]
+    )
+
+    assert exit_code == 1
+    captured = capsys.readouterr()
+    assert "Authentication Error" in captured.err

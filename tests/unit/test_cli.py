@@ -736,3 +736,131 @@ def test_given_custom_sheet_name_for_svn_teams_when_running_cli_then_honors_shee
 
     mock_sheet.ensure_sheet.assert_called_with("CustomTeamsTab")
     assert result == 1
+
+
+def test_given_bitbucket_policies_platform_when_building_parser_then_defaults_to_policies_sheet_name() -> (
+    None
+):
+    """Test bitbucket-policies platform subcommand defaults --sheet-name to 'Policies'."""
+    parser = build_parser()
+    args = parser.parse_args(
+        [
+            "scrape",
+            "bitbucket-policies",
+            "--url",
+            "https://bitbucket.corp.local",
+            "--project",
+            "MIG",
+        ]
+    )
+
+    assert args.platform == "bitbucket-policies"
+    assert args.sheet_name == "Policies"
+    assert args.project_key == "MIG"
+
+
+def test_given_bitbucket_policies_args_and_mock_services_when_running_cli_then_synchronizes_policies_with_policies_tab() -> (
+    None
+):
+    """Test running CLI with bitbucket-policies synchronizes records to PolicyInventory."""
+    from gh_migration_inventory_manager.bitbucket_scrap import BitbucketPolicyScraper
+    from gh_migration_inventory_manager.scrap import BranchPolicy, NormalizedRuleType
+
+    mock_scraper = MagicMock(spec=BitbucketPolicyScraper)
+    mock_scraper.target_type = "policy"
+    mock_scraper.scrape.return_value = [
+        BranchPolicy(
+            policy_scope="repo:payment-service",
+            target_ref_pattern="refs/heads/main",
+            normalized_rule_type=NormalizedRuleType.REQUIRE_PULL_REQUEST,
+            rule_parameters={"min_approvals": 2},
+            bypass_team_slugs=["release-leads"],
+        )
+    ]
+
+    mock_policy_inv = MagicMock()
+    mock_policy_inv.sync_records.return_value = [MagicMock()]
+
+    parser = build_parser()
+    args = parser.parse_args(
+        [
+            "scrape",
+            "bitbucket-policies",
+            "--url",
+            "https://bitbucket.corp.local",
+            "--project",
+            "PAY",
+            "--repo",
+            "payment-service",
+            "--token",
+            "dummy-token",
+        ]
+    )
+
+    with patch(
+        "gh_migration_inventory_manager.bitbucket_scrap.BitbucketPoliciesScraperProvider.create_scraper",
+        return_value=mock_scraper,
+    ):
+        out = io.StringIO()
+        result = run_cli(
+            args,
+            policy_inventory=mock_policy_inv,
+            out_stream=out,
+        )
+
+    mock_policy_inv.sync_records.assert_called_once()
+    assert result == 1
+    assert out.getvalue().strip() == "1"
+
+
+def test_given_custom_sheet_name_for_bitbucket_policies_when_running_cli_then_honors_sheet_name_override() -> (
+    None
+):
+    """Test passing --sheet-name explicitly overrides default Policies tab for bitbucket-policies."""
+    from gh_migration_inventory_manager.bitbucket_scrap import BitbucketPolicyScraper
+    from gh_migration_inventory_manager.scrap import BranchPolicy, NormalizedRuleType
+
+    mock_scraper = MagicMock(spec=BitbucketPolicyScraper)
+    mock_scraper.target_type = "policy"
+    mock_scraper.scrape.return_value = [
+        BranchPolicy(
+            policy_scope="repo:app",
+            target_ref_pattern="refs/heads/main",
+            normalized_rule_type=NormalizedRuleType.BLOCK_FORCE_PUSH,
+        )
+    ]
+
+    mock_sheet = MagicMock(spec=Spreadsheet)
+    mock_sheet.id = "custom-policies-sheet"
+    mock_sheet.find_by.return_value = []
+    mock_sheet.add.return_value = MagicMock(row_index=2)
+
+    parser = build_parser()
+    args = parser.parse_args(
+        [
+            "scrape",
+            "bitbucket-policies",
+            "--url",
+            "https://bitbucket.corp.local",
+            "--project",
+            "CORE",
+            "--sheet-name",
+            "GovernanceTab",
+            "--spreadsheet-id",
+            "custom-policies-sheet",
+        ]
+    )
+
+    with patch(
+        "gh_migration_inventory_manager.bitbucket_scrap.BitbucketPoliciesScraperProvider.create_scraper",
+        return_value=mock_scraper,
+    ):
+        out = io.StringIO()
+        result = run_cli(
+            args,
+            spreadsheet=mock_sheet,
+            out_stream=out,
+        )
+
+    mock_sheet.ensure_sheet.assert_called_with("GovernanceTab")
+    assert result == 1

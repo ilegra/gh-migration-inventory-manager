@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import shutil
 import subprocess
 import time
@@ -419,6 +420,180 @@ def jenkins_server() -> Generator[dict[str, Any], None, None]:
 
         yield {
             "base_url": base_url,
+            "container_id": container_id,
+        }
+    finally:
+        if container_id is not None:
+            subprocess.run(  # nosec B603
+                ["docker", "rm", "-f", container_id],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                check=False,
+            )
+
+
+@pytest.fixture(scope="module")
+def bitbucket_server() -> Generator[dict[str, Any], None, None]:
+    """Pytest module-scoped fixture spinning up a seeded Bitbucket Docker container."""
+    if not _is_docker_available():
+        pytest.skip(
+            "Docker is not available; skipping live Bitbucket integration tests."
+        )
+
+    image = "test-bitbucket:latest"
+    check_img = subprocess.run(  # nosec B603
+        ["docker", "image", "inspect", image],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        check=False,
+    )
+    if check_img.returncode != 0:
+        pytest.skip(
+            f"Required Docker image '{image}' is not available locally; "
+            "skipping live Bitbucket integration tests."
+        )
+
+    run_cmd = [
+        "docker",
+        "run",
+        "-d",
+        "--rm",
+        "-p",
+        "0:7990",
+        image,
+    ]
+    container_id: str | None = None
+    try:
+        proc = subprocess.run(run_cmd, capture_output=True, text=True, check=True)  # nosec B603
+        container_id = proc.stdout.strip()
+    except subprocess.CalledProcessError as e:
+        pytest.skip(f"Failed to start Bitbucket container: {e.stderr}")
+
+    if not container_id:
+        pytest.skip("Failed to start Bitbucket container: container ID is empty.")
+
+    try:
+        port_proc = subprocess.run(  # nosec B603
+            ["docker", "port", container_id, "7990/tcp"],
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        port_line = port_proc.stdout.strip().splitlines()[0]
+        host_port = int(port_line.split(":")[-1])
+        base_url = f"http://127.0.0.1:{host_port}"
+
+        # Wait for Bitbucket API to be ready
+        ready = False
+        for _ in range(45):
+            try:
+                req = urllib.request.Request(f"{base_url}/status")
+                with urllib.request.urlopen(req, timeout=2) as resp:  # nosec B310
+                    if resp.status == 200:
+                        body = json.loads(resp.read().decode("utf-8"))
+                        if body.get("state") == "RUNNING":
+                            ready = True
+                            break
+            except (
+                urllib.error.HTTPError,
+                urllib.error.URLError,
+                TimeoutError,
+                OSError,
+            ):
+                time.sleep(1)
+
+        if not ready:
+            pytest.fail("Timed out waiting for Bitbucket Docker container to start.")
+
+        admin_token = "bb-pat-admin-token-2026"
+        discovery_token = "bb-pat-readonly-discovery-token-2026"
+        auth_header = {
+            "Authorization": f"Bearer {admin_token}",
+            "Content-Type": "application/json",
+        }
+
+        # Seed Project MIG
+        proj_req = urllib.request.Request(
+            f"{base_url}/rest/api/1.0/projects",
+            data=json.dumps({"key": "MIG", "name": "Migration Project"}).encode(
+                "utf-8"
+            ),
+            headers=auth_header,
+        )
+        with urllib.request.urlopen(proj_req, timeout=5):  # nosec B310
+            pass
+
+        # Seed Repository core-repo
+        repo_req = urllib.request.Request(
+            f"{base_url}/rest/api/1.0/projects/MIG/repos",
+            data=json.dumps({"name": "core-repo", "slug": "core-repo"}).encode("utf-8"),
+            headers=auth_header,
+        )
+        with urllib.request.urlopen(repo_req, timeout=5):  # nosec B310
+            pass
+
+        # Seed Restrictions
+        restrictions_payload = [
+            {
+                "type": "pull-request-only",
+                "matcher": {
+                    "id": "refs/heads/main",
+                    "displayId": "main",
+                    "type": {"id": "BRANCH"},
+                },
+                "users": [{"name": "alice"}],
+                "groups": [{"name": "core-leads"}],
+            },
+            {
+                "type": "fast-forward-only",
+                "matcher": {
+                    "id": "refs/heads/release/*",
+                    "displayId": "release/*",
+                    "type": {"id": "PATTERN"},
+                },
+                "users": [],
+                "groups": [],
+            },
+            {
+                "type": "no-deletes",
+                "matcher": {
+                    "id": "refs/heads/*",
+                    "displayId": "*",
+                    "type": {"id": "MODEL_BRANCH"},
+                },
+                "users": [],
+                "groups": [],
+            },
+        ]
+        rest_req = urllib.request.Request(
+            f"{base_url}/rest/branch-permissions/2.0/projects/MIG/repos/core-repo/restrictions",
+            data=json.dumps(restrictions_payload).encode("utf-8"),
+            headers=auth_header,
+        )
+        with urllib.request.urlopen(rest_req, timeout=5):  # nosec B310
+            pass
+
+        # Seed PR Settings
+        pr_settings_payload = {
+            "requiredApprovers": 2,
+            "requiredAllTasksComplete": True,
+            "requiredAllApprovers": True,
+            "unapproveOnNewChanges": True,
+        }
+        pr_req = urllib.request.Request(
+            f"{base_url}/rest/api/1.0/projects/MIG/repos/core-repo/settings/pull-requests",
+            data=json.dumps(pr_settings_payload).encode("utf-8"),
+            headers=auth_header,
+        )
+        with urllib.request.urlopen(pr_req, timeout=5):  # nosec B310
+            pass
+
+        yield {
+            "base_url": base_url,
+            "project_key": "MIG",
+            "repo_slug": "core-repo",
+            "admin_token": admin_token,
+            "discovery_token": discovery_token,
             "container_id": container_id,
         }
     finally:
