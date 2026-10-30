@@ -206,6 +206,19 @@ class TeamRecord:
     migration_status: MigrationStatus = MigrationStatus.WAITTING
 
 
+@dataclass
+class PolicyRecord:
+    """Represents a branch governance policy record in the inventory."""
+
+    policy_scope: str
+    target_ref_pattern: str
+    normalized_rule_type: str
+    rule_parameters: str = ""
+    bypass_team_slugs: str = ""
+    origin_raw_policy: str = ""
+    migration_status: MigrationStatus = MigrationStatus.WAITTING
+
+
 def _build_credentials(credentials: Any, credentials_path: str | None) -> Any:
     """Validate credentials configuration and build Credentials instance."""
     if credentials is not None:
@@ -919,6 +932,247 @@ class TeamInventory:
         return [self.register_record(rec) for rec in records]
 
 
+class PolicyInventory:
+    """Branch governance policy inventory manager backed by a Google Spreadsheet tab."""
+
+    def __init__(
+        self,
+        spreadsheet: SpreadsheetClient | Any = None,
+        spreadsheet_id: str | None = None,
+        credentials_path: str | None = None,
+        sheet_name: str = "Policies",
+        credentials: Any = None,
+        converter: Any = None,
+    ) -> None:
+        self.spreadsheet = spreadsheet
+        self.spreadsheet_id = spreadsheet_id
+        self.credentials_path = credentials_path
+        self.sheet_name = sheet_name
+        self.credentials = credentials
+        self.converter = converter
+
+    def _validate_and_build_credentials(self) -> Any:
+        """Validate credentials configuration and build Credentials instance."""
+        self.credentials = _build_credentials(self.credentials, self.credentials_path)
+        return self.credentials
+
+    def _validate_and_build_spreadsheet(self) -> SpreadsheetClient:
+        """Validate spreadsheet configuration and build Spreadsheet instance."""
+        if self.spreadsheet is not None:
+            configured_id = getattr(self.spreadsheet, "id", None)
+            if (
+                self.spreadsheet_id is not None
+                and configured_id
+                and configured_id != str(self.spreadsheet_id).strip()
+            ):
+                raise ValueError(
+                    "Inconsistent spreadsheet configuration: "
+                    f"spreadsheet.id '{configured_id}' "
+                    f"does not match spreadsheet_id '{self.spreadsheet_id}'."
+                )
+            if hasattr(self.spreadsheet, "validate") and callable(
+                self.spreadsheet.validate
+            ):
+                self.spreadsheet.validate()
+            if hasattr(self.spreadsheet, "ensure_sheet") and callable(
+                self.spreadsheet.ensure_sheet
+            ):
+                self.spreadsheet.ensure_sheet(self.sheet_name)
+            self._spreadsheet_initialized = True
+            return self.spreadsheet
+
+        if not self.spreadsheet_id or not str(self.spreadsheet_id).strip():
+            raise ValueError("Missing Google Spreadsheet ID. Pass --spreadsheet-id.")
+
+        clean_id = str(self.spreadsheet_id).strip()
+        creds = self._validate_and_build_credentials()
+
+        from gh_migration_inventory_manager.google import Spreadsheet
+
+        sheet = Spreadsheet(
+            id=clean_id,
+            credentials=creds,
+            sheet_name=self.sheet_name,
+        )
+        sheet.validate()
+        sheet.ensure_sheet(self.sheet_name)
+        self.spreadsheet = sheet
+        self._spreadsheet_initialized = True
+        return self.spreadsheet
+
+    def _get_spreadsheet(self) -> SpreadsheetClient:
+        """Retrieve, validate, and return the underlying Spreadsheet client."""
+        if self.spreadsheet is not None:
+            if not getattr(self, "_spreadsheet_initialized", False):
+                return self._validate_and_build_spreadsheet()
+            return self.spreadsheet
+        return self._validate_and_build_spreadsheet()
+
+    def _find_row(
+        self,
+        policy_scope: str,
+        target_ref_pattern: str,
+        normalized_rule_type: str,
+    ) -> Any | None:
+        """Find a row matching composite key (scope, ref_pattern, rule_type)."""
+        sheet = self._get_spreadsheet()
+        clean_scope = str(policy_scope).strip() if policy_scope is not None else ""
+        if not clean_scope:
+            raise ValueError("Policy scope cannot be empty.")
+
+        clean_target = (
+            str(target_ref_pattern).strip() if target_ref_pattern is not None else ""
+        )
+        if not clean_target:
+            raise ValueError("Target ref pattern cannot be empty.")
+
+        clean_rule = (
+            str(normalized_rule_type).strip()
+            if normalized_rule_type is not None
+            else ""
+        )
+        if not clean_rule:
+            raise ValueError("Normalized rule type cannot be empty.")
+
+        matching_rows = sheet.find_by("policy_scope", clean_scope)
+        if not matching_rows:
+            return None
+
+        clean_target_lower = clean_target.lower()
+        clean_rule_lower = clean_rule.lower()
+
+        for r in matching_rows:
+            row_target = str(r.data.get("target_ref_pattern", "")).strip().lower()
+            row_rule = str(r.data.get("normalized_rule_type", "")).strip().lower()
+            if row_target == clean_target_lower and row_rule == clean_rule_lower:
+                return r
+
+        return None
+
+    def register_record(self, record: PolicyRecord) -> PolicyRecord:
+        """Register or synchronize a PolicyRecord in the inventory.
+
+        If the policy is already recorded, its migration status is strictly
+        preserved, while parameters, bypass slugs, and raw origin policy are updated.
+        """
+        from gh_migration_inventory_manager.google import PolicyRowConverter
+
+        if record is None:
+            raise ValueError("PolicyRecord cannot be None.")
+
+        clean_scope = str(record.policy_scope).strip() if record.policy_scope else ""
+        if not clean_scope:
+            raise ValueError("Policy scope cannot be empty.")
+
+        clean_target = (
+            str(record.target_ref_pattern).strip() if record.target_ref_pattern else ""
+        )
+        if not clean_target:
+            raise ValueError("Target ref pattern cannot be empty.")
+
+        clean_rule = (
+            str(record.normalized_rule_type).strip()
+            if record.normalized_rule_type
+            else ""
+        )
+        if not clean_rule:
+            raise ValueError("Normalized rule type cannot be empty.")
+
+        sheet = self._get_spreadsheet()
+        existing_row = self._find_row(clean_scope, clean_target, clean_rule)
+
+        if existing_row is not None:
+            existing_record = PolicyRowConverter.to_policy_record(existing_row)
+            record.migration_status = existing_record.migration_status
+            changed = (
+                existing_record.rule_parameters != record.rule_parameters
+                or existing_record.bypass_team_slugs != record.bypass_team_slugs
+                or existing_record.origin_raw_policy != record.origin_raw_policy
+            )
+            if changed:
+                row = PolicyRowConverter.from_policy_record(
+                    record, row_index=existing_row.row_index
+                )
+                saved_row = sheet.update_row(row)
+            else:
+                saved_row = existing_row
+        else:
+            row = PolicyRowConverter.from_policy_record(record, row_index=None)
+            saved_row = sheet.add(row)
+
+        return PolicyRowConverter.to_policy_record(saved_row)
+
+    def update_progress(
+        self,
+        policy_scope: str,
+        target_ref_pattern: str,
+        normalized_rule_type: str,
+        status: MigrationStatus | str,
+    ) -> PolicyRecord:
+        """Update migration progress for a branch governance policy."""
+        from gh_migration_inventory_manager.google import PolicyRowConverter
+
+        clean_scope = str(policy_scope).strip() if policy_scope is not None else ""
+        if not clean_scope:
+            raise ValueError("Policy scope cannot be empty.")
+
+        clean_target = (
+            str(target_ref_pattern).strip() if target_ref_pattern is not None else ""
+        )
+        if not clean_target:
+            raise ValueError("Target ref pattern cannot be empty.")
+
+        clean_rule = (
+            str(normalized_rule_type).strip()
+            if normalized_rule_type is not None
+            else ""
+        )
+        if not clean_rule:
+            raise ValueError("Normalized rule type cannot be empty.")
+
+        valid_status = validate_migration_status(status)
+        existing_row = self._find_row(clean_scope, clean_target, clean_rule)
+
+        if not existing_row:
+            record = PolicyRecord(
+                policy_scope=clean_scope,
+                target_ref_pattern=clean_target,
+                normalized_rule_type=clean_rule,
+                migration_status=valid_status,
+            )
+            row_index = None
+        else:
+            record = PolicyRowConverter.to_policy_record(existing_row)
+            if record.migration_status == valid_status:
+                return record
+            record.migration_status = valid_status
+            row_index = existing_row.row_index
+
+        row = PolicyRowConverter.from_policy_record(record, row_index=row_index)
+        sheet = self._get_spreadsheet()
+        saved_row = sheet.update_row(row) if row_index is not None else sheet.add(row)
+        return PolicyRowConverter.to_policy_record(saved_row)
+
+    def get_policy(
+        self,
+        policy_scope: str,
+        target_ref_pattern: str,
+        normalized_rule_type: str,
+    ) -> PolicyRecord | None:
+        """Find a policy record by its composite key."""
+        from gh_migration_inventory_manager.google import PolicyRowConverter
+
+        row = self._find_row(policy_scope, target_ref_pattern, normalized_rule_type)
+        return PolicyRowConverter.to_policy_record(row) if row is not None else None
+
+    def sync_records(self, records: list[PolicyRecord]) -> list[PolicyRecord]:
+        """Synchronize a collection of PolicyRecord instances."""
+        if records is None:
+            raise ValueError("Records collection cannot be None.")
+        self._get_spreadsheet()
+        return [self.register_record(rec) for rec in records]
+
+
 def __getattr__(name: str) -> Any:
     if name == "RepositoryConverter":
         from gh_migration_inventory_manager.converter import RepositoryConverter
@@ -932,6 +1186,10 @@ def __getattr__(name: str) -> Any:
         from gh_migration_inventory_manager.converter import TeamConverter
 
         return TeamConverter
+    if name == "PolicyConverter":
+        from gh_migration_inventory_manager.converter import PolicyConverter
+
+        return PolicyConverter
     raise AttributeError(f"module '{__name__}' has no attribute '{name}'")
 
 

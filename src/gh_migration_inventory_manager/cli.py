@@ -6,10 +6,12 @@ import argparse
 import sys
 from typing import Any
 
+import gh_migration_inventory_manager.bitbucket_scrap  # noqa: F401
 import gh_migration_inventory_manager.jenkins_scrap  # noqa: F401
 import gh_migration_inventory_manager.svn_scrap  # noqa: F401
 from gh_migration_inventory_manager.converter import (
     PipelineConverter,
+    PolicyConverter,
     RepositoryConverter,
     TeamConverter,
 )
@@ -20,6 +22,7 @@ from gh_migration_inventory_manager.inventory import (
     InventoryNotFoundError,
     MigrationStatus,
     PipelineInventory,
+    PolicyInventory,
     TeamInventory,
 )
 from gh_migration_inventory_manager.scrap import (
@@ -115,6 +118,8 @@ def run_cli(
     pipeline_inventory: Any = None,
     team_converter: Any = None,
     team_inventory: Any = None,
+    policy_converter: Any = None,
+    policy_inventory: Any = None,
 ) -> int | None:
     """Execute the CLI operation based on parsed arguments.
 
@@ -147,6 +152,11 @@ def run_cli(
         or getattr(scraper, "scraper_type", None) == "team"
         or getattr(provider, "target_type", None) == "team"
     )
+    is_policy = (
+        getattr(scraper, "target_type", None) == "policy"
+        or getattr(scraper, "scraper_type", None) == "policy"
+        or getattr(provider, "target_type", None) == "policy"
+    )
 
     def _extract_target(exc: Exception) -> str:
         return (
@@ -157,7 +167,12 @@ def run_cli(
         )
 
     try:
-        inv_cls: type[PipelineInventory] | type[TeamInventory] | type[Inventory]
+        inv_cls: (
+            type[PipelineInventory]
+            | type[TeamInventory]
+            | type[PolicyInventory]
+            | type[Inventory]
+        )
         active_converter: Any
         if is_pipeline:
             sheet_name = getattr(args, "sheet_name", None) or "Workflows"
@@ -185,6 +200,20 @@ def run_cli(
             )
             inv_cls = TeamInventory
             injected_inv = team_inventory if team_inventory is not None else inventory
+        elif is_policy:
+            sheet_name = getattr(args, "sheet_name", None) or "Policies"
+            active_converter = (
+                policy_converter
+                if policy_converter is not None
+                else (converter if converter is not None else PolicyConverter())
+            )
+            records = active_converter.to_policy_records(
+                items, initial_status=initial_status
+            )
+            inv_cls = PolicyInventory
+            injected_inv = (
+                policy_inventory if policy_inventory is not None else inventory
+            )
         else:
             sheet_name = getattr(args, "sheet_name", None) or "Inventario"
             active_converter = conv

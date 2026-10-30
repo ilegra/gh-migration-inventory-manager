@@ -18,6 +18,7 @@ from gh_migration_inventory_manager.inventory import (
     InventoryRecord,
     MigrationStatus,
     PipelineRecord,
+    PolicyRecord,
     TeamRecord,
     _from_sheet_label,
     format_migration_month,
@@ -202,6 +203,68 @@ _TOPOLOGY_HEADERS = [
 TOPOLOGY_HEADERS = _TOPOLOGY_HEADERS
 _WORKFLOW_SHEET_NAMES: tuple[str, ...] = ("workflows", "pipelines")
 _TOPOLOGY_SHEET_NAMES: tuple[str, ...] = ("topology", "teams", "topologia")
+_POLICIES_HEADERS = [
+    "Escopo da Política",
+    "Padrão de Ref / Branch",
+    "Tipo de Regra (GitHub)",
+    "Parâmetros da Regra",
+    "Slugs de Times de Bypass",
+    "Política de Origem (Raw)",
+    "Status da Migração",
+]
+POLICIES_HEADERS = _POLICIES_HEADERS
+_POLICIES_SHEET_NAMES: tuple[str, ...] = (
+    "policies",
+    "politicas",
+    "políticas",
+    "governance",
+    "branch_policies",
+)
+
+_POLICIES_COLUMN_ALIAS_MAP: dict[str, int] = {
+    "policy_scope": 0,
+    "escopo da política": 0,
+    "escopo da politica": 0,
+    "escopo": 0,
+    "scope": 0,
+    "target_ref_pattern": 1,
+    "padrão de ref / branch": 1,
+    "padrao de ref / branch": 1,
+    "ref_pattern": 1,
+    "branch": 1,
+    "ref": 1,
+    "target": 1,
+    "normalized_rule_type": 2,
+    "tipo de regra (github)": 2,
+    "tipo de regra": 2,
+    "rule_type": 2,
+    "tipo": 2,
+    "rule": 2,
+    "rule_parameters": 3,
+    "parâmetros da regra": 3,
+    "parametros da regra": 3,
+    "parâmetros": 3,
+    "parametros": 3,
+    "parameters": 3,
+    "params": 3,
+    "bypass_team_slugs": 4,
+    "slugs de times de bypass": 4,
+    "times de bypass": 4,
+    "bypass_teams": 4,
+    "bypass": 4,
+    "bypasses": 4,
+    "origin_raw_policy": 5,
+    "política de origem (raw)": 5,
+    "politica de origem (raw)": 5,
+    "origem": 5,
+    "raw": 5,
+    "origin": 5,
+    "raw_policy": 5,
+    "migration_status": 6,
+    "status da migração": 6,
+    "status da migracao": 6,
+    "status": 6,
+}
 
 _TOPOLOGY_COLUMN_ALIAS_MAP: dict[str, int] = {
     "team_name": 0,
@@ -295,6 +358,45 @@ class TeamRowConverter:
             "target_repo_or_project": record.target_repo_or_project,
             "normalized_role": norm_role,
             "origin_role": record.origin_role,
+            "migration_status": record.migration_status,
+        }
+        return Row(row_index=row_index, data=data)
+
+
+class PolicyRowConverter:
+    """Conversion utility between Row and PolicyRecord instances."""
+
+    @staticmethod
+    def to_policy_record(row: Row) -> PolicyRecord:
+        """Convert a Row instance to a PolicyRecord instance."""
+        if row is None:
+            raise ValueError("Row cannot be None.")
+        status = row.data.get("migration_status", MigrationStatus.WAITTING)
+        if isinstance(status, str):
+            status = _from_sheet_label(status)
+
+        return PolicyRecord(
+            policy_scope=str(row.data.get("policy_scope", "")),
+            target_ref_pattern=str(row.data.get("target_ref_pattern", "")),
+            normalized_rule_type=str(row.data.get("normalized_rule_type", "")),
+            rule_parameters=str(row.data.get("rule_parameters", "")),
+            bypass_team_slugs=str(row.data.get("bypass_team_slugs", "")),
+            origin_raw_policy=str(row.data.get("origin_raw_policy", "")),
+            migration_status=status,
+        )
+
+    @staticmethod
+    def from_policy_record(record: PolicyRecord, row_index: int | None = None) -> Row:
+        """Construct a Row instance from a PolicyRecord."""
+        if record is None:
+            raise ValueError("PolicyRecord cannot be None.")
+        data: dict[str, Any] = {
+            "policy_scope": record.policy_scope,
+            "target_ref_pattern": record.target_ref_pattern,
+            "normalized_rule_type": record.normalized_rule_type,
+            "rule_parameters": record.rule_parameters,
+            "bypass_team_slugs": record.bypass_team_slugs,
+            "origin_raw_policy": record.origin_raw_policy,
             "migration_status": record.migration_status,
         }
         return Row(row_index=row_index, data=data)
@@ -486,7 +588,7 @@ class Spreadsheet:
         clean = (target or self.sheet_name or "").strip().lower()
         if clean in _WORKFLOW_SHEET_NAMES:
             return "L"
-        if clean in _TOPOLOGY_SHEET_NAMES:
+        if clean in _TOPOLOGY_SHEET_NAMES or clean in _POLICIES_SHEET_NAMES:
             return "G"
         return "H"
 
@@ -495,6 +597,9 @@ class Spreadsheet:
 
     def _is_topology_sheet(self) -> bool:
         return (self.sheet_name or "").strip().lower() in _TOPOLOGY_SHEET_NAMES
+
+    def _is_policy_sheet(self) -> bool:
+        return (self.sheet_name or "").strip().lower() in _POLICIES_SHEET_NAMES
 
     def ensure_sheet(
         self,
@@ -510,6 +615,8 @@ class Spreadsheet:
                 hdrs = _WORKFLOW_HEADERS
             elif clean_target in _TOPOLOGY_SHEET_NAMES:
                 hdrs = _TOPOLOGY_HEADERS
+            elif clean_target in _POLICIES_SHEET_NAMES:
+                hdrs = _POLICIES_HEADERS
             else:
                 hdrs = _HEADERS
 
@@ -639,6 +746,26 @@ class Spreadsheet:
                 status_str,
             ]
 
+        if self._is_policy_sheet():
+            policy_scope = str(row.data.get("policy_scope", ""))
+            target_ref = str(row.data.get("target_ref_pattern", ""))
+            rule_type = str(row.data.get("normalized_rule_type", ""))
+            params = str(row.data.get("rule_parameters", ""))
+            bypasses = str(row.data.get("bypass_team_slugs", ""))
+            origin_raw = str(row.data.get("origin_raw_policy", ""))
+            status_str = _format_status_label(
+                row.data.get("migration_status", MigrationStatus.WAITTING)
+            )
+            return [
+                policy_scope,
+                target_ref,
+                rule_type,
+                params,
+                bypasses,
+                origin_raw,
+                status_str,
+            ]
+
         project = str(row.data.get("project", ""))
         name = str(row.data.get("name", ""))
         stack = str(row.data.get("stack", ""))
@@ -703,6 +830,19 @@ class Spreadsheet:
             }
             return Row(row_index=row_index, data=data, values=values)
 
+        if self._is_policy_sheet():
+            padded = values + [""] * max(0, len(_POLICIES_HEADERS) - len(values))
+            data = {
+                "policy_scope": padded[0],
+                "target_ref_pattern": padded[1],
+                "normalized_rule_type": padded[2],
+                "rule_parameters": padded[3],
+                "bypass_team_slugs": padded[4],
+                "origin_raw_policy": padded[5],
+                "migration_status": _from_sheet_label(padded[6]),
+            }
+            return Row(row_index=row_index, data=data, values=values)
+
         padded = values + [""] * max(0, len(_HEADERS) - len(values))
         data = {
             "project": padded[0],
@@ -737,6 +877,8 @@ class Spreadsheet:
             alias_map = _WORKFLOW_COLUMN_ALIAS_MAP
         elif self._is_topology_sheet():
             alias_map = _TOPOLOGY_COLUMN_ALIAS_MAP
+        elif self._is_policy_sheet():
+            alias_map = _POLICIES_COLUMN_ALIAS_MAP
         else:
             alias_map = _COLUMN_ALIAS_MAP
         col_idx = alias_map.get(clean_col)

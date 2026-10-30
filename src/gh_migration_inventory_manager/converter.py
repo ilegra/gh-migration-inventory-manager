@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from collections.abc import Iterable
 from datetime import datetime, timezone
 from typing import Any
@@ -10,15 +11,19 @@ from gh_migration_inventory_manager.inventory import (
     InventoryRecord,
     MigrationStatus,
     PipelineRecord,
+    PolicyRecord,
     TeamRecord,
     validate_migration_status,
 )
 from gh_migration_inventory_manager.scrap import (
+    BranchPolicy,
     Pipeline,
     Repository,
     TeamPermission,
+    format_rule_parameters,
     format_stacks,
     normalize_role,
+    normalize_rule_type,
     slugify,
 )
 
@@ -321,4 +326,100 @@ class TeamConverter:
         ]
 
 
-__all__ = ["PipelineConverter", "RepositoryConverter", "TeamConverter"]
+class PolicyConverter:
+    """Adapter between branch policy discovery models and inventory entities."""
+
+    def __init__(self) -> None:
+        """Initialize a new PolicyConverter instance."""
+
+    def _format_bypass_slugs(self, slugs: Any) -> str:
+        """Format a list or string of team names/slugs into sorted comma slugs."""
+        if slugs is None:
+            return ""
+        if isinstance(slugs, str):
+            clean = slugs.strip()
+            if not clean:
+                return ""
+            items = [s.strip() for s in clean.split(",") if s.strip()]
+        elif isinstance(slugs, Iterable):
+            items = [str(s).strip() for s in slugs if str(s).strip()]
+        else:
+            items = [str(slugs).strip()]
+
+        normalized = {slugify(item) for item in items if slugify(item)}
+        return ", ".join(sorted(normalized))
+
+    def _format_origin_raw(self, raw: Any) -> str:
+        """Format origin raw policy payload into serialized string."""
+        if raw is None:
+            return ""
+        if isinstance(raw, str):
+            return raw.strip()
+        if isinstance(raw, dict | list):
+            try:
+                return json.dumps(raw, sort_keys=True)
+            except Exception:
+                return str(raw)
+        return str(raw).strip()
+
+    def to_policy_record(
+        self,
+        policy: BranchPolicy | Any,
+        initial_status: MigrationStatus | str = MigrationStatus.WAITTING,
+    ) -> PolicyRecord:
+        """Convert a single discovered BranchPolicy model into a PolicyRecord."""
+        if policy is None:
+            raise ValueError("BranchPolicy cannot be None.")
+
+        scope = getattr(policy, "policy_scope", None)
+        clean_scope = str(scope).strip() if scope is not None else ""
+        if not clean_scope:
+            raise ValueError("Policy scope cannot be empty.")
+
+        target = getattr(policy, "target_ref_pattern", None)
+        clean_target = str(target).strip() if target is not None else ""
+        if not clean_target:
+            raise ValueError("Target ref pattern cannot be empty.")
+
+        rule_type = getattr(policy, "normalized_rule_type", None)
+        norm_rule_type = normalize_rule_type(rule_type).value
+
+        raw_params = getattr(policy, "rule_parameters", "")
+        formatted_params = format_rule_parameters(raw_params)
+
+        raw_bypasses = getattr(policy, "bypass_team_slugs", [])
+        formatted_bypasses = self._format_bypass_slugs(raw_bypasses)
+
+        raw_origin = getattr(policy, "origin_raw_policy", "")
+        formatted_origin = self._format_origin_raw(raw_origin)
+
+        valid_status = validate_migration_status(initial_status)
+
+        return PolicyRecord(
+            policy_scope=clean_scope,
+            target_ref_pattern=clean_target,
+            normalized_rule_type=norm_rule_type,
+            rule_parameters=formatted_params,
+            bypass_team_slugs=formatted_bypasses,
+            origin_raw_policy=formatted_origin,
+            migration_status=valid_status,
+        )
+
+    def to_policy_records(
+        self,
+        policies: Iterable[BranchPolicy | Any],
+        initial_status: MigrationStatus | str = MigrationStatus.WAITTING,
+    ) -> list[PolicyRecord]:
+        """Convert a collection of BranchPolicy models into PolicyRecord instances."""
+        if policies is None:
+            raise ValueError("Policies collection cannot be None.")
+        valid_status = validate_migration_status(initial_status)
+        return [self.to_policy_record(p, initial_status=valid_status) for p in policies]
+
+
+__all__ = [
+    "PipelineConverter",
+    "PolicyConverter",
+    "RepositoryConverter",
+    "TeamConverter",
+]

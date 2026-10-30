@@ -4,13 +4,22 @@ Provides a clean interface to track, catalog, and update repository migration
 records backed by Google Sheets.
 """
 
+from gh_migration_inventory_manager.bitbucket_scrap import (
+    BitbucketClient,
+    BitbucketPoliciesScraperProvider,
+    BitbucketPolicyScraper,
+    BitbucketTransport,
+)
 from gh_migration_inventory_manager.converter import (
     PipelineConverter,
+    PolicyConverter,
     RepositoryConverter,
     TeamConverter,
 )
 from gh_migration_inventory_manager.google import (
+    POLICIES_HEADERS,
     Credentials,
+    PolicyRowConverter,
     Row,
     RowConverter,
     Spreadsheet,
@@ -31,6 +40,8 @@ from gh_migration_inventory_manager.inventory import (
     MigrationStatus,
     PipelineInventory,
     PipelineRecord,
+    PolicyInventory,
+    PolicyRecord,
     TeamInventory,
     TeamRecord,
 )
@@ -44,11 +55,14 @@ from gh_migration_inventory_manager.scrap import (
     AuthCredentials,
     Authenticator,
     BasicAuthenticator,
+    BranchPolicy,
     NormalizedRole,
+    NormalizedRuleType,
     Pipeline,
     PipelineScraper,
     PipelineTrigger,
     PipelineType,
+    PolicyScraper,
     Repository,
     RepositoryScraper,
     Scraper,
@@ -62,8 +76,10 @@ from gh_migration_inventory_manager.scrap import (
     TeamScraper,
     TokenAuthenticator,
     default_scraper_registry,
+    format_rule_parameters,
     format_stacks,
     normalize_role,
+    normalize_rule_type,
     slugify,
 )
 from gh_migration_inventory_manager.svn_scrap import (
@@ -78,13 +94,18 @@ from gh_migration_inventory_manager.svn_scrap import (
     SvnWebDavClient,
 )
 
-__version__ = "0.1.0"
+__version__ = "1.1.0"
 
 __all__ = [
     "__version__",
     "AuthCredentials",
     "Authenticator",
     "BasicAuthenticator",
+    "BitbucketClient",
+    "BitbucketPoliciesScraperProvider",
+    "BitbucketPolicyScraper",
+    "BitbucketTransport",
+    "BranchPolicy",
     "Credentials",
     "Inventory",
     "InventoryAccessError",
@@ -98,6 +119,8 @@ __all__ = [
     "JenkinsTransport",
     "MigrationStatus",
     "NormalizedRole",
+    "NormalizedRuleType",
+    "POLICIES_HEADERS",
     "Pipeline",
     "PipelineConverter",
     "PipelineInventory",
@@ -105,6 +128,11 @@ __all__ = [
     "PipelineScraper",
     "PipelineTrigger",
     "PipelineType",
+    "PolicyConverter",
+    "PolicyInventory",
+    "PolicyRecord",
+    "PolicyRowConverter",
+    "PolicyScraper",
     "Repository",
     "RepositoryConverter",
     "RepositoryScraper",
@@ -140,7 +168,9 @@ __all__ = [
     "TokenAuthenticator",
     "WorkflowRowConverter",
     "default_scraper_registry",
+    "format_rule_parameters",
     "format_stacks",
     "normalize_role",
+    "normalize_rule_type",
     "slugify",
 ]
