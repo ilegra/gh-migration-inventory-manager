@@ -45,19 +45,28 @@ tests/
 
 ### 4. Testing Principles
 
-- **Unit Test Scope**: Unit tests should not access external dependencies like Google APIs or databases. These external dependencies must be mocked and their behavior simulated during test execution to allow fast, deterministic validation.
-- **Integration Test Scope**: Integration tests must access external dependencies and validate end-to-end integration between external systems and the current implementation. Avoid parallel execution when tests share state or external resources.
+#### Unit Tests (`tests/unit/`)
+
+- **Scope & Isolation**: Unit tests must execute fast, deterministically, and offline without accessing external systems, APIs, or databases. All external dependencies and I/O collaborators must be mocked or injected.
+- **Mandatory Behavior Coverage (Exclude Pure Dataclasses)**: Every class that encapsulates behavior, business logic, workflows, or transformations must be covered by unit tests. Pure dataclasses, models, and DTOs that serve strictly as data containers without business logic must not be unit tested; test data structures only if they encapsulate custom validation, state transitions, or computed properties (`@property` with logic).
 - **Test Exclusively via Public Methods**: Tests must only exercise behaviors through public methods and public APIs. Never test, invoke, or inspect private methods (`_method`) in unit tests.
-- **Scenario Naming ("Given..When..Then" Pattern)**: Test function and method names must follow the `test_given_<precondition>_when_<action>_then_<outcome>` pattern to clearly document test intent and expected behavior.
+- **Required Test Scenarios**: A comprehensive unit test suite for any behavioral class must systematically cover:
+  1. *Successful Collaboration (Valid Input & Valid Dependency Output)*: Valid input is given, external dependencies/collaborators return valid outputs, and the method orchestrates and returns the expected results.
+  2. *Internal Behavior & State (Valid Input)*: Valid input is given, validating internal business logic, data transformations, calculations, and expected state mutations.
+  3. *Dependency Failure Handling (Valid Input & Failing Dependencies)*: Valid input is given, but external dependencies or collaborators reply with errors or raise exceptions (e.g., network timeouts, HTTP 4xx/5xx responses), validating proper error translation, logging, resilience, or exception propagation.
+  4. *Invalid Input Handling (Negative Scenarios)*: Invalid, missing, null, empty, or malformed inputs are given, validating that proper validation errors or domain exceptions (`ValueError`, `TypeError`) are raised.
+- **Scenario Naming ("Given..When..Then" Pattern)**: Test function and method names must strictly follow the `test_given_<precondition>_when_<action>_then_<outcome>` pattern to clearly document test intent and expected behavior.
   - *Examples*:
-    - `test_given_unregistered_repository_when_updating_progress_then_creates_new_record`
+    - `test_given_valid_repo_url_and_successful_client_when_scraping_then_returns_repository`
+    - `test_given_unregistered_repository_when_updating_progress_then_creates_new_record_and_marks_in_progress`
+    - `test_given_network_timeout_from_transport_when_listing_directory_then_raises_scraper_connection_error`
     - `test_given_empty_repository_url_when_scraping_then_raises_value_error`
-    - `test_given_network_timeout_when_listing_remote_directory_then_raises_scraper_connection_error`
     - `test_given_existing_repository_when_registering_then_preserves_status_and_migration_dates`
-- **Do Not Unit Test Pure Dataclasses**: Dataclasses, models, and DTOs that serve as pure data containers without business logic must not be unit tested. Testing attribute assignment or default values tests Python's runtime rather than business logic. Only test data structures if they encapsulate behavior, computed properties (`@property` with logic), custom validation, or state transitions.
-- **Core Test Scenario Categories**: A comprehensive test suite for any component should systematically cover three scenario types:
-  - *Valid Inputs (Happy Path)*: Standard operations with typical valid arguments and boundary values, asserting on expected return values and state mutations.
-  - *Invalid Inputs (Negative Scenarios)*: Missing, null, empty, or malformed parameters, verifying that proper domain exceptions (`ValueError`, `TypeError`) or error outcomes are raised.
-  - *Dependency Failures (Failure Modes)*: Simulated collaborator failures (e.g., network disconnects, HTTP 401/403/500 statuses, socket timeouts), verifying proper error translation, logging, or exception propagation.
+
+#### Integration Tests (`tests/integration/`)
+
+- **Scope & Validation**: Integration tests validate end-to-end interactions and protocol compliance between the implementation and external dependencies (e.g., Dockerized platforms such as SVN/Jenkins, live Google Sheets API).
+- **Execution & Isolation Constraints**: Run against configured local test containers or integration environments. Avoid parallel execution when tests share state or external resources to prevent race conditions and cross-test contamination.
+- **Realistic Data Flows**: Validate end-to-end persistence, network retry behaviors, payload serialization, and live integration boundaries using representative domain data.
 
 ---
