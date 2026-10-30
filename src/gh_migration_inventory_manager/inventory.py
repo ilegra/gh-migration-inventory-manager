@@ -193,6 +193,19 @@ class PipelineRecord:
     migration_status: MigrationStatus = MigrationStatus.WAITTING
 
 
+@dataclass
+class TeamRecord:
+    """Represents a team topology and access record in the inventory."""
+
+    team_name: str
+    member_count: int = 0
+    target_repo_or_project: str = ""
+    normalized_role: str = "Read"
+    origin_role: str = ""
+    team_slug: str = ""
+    migration_status: MigrationStatus = MigrationStatus.WAITTING
+
+
 def _build_credentials(credentials: Any, credentials_path: str | None) -> Any:
     """Validate credentials configuration and build Credentials instance."""
     if credentials is not None:
@@ -605,15 +618,7 @@ class PipelineInventory:
         """Retrieve, validate, and return the underlying Spreadsheet client."""
         if self.spreadsheet is not None:
             if not getattr(self, "_spreadsheet_initialized", False):
-                if hasattr(self.spreadsheet, "validate") and callable(
-                    self.spreadsheet.validate
-                ):
-                    self.spreadsheet.validate()
-                if hasattr(self.spreadsheet, "ensure_sheet") and callable(
-                    self.spreadsheet.ensure_sheet
-                ):
-                    self.spreadsheet.ensure_sheet(self.sheet_name)
-                self._spreadsheet_initialized = True
+                return self._validate_and_build_spreadsheet()
             return self.spreadsheet
         return self._validate_and_build_spreadsheet()
 
@@ -704,11 +709,222 @@ class PipelineInventory:
         return [self.register_record(rec) for rec in records]
 
 
+class TeamInventory:
+    """Team topology and access inventory manager backed by a Google Spreadsheet tab."""
+
+    def __init__(
+        self,
+        spreadsheet: SpreadsheetClient | Any = None,
+        spreadsheet_id: str | None = None,
+        credentials_path: str | None = None,
+        sheet_name: str = "Topology",
+        credentials: Any = None,
+        converter: Any = None,
+    ) -> None:
+        self.spreadsheet = spreadsheet
+        self.spreadsheet_id = spreadsheet_id
+        self.credentials_path = credentials_path
+        self.sheet_name = sheet_name
+        self.credentials = credentials
+        if converter is not None:
+            self.converter = converter
+        else:
+            from gh_migration_inventory_manager.converter import (
+                TeamConverter as _TeamConverter,
+            )
+
+            self.converter = _TeamConverter()
+
+    def _validate_and_build_credentials(self) -> Any:
+        """Validate credentials configuration and build Credentials instance."""
+        self.credentials = _build_credentials(self.credentials, self.credentials_path)
+        return self.credentials
+
+    def _validate_and_build_spreadsheet(self) -> SpreadsheetClient:
+        """Validate spreadsheet configuration and build Spreadsheet instance."""
+        if self.spreadsheet is not None:
+            if self.spreadsheet_id is not None:
+                configured_id = getattr(self.spreadsheet, "id", None)
+                if configured_id and configured_id != str(self.spreadsheet_id).strip():
+                    raise ValueError(
+                        "Inconsistent spreadsheet configuration: "
+                        f"spreadsheet.id '{configured_id}' "
+                        f"does not match spreadsheet_id '{self.spreadsheet_id}'."
+                    )
+            if hasattr(self.spreadsheet, "validate") and callable(
+                self.spreadsheet.validate
+            ):
+                self.spreadsheet.validate()
+            if hasattr(self.spreadsheet, "ensure_sheet") and callable(
+                self.spreadsheet.ensure_sheet
+            ):
+                self.spreadsheet.ensure_sheet(self.sheet_name)
+            self._spreadsheet_initialized = True
+            return self.spreadsheet
+
+        if not self.spreadsheet_id or not str(self.spreadsheet_id).strip():
+            raise ValueError("Missing Google Spreadsheet ID. Pass --spreadsheet-id.")
+
+        clean_id = str(self.spreadsheet_id).strip()
+        creds = self._validate_and_build_credentials()
+
+        from gh_migration_inventory_manager.google import Spreadsheet
+
+        sheet = Spreadsheet(
+            id=clean_id,
+            credentials=creds,
+            sheet_name=self.sheet_name,
+        )
+        sheet.validate()
+        sheet.ensure_sheet(self.sheet_name)
+        self.spreadsheet = sheet
+        self._spreadsheet_initialized = True
+        return self.spreadsheet
+
+    def _get_spreadsheet(self) -> SpreadsheetClient:
+        """Retrieve, validate, and return the underlying Spreadsheet client."""
+        if self.spreadsheet is not None:
+            if not getattr(self, "_spreadsheet_initialized", False):
+                return self._validate_and_build_spreadsheet()
+            return self.spreadsheet
+        return self._validate_and_build_spreadsheet()
+
+    def _find_row(
+        self, team_slug: str, target_repo_or_project: str | None = None
+    ) -> Any | None:
+        """Find a row matching team slug and optional target scope."""
+        sheet = self._get_spreadsheet()
+        clean_slug = team_slug.strip() if isinstance(team_slug, str) else ""
+        if not clean_slug:
+            raise ValueError("Team slug cannot be empty.")
+
+        matching_rows = sheet.find_by("team_slug", clean_slug)
+        if not matching_rows:
+            return None
+
+        if target_repo_or_project is not None:
+            clean_target = target_repo_or_project.strip().lower()
+            for r in matching_rows:
+                row_target = (
+                    str(r.data.get("target_repo_or_project", "")).strip().lower()
+                )
+                if row_target == clean_target:
+                    return r
+            return None
+
+        return matching_rows[0]
+
+    def register_record(self, record: TeamRecord) -> TeamRecord:
+        """Register or synchronize a TeamRecord in the inventory.
+
+        If the team permission is already recorded, its migration status is strictly
+        preserved, while metadata (member_count, origin_role, etc.) are updated.
+        """
+        from gh_migration_inventory_manager.google import TeamRowConverter
+
+        if record is None:
+            raise ValueError("TeamRecord cannot be None.")
+
+        clean_slug = str(record.team_slug).strip() if record.team_slug else ""
+        if not clean_slug:
+            raise ValueError("Team team_slug cannot be empty.")
+
+        clean_target = (
+            str(record.target_repo_or_project).strip()
+            if record.target_repo_or_project
+            else ""
+        )
+        if not clean_target:
+            raise ValueError("Target repository or project cannot be empty.")
+
+        sheet = self._get_spreadsheet()
+
+        existing_row = self._find_row(clean_slug, clean_target)
+        if existing_row is not None:
+            existing_record = TeamRowConverter.to_team_record(existing_row)
+            record.migration_status = existing_record.migration_status
+            row = TeamRowConverter.from_team_record(
+                record, row_index=existing_row.row_index
+            )
+            saved_row = sheet.update_row(row)
+        else:
+            row = TeamRowConverter.from_team_record(record, row_index=None)
+            saved_row = sheet.add(row)
+
+        return TeamRowConverter.to_team_record(saved_row)
+
+    def update_progress(
+        self,
+        team_slug: str,
+        target_repo_or_project: str,
+        status: MigrationStatus | str,
+    ) -> TeamRecord:
+        """Update migration progress for a team permission in the inventory."""
+        from gh_migration_inventory_manager.google import TeamRowConverter
+
+        clean_slug = team_slug.strip() if isinstance(team_slug, str) else ""
+        if not clean_slug:
+            raise ValueError("Team slug cannot be empty.")
+
+        clean_target = (
+            target_repo_or_project.strip()
+            if isinstance(target_repo_or_project, str)
+            else ""
+        )
+        if not clean_target:
+            raise ValueError("Target repository or project cannot be empty.")
+
+        valid_status = validate_migration_status(status)
+        existing_row = self._find_row(clean_slug, clean_target)
+
+        if not existing_row:
+            record = TeamRecord(
+                team_name=clean_slug,
+                team_slug=clean_slug,
+                target_repo_or_project=clean_target,
+                migration_status=valid_status,
+            )
+            row_index = None
+        else:
+            record = TeamRowConverter.to_team_record(existing_row)
+            record.migration_status = valid_status
+            row_index = existing_row.row_index
+
+        row = TeamRowConverter.from_team_record(record, row_index=row_index)
+        sheet = self._get_spreadsheet()
+        saved_row = sheet.update_row(row) if row_index is not None else sheet.add(row)
+        return TeamRowConverter.to_team_record(saved_row)
+
+    def get_team_permission(
+        self, team_slug: str, target_repo_or_project: str | None = None
+    ) -> TeamRecord | None:
+        """Find a team record by team slug and optional target scope."""
+        from gh_migration_inventory_manager.google import TeamRowConverter
+
+        row = self._find_row(team_slug, target_repo_or_project)
+        return TeamRowConverter.to_team_record(row) if row is not None else None
+
+    def sync_records(self, records: list[TeamRecord]) -> list[TeamRecord]:
+        """Synchronize a collection of TeamRecord instances."""
+        if records is None:
+            raise ValueError("Records collection cannot be None.")
+        self._get_spreadsheet()
+        return [self.register_record(rec) for rec in records]
+
+
 def __getattr__(name: str) -> Any:
     if name == "RepositoryConverter":
         from gh_migration_inventory_manager.converter import RepositoryConverter
 
         return RepositoryConverter
+    if name == "PipelineConverter":
+        from gh_migration_inventory_manager.converter import PipelineConverter
+
+        return PipelineConverter
+    if name == "TeamConverter":
+        from gh_migration_inventory_manager.converter import TeamConverter
+
+        return TeamConverter
     raise AttributeError(f"module '{__name__}' has no attribute '{name}'")
 
 

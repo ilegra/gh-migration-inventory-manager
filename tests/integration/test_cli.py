@@ -287,3 +287,104 @@ def test_given_live_jenkins_server_when_running_cli_then_inventories_workflows(
     assert result is not None
     assert result >= 2
     assert int(out_stream.getvalue().strip()) == result
+
+
+def test_given_invalid_svn_teams_credentials_when_running_cli_then_logs_auth_error_and_exits_with_code_1(
+    svn_server: dict[str, Any],
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Verify CLI maps live SVN teams authentication failure to exit code 1."""
+    exit_code = main(
+        [
+            "scrape",
+            "svn-teams",
+            "--authz-url",
+            svn_server["authz_url"],
+            "--username",
+            svn_server["username"],
+            "--password",
+            "wrong_password_xyz",
+        ]
+    )
+
+    assert exit_code == 1
+    captured = capsys.readouterr()
+    assert "Authentication Error" in captured.err
+
+
+def test_given_live_svn_server_when_running_cli_svn_teams_then_inventories_team_topology(
+    svn_server: dict[str, Any],
+) -> None:
+    """Verify CLI successfully scrapes teams from live SVN authz and outputs count."""
+    from unittest.mock import MagicMock
+
+    from gh_migration_inventory_manager.google import Row
+
+    parser = build_parser()
+    args = parser.parse_args(
+        [
+            "scrape",
+            "svn-teams",
+            "--authz-path",
+            svn_server["authz_path"],
+        ]
+    )
+
+    mock_sheet = MagicMock()
+    mock_sheet.find_by.return_value = []
+    mock_sheet.add.side_effect = lambda row: Row(
+        row_index=2,
+        data=row.data,
+        values=list(row.data.values()),
+    )
+
+    out_stream = io.StringIO()
+    result = run_cli(
+        args,
+        spreadsheet=mock_sheet,
+        out_stream=out_stream,
+    )
+
+    assert result is not None
+    assert result >= 5
+    assert int(out_stream.getvalue().strip()) == result
+
+
+def test_given_live_svn_and_live_sheets_when_running_cli_svn_teams_then_synchronizes_topology_tab(
+    svn_server: dict[str, Any],
+    gcp_credentials_path: str,
+    reset_topology_sheet: Spreadsheet,
+) -> None:
+    """Verify full CLI flow scraping live SVN teams and persisting to live Google Spreadsheet Topology tab."""
+    parser = build_parser()
+    args = parser.parse_args(
+        [
+            "scrape",
+            "svn-teams",
+            "--authz-url",
+            svn_server["authz_url"],
+            "--username",
+            svn_server["username"],
+            "--password",
+            svn_server["password"],
+            "--spreadsheet-id",
+            reset_topology_sheet.id,
+            "--credentials-path",
+            gcp_credentials_path,
+            "--sheet-name",
+            reset_topology_sheet.sheet_name,
+        ]
+    )
+
+    out_stream = io.StringIO()
+    result = run_cli(args, out_stream=out_stream)
+
+    assert result is not None
+    assert result >= 5
+    assert int(out_stream.getvalue().strip()) == result
+
+    # Verify rows in live sheet
+    matching_core_devs = reset_topology_sheet.find_by("team_slug", "core-devs")
+    assert len(matching_core_devs) >= 1
+    assert matching_core_devs[0].data["team_slug"] == "core-devs"
+    assert matching_core_devs[0].data["normalized_role"] == "Write"

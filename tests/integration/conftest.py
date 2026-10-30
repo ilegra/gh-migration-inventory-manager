@@ -230,11 +230,56 @@ def svn_server() -> Generator[dict[str, Any], None, None]:
             capture_output=True,
         )
 
+        # 8. Seed authz configuration for team topology discovery
+        authz_content = (
+            "[groups]\n"
+            "core-devs = alice, bob, charlie\n"
+            "ops = dave, eve\n"
+            "leads = alice, dave\n"
+            "admins = frank\n\n"
+            "[/]\n"
+            "@admins = rw\n"
+            "* = r\n\n"
+            "[/standard-app/trunk]\n"
+            "@core-devs = rw\n"
+            "@leads = rw\n\n"
+            "[/standard-app/tags]\n"
+            "@leads = rw\n"
+            "* = r\n\n"
+            "[/multi-app/auth-service/trunk]\n"
+            "@core-devs = rw\n\n"
+            "[/multi-app/billing-service]\n"
+            "@ops = rw\n"
+            "* =\n"
+        )
+        seed_authz_cmd = (
+            f"cat << 'EOF' > /tmp/authz\n{authz_content}\nEOF\n"
+            "svn import /tmp/authz file:///home/svn/standard-app/trunk/authz "
+            "-m 'Add authz rules' && "
+            "cp /tmp/authz /etc/subversion/subversion-access.file && "
+            "rm -f /tmp/authz"
+        )
+        subprocess.run(  # nosec B603
+            ["docker", "exec", container_id, "sh", "-c", seed_authz_cmd],
+            check=True,
+            capture_output=True,
+        )
+
+        import tempfile
+
+        host_authz = tempfile.NamedTemporaryFile("w+", delete=False, suffix=".conf")
+        host_authz.write(authz_content)
+        host_authz.flush()
+        host_authz.close()
+
         yield {
             "url": base_url,
             "username": username,
             "password": password,
             "container_id": container_id,
+            "authz_url": f"{base_url}/standard-app/trunk/authz",
+            "authz_path": host_authz.name,
+            "authz_content": authz_content,
         }
 
     finally:
@@ -245,6 +290,13 @@ def svn_server() -> Generator[dict[str, Any], None, None]:
                 stderr=subprocess.DEVNULL,
                 check=False,
             )
+        try:
+            import os
+
+            if "host_authz" in locals() and os.path.exists(host_authz.name):
+                os.remove(host_authz.name)
+        except Exception:
+            pass
 
 
 @pytest.fixture(scope="module")
@@ -412,3 +464,20 @@ def live_spreadsheet(gcp_credentials_path: str) -> Any:
         sheet_name="Inventario",
     )
     return sheet
+
+
+@pytest.fixture
+def reset_topology_sheet(gcp_credentials_path: str) -> Any:
+    """Fixture ensuring the Topology tab exists and is reset for isolated test execution."""
+    from gh_migration_inventory_manager.google import Credentials, Spreadsheet
+
+    creds = Credentials(credentials_path=gcp_credentials_path)
+    sheet = Spreadsheet(
+        id=_DEFAULT_SPREADSHEET_ID,
+        credentials=creds,
+        sheet_name="Topology",
+    )
+    sheet.ensure_sheet()
+    sheet.clear_tab()
+    yield sheet
+    sheet.clear_tab()

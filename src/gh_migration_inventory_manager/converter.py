@@ -10,9 +10,16 @@ from gh_migration_inventory_manager.inventory import (
     InventoryRecord,
     MigrationStatus,
     PipelineRecord,
+    TeamRecord,
     validate_migration_status,
 )
-from gh_migration_inventory_manager.scrap import Pipeline, Repository, format_stacks
+from gh_migration_inventory_manager.scrap import (
+    Pipeline,
+    Repository,
+    TeamPermission,
+    format_stacks,
+    slugify,
+)
 
 
 class RepositoryConverter:
@@ -226,4 +233,94 @@ class PipelineConverter:
         ]
 
 
-__all__ = ["PipelineConverter", "RepositoryConverter"]
+class TeamConverter:
+    """Conversion adapter bridging team discovery models and inventory entities."""
+
+    def __init__(self) -> None:
+        """Initialize a new TeamConverter instance."""
+
+    def _validate_status(self, status: Any) -> MigrationStatus:
+        """Validate that status is a valid MigrationStatus or valid status string."""
+        return validate_migration_status(status)
+
+    def to_team_record(
+        self,
+        permission: TeamPermission | Any,
+        initial_status: MigrationStatus | str = MigrationStatus.WAITTING,
+    ) -> TeamRecord:
+        """Convert a single discovered TeamPermission model into a TeamRecord.
+
+        Args:
+            permission: Discovered TeamPermission model (or permission-like object).
+            initial_status: Initial migration status for the record.
+
+        Returns:
+            A TeamRecord instance configured with mapped attributes and status.
+
+        Raises:
+            ValueError: If permission is None, lacks a team_name, lacks a target,
+                or initial_status is invalid.
+        """
+        if permission is None:
+            raise ValueError("TeamPermission cannot be None.")
+
+        name = getattr(permission, "team_name", None)
+        clean_name = str(name).strip() if name is not None else ""
+        if not clean_name:
+            raise ValueError("Team name cannot be empty.")
+
+        slug = getattr(permission, "slug", None) or getattr(
+            permission, "team_slug", None
+        )
+        clean_slug = str(slug).strip() if slug is not None else ""
+        if not clean_slug:
+            clean_slug = slugify(clean_name)
+
+        raw_count = getattr(permission, "member_count", 0)
+        try:
+            member_count = int(raw_count) if raw_count is not None else 0
+        except (ValueError, TypeError):
+            member_count = 0
+
+        target = getattr(permission, "target_repo_or_project", "")
+        clean_target = str(target).strip() if target is not None else ""
+        if not clean_target:
+            raise ValueError("Target repository or project cannot be empty.")
+
+        role = getattr(permission, "normalized_role", "Read")
+        norm_role = getattr(role, "value", str(role)) if role else "Read"
+        origin_role = str(getattr(permission, "origin_role", "") or "").strip()
+        valid_status = self._validate_status(initial_status)
+
+        return TeamRecord(
+            team_name=clean_name,
+            team_slug=clean_slug,
+            member_count=member_count,
+            target_repo_or_project=clean_target,
+            normalized_role=norm_role,
+            origin_role=origin_role,
+            migration_status=valid_status,
+        )
+
+    def to_team_records(
+        self,
+        permissions: Iterable[TeamPermission | Any],
+        initial_status: MigrationStatus | str = MigrationStatus.WAITTING,
+    ) -> list[TeamRecord]:
+        """Convert a collection of TeamPermission models into TeamRecord instances.
+
+        Args:
+            permissions: Iterable of discovered team permission models.
+            initial_status: Initial migration status for all records.
+
+        Returns:
+            A list of converted TeamRecord instances.
+        """
+        if permissions is None:
+            raise ValueError("Permissions collection cannot be None.")
+        return [
+            self.to_team_record(p, initial_status=initial_status) for p in permissions
+        ]
+
+
+__all__ = ["PipelineConverter", "RepositoryConverter", "TeamConverter"]

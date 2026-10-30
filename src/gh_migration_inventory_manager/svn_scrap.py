@@ -12,11 +12,13 @@ import xml.etree.ElementTree as ET  # nosec B405
 from dataclasses import dataclass
 from datetime import datetime
 from enum import Enum
+from pathlib import Path
 from typing import Any, Protocol, runtime_checkable
 
 from gh_migration_inventory_manager.scrap import (
     Authenticator,
     BasicAuthenticator,
+    NormalizedRole,
     Repository,
     RepositoryScraper,
     ScraperAuthenticationError,
@@ -24,8 +26,11 @@ from gh_migration_inventory_manager.scrap import (
     ScraperError,
     ScraperProvider,
     Stack,
+    TeamPermission,
+    TeamScraper,
     TokenAuthenticator,
     default_scraper_registry,
+    slugify,
 )
 
 
@@ -181,6 +186,35 @@ class SvnWebDavClient:
                 raise ScraperError(f"SVN path not found (404): {url}") from e
             if e.code in (405, 500, 501):
                 return self._fetch_html_listing(clean_url)
+            raise ScraperError(
+                f"SVN HTTP error ({e.code}) accessing {url}: {e.reason}"
+            ) from e
+        except (urllib.error.URLError, TimeoutError) as e:
+            raise ScraperConnectionError(f"Cannot connect to SVN at {url}: {e}") from e
+
+    def get_text(self, url: str) -> str:
+        """Fetch raw text content from an SVN HTTP URL."""
+        clean_url = (url or "").strip()
+        if not clean_url:
+            raise ValueError("URL cannot be empty.")
+        parsed = urllib.parse.urlparse(clean_url)
+        if parsed.scheme.lower() not in ("http", "https"):
+            raise ValueError(
+                f"Unsupported URL scheme '{parsed.scheme}'. "
+                "SVN URL must use http:// or https://"
+            )
+        try:
+            req = self._build_request(clean_url, method="GET")
+            with urllib.request.urlopen(req, timeout=self.timeout) as resp:  # nosec B310
+                raw: bytes = resp.read()
+                return raw.decode("utf-8", errors="replace")
+        except urllib.error.HTTPError as e:
+            if e.code in (401, 403):
+                raise ScraperAuthenticationError(
+                    f"SVN authentication failed ({e.code}) for {url}: {e.reason}"
+                ) from e
+            if e.code == 404:
+                raise ScraperError(f"SVN path not found (404): {url}") from e
             raise ScraperError(
                 f"SVN HTTP error ({e.code}) accessing {url}: {e.reason}"
             ) from e
@@ -629,3 +663,232 @@ class SvnScraperProvider(ScraperProvider):
 
 
 default_scraper_registry.register(SvnScraperProvider())
+
+
+class SvnAuthzParser:
+    """Parser for Subversion authz configuration files."""
+
+    def parse(self, content: str) -> list[TeamPermission]:
+        """Parse authz file content into a list of TeamPermission domain objects.
+
+        Args:
+            content: Raw text content of an SVN authz configuration file.
+
+        Returns:
+            A list of discovered TeamPermission objects.
+        """
+        if not content or not content.strip():
+            return []
+
+        groups: dict[str, list[str]] = {}
+        path_rules: list[tuple[str, str, str]] = []
+        current_section = ""
+
+        for raw_line in content.splitlines():
+            line = raw_line.strip()
+            if not line or line.startswith(("#", ";")):
+                continue
+
+            if line.startswith("[") and line.endswith("]"):
+                current_section = line[1:-1].strip()
+                continue
+
+            if "=" not in line:
+                continue
+
+            key, value = line.split("=", 1)
+            key = key.strip()
+            value = value.strip()
+
+            if current_section.lower() == "groups":
+                if key:
+                    members = [m.strip() for m in value.split(",") if m.strip()]
+                    groups[key] = members
+            elif current_section:
+                path_rules.append((current_section, key, value))
+
+        permissions: list[TeamPermission] = []
+        for path, key, access_str in path_rules:
+            access = access_str.strip().lower()
+            if not access:
+                continue
+
+            if key.startswith("@"):
+                team_name = key[1:].strip()
+                if not team_name:
+                    continue
+                member_count = len(groups.get(team_name, []))
+                team_slug = slugify(team_name)
+            elif key == "*":
+                team_name = "*"
+                member_count = 0
+                team_slug = "all-users"
+            else:
+                continue
+
+            clean_path = path.strip()
+            norm_path = (
+                clean_path.split(":", 1)[-1].strip()
+                if ":" in clean_path
+                else clean_path
+            )
+            norm_path_lower = norm_path.lower()
+
+            if access == "r":
+                norm_role = NormalizedRole.READ
+            elif "w" in access:
+                if norm_path in ("/", "") or norm_path == "[/]":
+                    norm_role = NormalizedRole.ADMIN
+                elif "/tags" in norm_path_lower or norm_path_lower.endswith("tags"):
+                    norm_role = NormalizedRole.MAINTAIN
+                else:
+                    norm_role = NormalizedRole.WRITE
+            else:
+                norm_role = NormalizedRole.READ
+
+            perm = TeamPermission(
+                team_name=team_name,
+                member_count=member_count,
+                target_repo_or_project=clean_path,
+                normalized_role=norm_role,
+                origin_role=access_str,
+                team_slug=team_slug,
+            )
+            permissions.append(perm)
+
+        return permissions
+
+
+class SvnTeamScraper(TeamScraper):
+    """Scraper discovering team permissions from Subversion authz files."""
+
+    scraper_type: str = "team"
+    target_type: str = "team"
+
+    def __init__(
+        self,
+        authz_path: str | Path | None = None,
+        authz_url: str | None = None,
+        client: SvnWebDavClient | None = None,
+        auth: Authenticator | None = None,
+        parser: SvnAuthzParser | None = None,
+    ) -> None:
+        if not authz_path and not authz_url:
+            raise ValueError(
+                "Either authz_path (local file) or authz_url (remote URL) "
+                "must be provided."
+            )
+        self.authz_path = Path(authz_path) if authz_path else None
+        clean_url = str(authz_url).strip() if authz_url else None
+        if clean_url:
+            parsed = urllib.parse.urlparse(clean_url)
+            if parsed.scheme.lower() not in ("http", "https"):
+                raise ValueError(
+                    f"Unsupported URL scheme '{parsed.scheme}'. "
+                    "SVN URL must use http:// or https://"
+                )
+        self.authz_url = clean_url
+        self.client = client or (SvnWebDavClient(auth=auth) if self.authz_url else None)
+        self.parser = parser or SvnAuthzParser()
+
+    def scrape(self) -> list[TeamPermission]:
+        """Discover and return team permissions from SVN authz configuration."""
+        if self.authz_path is not None:
+            if not self.authz_path.exists():
+                raise ScraperError(f"SVN authz file not found: '{self.authz_path}'.")
+            try:
+                content = self.authz_path.read_text(encoding="utf-8", errors="replace")
+            except OSError as err:
+                raise ScraperError(
+                    f"Failed to read SVN authz file '{self.authz_path}': {err}"
+                ) from err
+            return self.parser.parse(content)
+
+        if self.authz_url is not None:
+            client = self.client or SvnWebDavClient()
+            content = client.get_text(self.authz_url)
+            return self.parser.parse(content)
+
+        return []
+
+
+class SvnTeamsScraperProvider(ScraperProvider):
+    """Provider exposing SVN team topology and authz scraping to the CLI."""
+
+    target_type: str = "team"
+    default_sheet_name: str = "Topology"
+
+    @property
+    def platform_name(self) -> str:
+        return "svn-teams"
+
+    @property
+    def description(self) -> str:
+        return "Subversion (SVN) team topology and authz scraper"
+
+    def configure_parser(self, parser: Any) -> None:
+        """Add SVN authz and team discovery arguments to the subparser."""
+        parser.add_argument(
+            "--authz-path",
+            default=None,
+            help="Path to local SVN authz configuration file",
+        )
+        parser.add_argument(
+            "--authz-url",
+            "--url",
+            dest="authz_url",
+            default=None,
+            help="Remote SVN authz configuration HTTP/WebDAV URL",
+        )
+        parser.add_argument(
+            "--username",
+            default=None,
+            help="SVN authentication username",
+        )
+        parser.add_argument(
+            "--password",
+            default=None,
+            help="SVN authentication password",
+        )
+        parser.add_argument(
+            "--token",
+            default=None,
+            help="SVN bearer/PAT token",
+        )
+
+    def create_scraper(self, args: Any) -> SvnTeamScraper:
+        """Build SvnTeamScraper from parsed CLI arguments."""
+        auth: Authenticator | None = None
+        username = getattr(args, "username", None)
+        password = getattr(args, "password", None)
+        token = getattr(args, "token", None)
+
+        if username and password is not None:
+            auth = BasicAuthenticator(username=username, password=password)
+        elif token:
+            auth = TokenAuthenticator(token=token)
+
+        authz_path = getattr(args, "authz_path", None)
+        authz_url = getattr(args, "authz_url", None)
+
+        return SvnTeamScraper(
+            authz_path=authz_path,
+            authz_url=authz_url,
+            auth=auth,
+        )
+
+
+default_scraper_registry.register(SvnTeamsScraperProvider())
+
+
+__all__ = [
+    "SvnAuthzParser",
+    "SvnClient",
+    "SvnEntry",
+    "SvnLayoutType",
+    "SvnRepositoryScraper",
+    "SvnScraperProvider",
+    "SvnTeamScraper",
+    "SvnTeamsScraperProvider",
+    "SvnWebDavClient",
+]

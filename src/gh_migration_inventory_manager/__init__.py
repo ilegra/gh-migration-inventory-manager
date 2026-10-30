@@ -7,6 +7,7 @@ records backed by Google Sheets.
 from gh_migration_inventory_manager.converter import (
     PipelineConverter,
     RepositoryConverter,
+    TeamConverter,
 )
 from gh_migration_inventory_manager.google import (
     Credentials,
@@ -17,6 +18,7 @@ from gh_migration_inventory_manager.google import (
     SpreadsheetError,
     SpreadsheetNotFoundError,
     Spreadshseet,
+    TeamRowConverter,
     WorkflowRowConverter,
 )
 from gh_migration_inventory_manager.inventory import (
@@ -29,6 +31,8 @@ from gh_migration_inventory_manager.inventory import (
     MigrationStatus,
     PipelineInventory,
     PipelineRecord,
+    TeamInventory,
+    TeamRecord,
 )
 from gh_migration_inventory_manager.jenkins_scrap import (
     JenkinsClient,
@@ -40,6 +44,7 @@ from gh_migration_inventory_manager.scrap import (
     AuthCredentials,
     Authenticator,
     BasicAuthenticator,
+    NormalizedRole,
     Pipeline,
     PipelineScraper,
     PipelineTrigger,
@@ -53,16 +58,23 @@ from gh_migration_inventory_manager.scrap import (
     ScraperProvider,
     ScraperRegistry,
     Stack,
+    TeamPermission,
+    TeamScraper,
     TokenAuthenticator,
     default_scraper_registry,
     format_stacks,
+    normalize_role,
+    slugify,
 )
 from gh_migration_inventory_manager.svn_scrap import (
+    SvnAuthzParser,
     SvnClient,
     SvnEntry,
     SvnLayoutType,
     SvnRepositoryScraper,
     SvnScraperProvider,
+    SvnTeamScraper,
+    SvnTeamsScraperProvider,
     SvnWebDavClient,
 )
 
@@ -85,6 +97,7 @@ __all__ = [
     "JenkinsScraperProvider",
     "JenkinsTransport",
     "MigrationStatus",
+    "NormalizedRole",
     "Pipeline",
     "PipelineConverter",
     "PipelineInventory",
@@ -109,14 +122,25 @@ __all__ = [
     "SpreadsheetNotFoundError",
     "Spreadshseet",
     "Stack",
+    "SvnAuthzParser",
     "SvnClient",
     "SvnEntry",
     "SvnLayoutType",
     "SvnRepositoryScraper",
     "SvnScraperProvider",
+    "SvnTeamScraper",
+    "SvnTeamsScraperProvider",
     "SvnWebDavClient",
+    "TeamConverter",
+    "TeamInventory",
+    "TeamPermission",
+    "TeamRecord",
+    "TeamRowConverter",
+    "TeamScraper",
     "TokenAuthenticator",
     "WorkflowRowConverter",
     "default_scraper_registry",
     "format_stacks",
+    "normalize_role",
+    "slugify",
 ]
