@@ -448,7 +448,10 @@ def bitbucket_server() -> Generator[dict[str, Any], None, None]:
         check=False,
     )
     if check_img.returncode != 0:
-        pytest.fail(f"Required Docker image '{image}' is not available locally.")
+        pytest.skip(
+            f"Required Docker image '{image}' is not available locally; "
+            "skipping live Bitbucket integration tests."
+        )
 
     run_cmd = [
         "docker",

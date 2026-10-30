@@ -37,7 +37,7 @@ def test_given_public_package_exports_when_imported_then_all_required_symbols_ar
     None
 ):
     """Verify that all public symbols are accessible from top-level package."""
-    assert __version__ == "0.1.0"
+    assert __version__ == "1.1.0"
     assert Inventory is not None
     assert Iventory is not None
     assert Spreadsheet is not None
