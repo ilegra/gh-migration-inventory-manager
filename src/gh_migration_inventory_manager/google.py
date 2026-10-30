@@ -22,6 +22,7 @@ from gh_migration_inventory_manager.inventory import (
     _from_sheet_label,
     format_migration_month,
 )
+from gh_migration_inventory_manager.scrap import normalize_role
 
 
 class SpreadsheetError(InventoryError):
@@ -199,6 +200,8 @@ _TOPOLOGY_HEADERS = [
     "Status da Migração",
 ]
 TOPOLOGY_HEADERS = _TOPOLOGY_HEADERS
+_WORKFLOW_SHEET_NAMES: tuple[str, ...] = ("workflows", "pipelines")
+_TOPOLOGY_SHEET_NAMES: tuple[str, ...] = ("topology", "teams", "topologia")
 
 _TOPOLOGY_COLUMN_ALIAS_MAP: dict[str, int] = {
     "team_name": 0,
@@ -256,9 +259,16 @@ class TeamRowConverter:
         except (ValueError, TypeError):
             member_count = 0
 
-        norm_role = row.data.get("normalized_role") or "Read"
-        if hasattr(norm_role, "value"):
+        norm_role = row.data.get("normalized_role")
+        if norm_role is None or norm_role == "":
+            norm_role = "Read"
+        elif hasattr(norm_role, "value"):
             norm_role = norm_role.value
+        else:
+            try:
+                norm_role = normalize_role(str(norm_role)).value
+            except ValueError:
+                norm_role = str(norm_role)
 
         return TeamRecord(
             team_name=str(row.data.get("team_name", "")),
@@ -471,15 +481,20 @@ class Spreadsheet:
                 f"Error accessing spreadsheet '{clean_id}': {err}"
             ) from err
 
+    def _end_column_for(self, target: str | None = None) -> str:
+        """Return the last column letter for the specified or active sheet."""
+        clean = (target or self.sheet_name or "").strip().lower()
+        if clean in _WORKFLOW_SHEET_NAMES:
+            return "L"
+        if clean in _TOPOLOGY_SHEET_NAMES:
+            return "G"
+        return "H"
+
     def _is_workflow_sheet(self) -> bool:
-        return (self.sheet_name or "").strip().lower() in ("workflows", "pipelines")
+        return (self.sheet_name or "").strip().lower() in _WORKFLOW_SHEET_NAMES
 
     def _is_topology_sheet(self) -> bool:
-        return (self.sheet_name or "").strip().lower() in (
-            "topology",
-            "teams",
-            "topologia",
-        )
+        return (self.sheet_name or "").strip().lower() in _TOPOLOGY_SHEET_NAMES
 
     def ensure_sheet(
         self,
@@ -491,9 +506,9 @@ class Spreadsheet:
         hdrs = headers
         if hdrs is None:
             clean_target = (target or "").strip().lower()
-            if clean_target in ("workflows", "pipelines"):
+            if clean_target in _WORKFLOW_SHEET_NAMES:
                 hdrs = _WORKFLOW_HEADERS
-            elif clean_target in ("topology", "teams", "topologia"):
+            elif clean_target in _TOPOLOGY_SHEET_NAMES:
                 hdrs = _TOPOLOGY_HEADERS
             else:
                 hdrs = _HEADERS
@@ -539,14 +554,7 @@ class Spreadsheet:
         if not clean_id:
             return
         self.ensure_sheet(target)
-        clean_target = (target or "").strip().lower()
-        if clean_target in ("workflows", "pipelines"):
-            end_col = "L"
-        elif clean_target in ("topology", "teams", "topologia"):
-            end_col = "G"
-        else:
-            end_col = "H"
-
+        end_col = self._end_column_for(target)
         clear_range = f"{target}!A2:{end_col}"
         try:
             self._service.spreadsheets().values().clear(
@@ -607,14 +615,16 @@ class Spreadsheet:
             team_slug = str(row.data.get("team_slug", ""))
             member_count = str(row.data.get("member_count", 0))
             target = str(row.data.get("target_repo_or_project", ""))
-            norm_role = str(
-                getattr(
-                    row.data.get("normalized_role", ""),
-                    "value",
-                    row.data.get("normalized_role", ""),
-                )
-                or ""
-            )
+            raw_role: Any = row.data.get("normalized_role")
+            if raw_role is not None and hasattr(raw_role, "value"):
+                norm_role = str(raw_role.value)
+            elif raw_role:
+                try:
+                    norm_role = normalize_role(str(raw_role)).value
+                except ValueError:
+                    norm_role = str(raw_role)
+            else:
+                norm_role = "Read"
             origin_role = str(row.data.get("origin_role", ""))
             status_str = _format_status_label(
                 row.data.get("migration_status", MigrationStatus.WAITTING)
@@ -709,11 +719,7 @@ class Spreadsheet:
     @property
     def _end_column(self) -> str:
         """Return the last column letter based on the current sheet structure."""
-        if self._is_workflow_sheet():
-            return "L"
-        if self._is_topology_sheet():
-            return "G"
-        return "H"
+        return self._end_column_for()
 
     def find_by(
         self,

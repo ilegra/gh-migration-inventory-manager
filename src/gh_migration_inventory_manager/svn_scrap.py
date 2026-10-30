@@ -66,6 +66,20 @@ class SvnClient(Protocol):
         raise NotImplementedError
 
 
+def _validate_svn_http_url(url: str) -> str:
+    """Validate that the given URL is non-empty and uses http:// or https://."""
+    clean = (url or "").strip()
+    if not clean:
+        raise ValueError("URL cannot be empty.")
+    parsed = urllib.parse.urlparse(clean)
+    if parsed.scheme.lower() not in ("http", "https"):
+        raise ValueError(
+            f"Unsupported URL scheme '{parsed.scheme}'. "
+            "SVN URL must use http:// or https://"
+        )
+    return clean
+
+
 class _SvnHtmlParser(html.parser.HTMLParser):
     """Parser for HTML directory listings served by SVN HTTP servers."""
 
@@ -194,15 +208,7 @@ class SvnWebDavClient:
 
     def get_text(self, url: str) -> str:
         """Fetch raw text content from an SVN HTTP URL."""
-        clean_url = (url or "").strip()
-        if not clean_url:
-            raise ValueError("URL cannot be empty.")
-        parsed = urllib.parse.urlparse(clean_url)
-        if parsed.scheme.lower() not in ("http", "https"):
-            raise ValueError(
-                f"Unsupported URL scheme '{parsed.scheme}'. "
-                "SVN URL must use http:// or https://"
-            )
+        clean_url = _validate_svn_http_url(url)
         try:
             req = self._build_request(clean_url, method="GET")
             with urllib.request.urlopen(req, timeout=self.timeout) as resp:  # nosec B310
@@ -662,9 +668,6 @@ class SvnScraperProvider(ScraperProvider):
         )
 
 
-default_scraper_registry.register(SvnScraperProvider())
-
-
 class SvnAuthzParser:
     """Parser for Subversion authz configuration files."""
 
@@ -680,7 +683,7 @@ class SvnAuthzParser:
         if not content or not content.strip():
             return []
 
-        groups: dict[str, list[str]] = {}
+        groups: dict[str, int] = {}
         path_rules: list[tuple[str, str, str]] = []
         current_section = ""
 
@@ -702,12 +705,12 @@ class SvnAuthzParser:
 
             if current_section.lower() == "groups":
                 if key:
-                    members = [m.strip() for m in value.split(",") if m.strip()]
-                    groups[key] = members
+                    groups[key] = sum(1 for m in value.split(",") if m.strip())
             elif current_section:
                 path_rules.append((current_section, key, value))
 
         permissions: list[TeamPermission] = []
+        slug_cache: dict[str, str] = {}
         for path, key, access_str in path_rules:
             access = access_str.strip().lower()
             if not access:
@@ -717,8 +720,10 @@ class SvnAuthzParser:
                 team_name = key[1:].strip()
                 if not team_name:
                     continue
-                member_count = len(groups.get(team_name, []))
-                team_slug = slugify(team_name)
+                member_count = groups.get(team_name, 0)
+                if team_name not in slug_cache:
+                    slug_cache[team_name] = slugify(team_name)
+                team_slug = slug_cache[team_name]
             elif key == "*":
                 team_name = "*"
                 member_count = 0
@@ -737,7 +742,7 @@ class SvnAuthzParser:
             if access == "r":
                 norm_role = NormalizedRole.READ
             elif "w" in access:
-                if norm_path in ("/", "") or norm_path == "[/]":
+                if norm_path in ("/", ""):
                     norm_role = NormalizedRole.ADMIN
                 elif "/tags" in norm_path_lower or norm_path_lower.endswith("tags"):
                     norm_role = NormalizedRole.MAINTAIN
@@ -769,7 +774,7 @@ class SvnTeamScraper(TeamScraper):
         self,
         authz_path: str | Path | None = None,
         authz_url: str | None = None,
-        client: SvnWebDavClient | None = None,
+        client: SvnWebDavClient | Any = None,
         auth: Authenticator | None = None,
         parser: SvnAuthzParser | None = None,
     ) -> None:
@@ -779,25 +784,19 @@ class SvnTeamScraper(TeamScraper):
                 "must be provided."
             )
         self.authz_path = Path(authz_path) if authz_path else None
-        clean_url = str(authz_url).strip() if authz_url else None
-        if clean_url:
-            parsed = urllib.parse.urlparse(clean_url)
-            if parsed.scheme.lower() not in ("http", "https"):
-                raise ValueError(
-                    f"Unsupported URL scheme '{parsed.scheme}'. "
-                    "SVN URL must use http:// or https://"
-                )
-        self.authz_url = clean_url
+        self.authz_url = _validate_svn_http_url(authz_url) if authz_url else None
         self.client = client or (SvnWebDavClient(auth=auth) if self.authz_url else None)
         self.parser = parser or SvnAuthzParser()
 
     def scrape(self) -> list[TeamPermission]:
         """Discover and return team permissions from SVN authz configuration."""
         if self.authz_path is not None:
-            if not self.authz_path.exists():
-                raise ScraperError(f"SVN authz file not found: '{self.authz_path}'.")
             try:
                 content = self.authz_path.read_text(encoding="utf-8", errors="replace")
+            except FileNotFoundError as err:
+                raise ScraperError(
+                    f"SVN authz file not found: '{self.authz_path}'."
+                ) from err
             except OSError as err:
                 raise ScraperError(
                     f"Failed to read SVN authz file '{self.authz_path}': {err}"
@@ -878,6 +877,7 @@ class SvnTeamsScraperProvider(ScraperProvider):
         )
 
 
+default_scraper_registry.register(SvnScraperProvider())
 default_scraper_registry.register(SvnTeamsScraperProvider())
 
 

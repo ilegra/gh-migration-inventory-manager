@@ -726,14 +726,7 @@ class TeamInventory:
         self.credentials_path = credentials_path
         self.sheet_name = sheet_name
         self.credentials = credentials
-        if converter is not None:
-            self.converter = converter
-        else:
-            from gh_migration_inventory_manager.converter import (
-                TeamConverter as _TeamConverter,
-            )
-
-            self.converter = _TeamConverter()
+        self.converter = converter
 
     def _validate_and_build_credentials(self) -> Any:
         """Validate credentials configuration and build Credentials instance."""
@@ -743,14 +736,17 @@ class TeamInventory:
     def _validate_and_build_spreadsheet(self) -> SpreadsheetClient:
         """Validate spreadsheet configuration and build Spreadsheet instance."""
         if self.spreadsheet is not None:
-            if self.spreadsheet_id is not None:
-                configured_id = getattr(self.spreadsheet, "id", None)
-                if configured_id and configured_id != str(self.spreadsheet_id).strip():
-                    raise ValueError(
-                        "Inconsistent spreadsheet configuration: "
-                        f"spreadsheet.id '{configured_id}' "
-                        f"does not match spreadsheet_id '{self.spreadsheet_id}'."
-                    )
+            configured_id = getattr(self.spreadsheet, "id", None)
+            if (
+                self.spreadsheet_id is not None
+                and configured_id
+                and configured_id != str(self.spreadsheet_id).strip()
+            ):
+                raise ValueError(
+                    "Inconsistent spreadsheet configuration: "
+                    f"spreadsheet.id '{configured_id}' "
+                    f"does not match spreadsheet_id '{self.spreadsheet_id}'."
+                )
             if hasattr(self.spreadsheet, "validate") and callable(
                 self.spreadsheet.validate
             ):
@@ -827,7 +823,7 @@ class TeamInventory:
 
         clean_slug = str(record.team_slug).strip() if record.team_slug else ""
         if not clean_slug:
-            raise ValueError("Team team_slug cannot be empty.")
+            raise ValueError("Team slug cannot be empty.")
 
         clean_target = (
             str(record.target_repo_or_project).strip()
@@ -843,10 +839,19 @@ class TeamInventory:
         if existing_row is not None:
             existing_record = TeamRowConverter.to_team_record(existing_row)
             record.migration_status = existing_record.migration_status
-            row = TeamRowConverter.from_team_record(
-                record, row_index=existing_row.row_index
+            changed = (
+                existing_record.team_name != record.team_name
+                or existing_record.member_count != record.member_count
+                or existing_record.normalized_role != record.normalized_role
+                or existing_record.origin_role != record.origin_role
             )
-            saved_row = sheet.update_row(row)
+            if changed:
+                row = TeamRowConverter.from_team_record(
+                    record, row_index=existing_row.row_index
+                )
+                saved_row = sheet.update_row(row)
+            else:
+                saved_row = existing_row
         else:
             row = TeamRowConverter.from_team_record(record, row_index=None)
             saved_row = sheet.add(row)
@@ -887,6 +892,8 @@ class TeamInventory:
             row_index = None
         else:
             record = TeamRowConverter.to_team_record(existing_row)
+            if record.migration_status == valid_status:
+                return record
             record.migration_status = valid_status
             row_index = existing_row.row_index
 

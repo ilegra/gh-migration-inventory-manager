@@ -257,7 +257,7 @@ def test_given_empty_team_slug_when_registering_then_raises_value_error(
     """Test register_record raises ValueError when team_slug is empty."""
     inventory = TeamInventory(spreadsheet=mock_spreadsheet)
     record = TeamRecord(team_name="test", team_slug="", target_repo_or_project="/trunk")
-    with pytest.raises(ValueError, match="Team team_slug cannot be empty"):
+    with pytest.raises(ValueError, match="Team slug cannot be empty"):
         inventory.register_record(record)
 
 

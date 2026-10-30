@@ -18,6 +18,7 @@ from gh_migration_inventory_manager.scrap import (
     Repository,
     TeamPermission,
     format_stacks,
+    normalize_role,
     slugify,
 )
 
@@ -239,10 +240,6 @@ class TeamConverter:
     def __init__(self) -> None:
         """Initialize a new TeamConverter instance."""
 
-    def _validate_status(self, status: Any) -> MigrationStatus:
-        """Validate that status is a valid MigrationStatus or valid status string."""
-        return validate_migration_status(status)
-
     def to_team_record(
         self,
         permission: TeamPermission | Any,
@@ -269,8 +266,8 @@ class TeamConverter:
         if not clean_name:
             raise ValueError("Team name cannot be empty.")
 
-        slug = getattr(permission, "slug", None) or getattr(
-            permission, "team_slug", None
+        slug = getattr(permission, "team_slug", None) or getattr(
+            permission, "slug", None
         )
         clean_slug = str(slug).strip() if slug is not None else ""
         if not clean_slug:
@@ -288,9 +285,9 @@ class TeamConverter:
             raise ValueError("Target repository or project cannot be empty.")
 
         role = getattr(permission, "normalized_role", "Read")
-        norm_role = getattr(role, "value", str(role)) if role else "Read"
+        norm_role = normalize_role(role).value
         origin_role = str(getattr(permission, "origin_role", "") or "").strip()
-        valid_status = self._validate_status(initial_status)
+        valid_status = validate_migration_status(initial_status)
 
         return TeamRecord(
             team_name=clean_name,
@@ -318,8 +315,9 @@ class TeamConverter:
         """
         if permissions is None:
             raise ValueError("Permissions collection cannot be None.")
+        valid_status = validate_migration_status(initial_status)
         return [
-            self.to_team_record(p, initial_status=initial_status) for p in permissions
+            self.to_team_record(p, initial_status=valid_status) for p in permissions
         ]
 
 

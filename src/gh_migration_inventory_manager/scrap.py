@@ -114,12 +114,16 @@ def normalize_role(role: Any) -> NormalizedRole:
     )
 
 
+_SLUGIFY_NON_WORD = re.compile(r"[^\w\s-]")
+_SLUGIFY_HYPHENS = re.compile(r"[-\s]+")
+
+
 def slugify(name: str) -> str:
     """Convert a name into a URL and GitHub-compatible lowercase hyphenated slug."""
     if not name or not name.strip():
         return ""
-    cleaned = re.sub(r"[^\w\s-]", "", name.strip().lower())
-    return re.sub(r"[-\s]+", "-", cleaned).strip("-")
+    cleaned = _SLUGIFY_NON_WORD.sub("", name.strip().lower())
+    return _SLUGIFY_HYPHENS.sub("-", cleaned).strip("-")
 
 
 @dataclass
@@ -133,11 +137,6 @@ class TeamPermission:
     origin_role: str
     team_slug: str | None = None
     metadata: dict[str, Any] = field(default_factory=dict)
-
-    @property
-    def slug(self) -> str:
-        """Return explicit or computed canonical team slug."""
-        return self.team_slug or slugify(self.team_name)
 
 
 @dataclass

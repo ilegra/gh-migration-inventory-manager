@@ -158,28 +158,33 @@ def run_cli(
 
     try:
         inv_cls: type[PipelineInventory] | type[TeamInventory] | type[Inventory]
+        active_converter: Any
         if is_pipeline:
             sheet_name = getattr(args, "sheet_name", None) or "Workflows"
             active_converter = (
                 pipeline_converter
                 if pipeline_converter is not None
-                else PipelineConverter()
+                else (converter if converter is not None else PipelineConverter())
             )
             records = active_converter.to_pipeline_records(
                 items, initial_status=initial_status
             )
             inv_cls = PipelineInventory
-            injected_inv = pipeline_inventory
+            injected_inv = (
+                pipeline_inventory if pipeline_inventory is not None else inventory
+            )
         elif is_team:
             sheet_name = getattr(args, "sheet_name", None) or "Topology"
             active_converter = (
-                team_converter if team_converter is not None else TeamConverter()
+                team_converter
+                if team_converter is not None
+                else (converter if converter is not None else TeamConverter())
             )
             records = active_converter.to_team_records(
                 items, initial_status=initial_status
             )
             inv_cls = TeamInventory
-            injected_inv = team_inventory
+            injected_inv = team_inventory if team_inventory is not None else inventory
         else:
             sheet_name = getattr(args, "sheet_name", None) or "Inventario"
             active_converter = conv
