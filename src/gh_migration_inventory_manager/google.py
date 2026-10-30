@@ -18,9 +18,11 @@ from gh_migration_inventory_manager.inventory import (
     InventoryRecord,
     MigrationStatus,
     PipelineRecord,
+    TeamRecord,
     _from_sheet_label,
     format_migration_month,
 )
+from gh_migration_inventory_manager.scrap import normalize_role
 
 
 class SpreadsheetError(InventoryError):
@@ -187,6 +189,115 @@ _WORKFLOW_COLUMN_ALIAS_MAP: dict[str, int] = {
     "status da migracao": 11,
     "status": 11,
 }
+
+_TOPOLOGY_HEADERS = [
+    "Nome do Time",
+    "Slug do Time",
+    "Contagem de Membros",
+    "Repositório / Projeto",
+    "Papel Normalizado (GitHub)",
+    "Papel de Origem",
+    "Status da Migração",
+]
+TOPOLOGY_HEADERS = _TOPOLOGY_HEADERS
+_WORKFLOW_SHEET_NAMES: tuple[str, ...] = ("workflows", "pipelines")
+_TOPOLOGY_SHEET_NAMES: tuple[str, ...] = ("topology", "teams", "topologia")
+
+_TOPOLOGY_COLUMN_ALIAS_MAP: dict[str, int] = {
+    "team_name": 0,
+    "nome do time": 0,
+    "time": 0,
+    "team": 0,
+    "name": 0,
+    "nome": 0,
+    "team_slug": 1,
+    "slug do time": 1,
+    "slug": 1,
+    "member_count": 2,
+    "contagem de membros": 2,
+    "membros": 2,
+    "members": 2,
+    "count": 2,
+    "target_repo_or_project": 3,
+    "repositório / projeto": 3,
+    "repositorio / projeto": 3,
+    "repositório": 3,
+    "repositorio": 3,
+    "target": 3,
+    "scope": 3,
+    "project": 3,
+    "normalized_role": 4,
+    "papel normalizado (github)": 4,
+    "papel normalizado": 4,
+    "role": 4,
+    "papel": 4,
+    "origin_role": 5,
+    "papel de origem": 5,
+    "origin": 5,
+    "migration_status": 6,
+    "status da migração": 6,
+    "status da migracao": 6,
+    "status": 6,
+}
+
+
+class TeamRowConverter:
+    """Conversion utility between Row and TeamRecord instances."""
+
+    @staticmethod
+    def to_team_record(row: Row) -> TeamRecord:
+        """Convert a Row instance to a TeamRecord instance."""
+        if row is None:
+            raise ValueError("Row cannot be None.")
+        status = row.data.get("migration_status", MigrationStatus.WAITTING)
+        if isinstance(status, str):
+            status = _from_sheet_label(status)
+
+        raw_count = row.data.get("member_count", 0)
+        try:
+            member_count = int(raw_count) if str(raw_count).strip() else 0
+        except (ValueError, TypeError):
+            member_count = 0
+
+        norm_role = row.data.get("normalized_role")
+        if norm_role is None or norm_role == "":
+            norm_role = "Read"
+        elif hasattr(norm_role, "value"):
+            norm_role = norm_role.value
+        else:
+            try:
+                norm_role = normalize_role(str(norm_role)).value
+            except ValueError:
+                norm_role = str(norm_role)
+
+        return TeamRecord(
+            team_name=str(row.data.get("team_name", "")),
+            team_slug=str(row.data.get("team_slug", "")),
+            member_count=member_count,
+            target_repo_or_project=str(row.data.get("target_repo_or_project", "")),
+            normalized_role=str(norm_role),
+            origin_role=str(row.data.get("origin_role", "")),
+            migration_status=status,
+        )
+
+    @staticmethod
+    def from_team_record(record: TeamRecord, row_index: int | None = None) -> Row:
+        """Construct a Row instance from a TeamRecord."""
+        if record is None:
+            raise ValueError("TeamRecord cannot be None.")
+        norm_role = getattr(
+            record.normalized_role, "value", str(record.normalized_role)
+        )
+        data: dict[str, Any] = {
+            "team_name": record.team_name,
+            "team_slug": record.team_slug,
+            "member_count": record.member_count,
+            "target_repo_or_project": record.target_repo_or_project,
+            "normalized_role": norm_role,
+            "origin_role": record.origin_role,
+            "migration_status": record.migration_status,
+        }
+        return Row(row_index=row_index, data=data)
 
 
 class WorkflowRowConverter:
@@ -370,8 +481,20 @@ class Spreadsheet:
                 f"Error accessing spreadsheet '{clean_id}': {err}"
             ) from err
 
+    def _end_column_for(self, target: str | None = None) -> str:
+        """Return the last column letter for the specified or active sheet."""
+        clean = (target or self.sheet_name or "").strip().lower()
+        if clean in _WORKFLOW_SHEET_NAMES:
+            return "L"
+        if clean in _TOPOLOGY_SHEET_NAMES:
+            return "G"
+        return "H"
+
     def _is_workflow_sheet(self) -> bool:
-        return (self.sheet_name or "").strip().lower() in ("workflows", "pipelines")
+        return (self.sheet_name or "").strip().lower() in _WORKFLOW_SHEET_NAMES
+
+    def _is_topology_sheet(self) -> bool:
+        return (self.sheet_name or "").strip().lower() in _TOPOLOGY_SHEET_NAMES
 
     def ensure_sheet(
         self,
@@ -382,8 +505,11 @@ class Spreadsheet:
         target = sheet_name or self.sheet_name
         hdrs = headers
         if hdrs is None:
-            if (target or "").strip().lower() in ("workflows", "pipelines"):
+            clean_target = (target or "").strip().lower()
+            if clean_target in _WORKFLOW_SHEET_NAMES:
                 hdrs = _WORKFLOW_HEADERS
+            elif clean_target in _TOPOLOGY_SHEET_NAMES:
+                hdrs = _TOPOLOGY_HEADERS
             else:
                 hdrs = _HEADERS
 
@@ -420,6 +546,23 @@ class Spreadsheet:
                     ).execute()
         except Exception as err:
             raise SpreadsheetError(f"Error ensuring sheet '{target}': {err}") from err
+
+    def clear_tab(self, sheet_name: str | None = None) -> None:
+        """Clear all data rows in target tab (keeping row 1 headers intact)."""
+        target = sheet_name or self.sheet_name
+        clean_id = (self.id or "").strip()
+        if not clean_id:
+            return
+        self.ensure_sheet(target)
+        end_col = self._end_column_for(target)
+        clear_range = f"{target}!A2:{end_col}"
+        try:
+            self._service.spreadsheets().values().clear(
+                spreadsheetId=clean_id,
+                range=clear_range,
+            ).execute()
+        except Exception as err:
+            raise SpreadsheetError(f"Error clearing sheet '{target}': {err}") from err
 
     def _to_sheet_row(self, row: Row) -> list[str]:
         """Convert row data to an ordered list of cell string values.
@@ -464,6 +607,35 @@ class Spreadsheet:
                 branch,
                 last_build_str,
                 last_status,
+                status_str,
+            ]
+
+        if self._is_topology_sheet():
+            team_name = str(row.data.get("team_name", ""))
+            team_slug = str(row.data.get("team_slug", ""))
+            member_count = str(row.data.get("member_count", 0))
+            target = str(row.data.get("target_repo_or_project", ""))
+            raw_role: Any = row.data.get("normalized_role")
+            if raw_role is not None and hasattr(raw_role, "value"):
+                norm_role = str(raw_role.value)
+            elif raw_role:
+                try:
+                    norm_role = normalize_role(str(raw_role)).value
+                except ValueError:
+                    norm_role = str(raw_role)
+            else:
+                norm_role = "Read"
+            origin_role = str(row.data.get("origin_role", ""))
+            status_str = _format_status_label(
+                row.data.get("migration_status", MigrationStatus.WAITTING)
+            )
+            return [
+                team_name,
+                team_slug,
+                member_count,
+                target,
+                norm_role,
+                origin_role,
                 status_str,
             ]
 
@@ -514,6 +686,23 @@ class Spreadsheet:
             }
             return Row(row_index=row_index, data=data, values=values)
 
+        if self._is_topology_sheet():
+            padded = values + [""] * max(0, len(_TOPOLOGY_HEADERS) - len(values))
+            try:
+                cnt = int(padded[2]) if padded[2].strip() else 0
+            except (ValueError, TypeError):
+                cnt = 0
+            data = {
+                "team_name": padded[0],
+                "team_slug": padded[1],
+                "member_count": cnt,
+                "target_repo_or_project": padded[3],
+                "normalized_role": padded[4],
+                "origin_role": padded[5],
+                "migration_status": _from_sheet_label(padded[6]),
+            }
+            return Row(row_index=row_index, data=data, values=values)
+
         padded = values + [""] * max(0, len(_HEADERS) - len(values))
         data = {
             "project": padded[0],
@@ -530,7 +719,7 @@ class Spreadsheet:
     @property
     def _end_column(self) -> str:
         """Return the last column letter based on the current sheet structure."""
-        return "L" if self._is_workflow_sheet() else "H"
+        return self._end_column_for()
 
     def find_by(
         self,
@@ -544,11 +733,12 @@ class Spreadsheet:
         if target_col is None:
             raise ValueError("Column name cannot be None.")
         clean_col = target_col.strip().lower()
-        alias_map = (
-            _WORKFLOW_COLUMN_ALIAS_MAP
-            if self._is_workflow_sheet()
-            else _COLUMN_ALIAS_MAP
-        )
+        if self._is_workflow_sheet():
+            alias_map = _WORKFLOW_COLUMN_ALIAS_MAP
+        elif self._is_topology_sheet():
+            alias_map = _TOPOLOGY_COLUMN_ALIAS_MAP
+        else:
+            alias_map = _COLUMN_ALIAS_MAP
         col_idx = alias_map.get(clean_col)
 
         if col_idx is None:

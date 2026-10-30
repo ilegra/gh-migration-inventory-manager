@@ -619,3 +619,120 @@ def test_given_custom_sheet_name_for_jenkins_when_running_cli_then_honors_sheet_
 
     mock_sheet.ensure_sheet.assert_called_with("CustomPipelinesTab")
     assert result == 1
+
+
+def test_given_svn_teams_platform_when_building_parser_then_defaults_to_topology_sheet_name() -> (
+    None
+):
+    """Test build_parser registers svn-teams with default Topology sheet name."""
+    parser = build_parser()
+    args = parser.parse_args(
+        [
+            "scrape",
+            "svn-teams",
+            "--authz-path",
+            "/path/to/authz",
+        ]
+    )
+
+    assert args.command == "scrape"
+    assert args.platform == "svn-teams"
+    assert args.authz_path == "/path/to/authz"
+    assert args.sheet_name == "Topology"
+    assert args.initial_status == "waitting"
+
+
+def test_given_svn_teams_args_and_mock_services_when_running_cli_then_synchronizes_teams_with_topology_tab() -> (
+    None
+):
+    """Test executing run_cli with svn-teams platform invokes team sync flow."""
+    from gh_migration_inventory_manager.inventory import TeamRecord
+    from gh_migration_inventory_manager.scrap import NormalizedRole, TeamPermission
+    from gh_migration_inventory_manager.svn_scrap import SvnTeamScraper
+
+    mock_scraper = MagicMock(spec=SvnTeamScraper)
+    mock_scraper.scraper_type = "team"
+    mock_perm = TeamPermission(
+        team_name="core-devs",
+        member_count=3,
+        target_repo_or_project="/trunk",
+        normalized_role=NormalizedRole.WRITE,
+        origin_role="rw",
+    )
+    mock_scraper.scrape.return_value = [mock_perm]
+
+    mock_team_inv = MagicMock()
+    mock_team_inv.sync_records.return_value = [
+        TeamRecord(team_name="core-devs", team_slug="core-devs")
+    ]
+
+    parser = build_parser()
+    args = parser.parse_args(["scrape", "svn-teams", "--authz-path", "/test/authz"])
+
+    with patch(
+        "gh_migration_inventory_manager.svn_scrap.SvnTeamsScraperProvider.create_scraper",
+        return_value=mock_scraper,
+    ):
+        out = io.StringIO()
+        result = run_cli(
+            args,
+            team_inventory=mock_team_inv,
+            out_stream=out,
+        )
+
+    mock_team_inv.sync_records.assert_called_once()
+    assert result == 1
+    assert out.getvalue().strip() == "1"
+
+
+def test_given_custom_sheet_name_for_svn_teams_when_running_cli_then_honors_sheet_name_override() -> (
+    None
+):
+    """Test passing --sheet-name explicitly overrides default Topology tab for svn-teams."""
+    from gh_migration_inventory_manager.scrap import NormalizedRole, TeamPermission
+    from gh_migration_inventory_manager.svn_scrap import SvnTeamScraper
+
+    mock_scraper = MagicMock(spec=SvnTeamScraper)
+    mock_scraper.scraper_type = "team"
+    mock_scraper.scrape.return_value = [
+        TeamPermission(
+            team_name="devs",
+            member_count=2,
+            target_repo_or_project="/tags",
+            normalized_role=NormalizedRole.MAINTAIN,
+            origin_role="rw",
+        )
+    ]
+
+    mock_sheet = MagicMock(spec=Spreadsheet)
+    mock_sheet.id = "custom-teams-sheet"
+    mock_sheet.find_by.return_value = []
+    mock_sheet.add.return_value = MagicMock(row_index=2)
+
+    parser = build_parser()
+    args = parser.parse_args(
+        [
+            "scrape",
+            "svn-teams",
+            "--authz-path",
+            "/authz",
+            "--sheet-name",
+            "CustomTeamsTab",
+            "--spreadsheet-id",
+            "custom-teams-sheet",
+        ]
+    )
+
+    with patch(
+        "gh_migration_inventory_manager.svn_scrap.SvnTeamsScraperProvider.create_scraper",
+        return_value=mock_scraper,
+    ):
+        out = io.StringIO()
+        result = run_cli(
+            args,
+            spreadsheet=mock_sheet,
+            out_stream=out,
+        )
+
+    mock_sheet.ensure_sheet.assert_called_with("CustomTeamsTab")
+    assert result == 1

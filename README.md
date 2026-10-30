@@ -102,7 +102,16 @@ The template contains tracking worksheets designed for enterprise migrations:
    - `Status do Último Build`: Outcome of the most recent build (`SUCCESS`, `FAILURE`, `UNSTABLE`).
    - `Status da Migração`: Current lifecycle state (`Aguardando Migração`, `Migrando (Ativos em Ambas)`, `Migrados (Somente GitHub)`, `Ignorado`).
 
-3. **`Analytics`**: Executive dashboard with consolidated metrics and charts:
+3. **`Topology`**: The team topology and permission tracking tab populated with 7 standard columns:
+   - `Nome do Time`: Team or group identifier.
+   - `Slug do Time`: GitHub-compatible lowercase hyphenated slug (e.g., `core-devs`).
+   - `Contagem de Membros`: Total active member count (avoids individual PII sprawl).
+   - `Repositório / Projeto`: Target repository path or project scope (`*` for global).
+   - `Papel Normalizado (GitHub)`: Normalized GitHub permission archetype (`Admin`, `Maintain`, `Write`, `Triage`, `Read`).
+   - `Papel de Origem`: Raw platform role or permission string (e.g., `rw`, `r`).
+   - `Status da Migração`: Current lifecycle state (`Aguardando Migração`, `Migrando (Ativos em Ambas)`, `Migrados (Somente GitHub)`, `Ignorado`).
+
+4. **`Analytics`**: Executive dashboard with consolidated metrics and charts:
    - Commit staleness indicators (*Sem Commit há > 1 Ano*, *Sem Commit há > 6 Meses*).
    - Migration status distribution chart.
    - Monthly migration progress timeline.
@@ -141,6 +150,27 @@ poetry run gh-migration-inventory scrape jenkins \
 
 > [!TIP]
 > When scraping Jenkins without `--sheet-name`, the CLI automatically defaults to the `Workflows` tab, auto-provisioning the tab and initializing its 12 header columns if it doesn't already exist.
+
+##### C. Scraping Subversion Team Topology (`scrape svn-teams`)
+
+```bash
+# Via local authz configuration file:
+poetry run gh-migration-inventory scrape svn-teams \
+  --authz-path /path/to/subversion-access.file \
+  --spreadsheet-id "$SPREADSHEET_ID" \
+  --credentials-path "./gcp-key.json"
+
+# Or via remote HTTP/WebDAV URL:
+poetry run gh-migration-inventory scrape svn-teams \
+  --authz-url https://svn.internal.company.com/svn/core-apps/trunk/authz \
+  --username "$SVN_USER" \
+  --password "$SVN_PASSWORD" \
+  --spreadsheet-id "$SPREADSHEET_ID" \
+  --credentials-path "./gcp-key.json"
+```
+
+> [!TIP]
+> When scraping SVN teams without `--sheet-name`, the CLI automatically defaults to the `Topology` tab, auto-provisioning the tab and initializing its 7 header columns if it doesn't already exist.
 
 ##### Command Output
 

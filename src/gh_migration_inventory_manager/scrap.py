@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
@@ -67,6 +68,75 @@ class PipelineTrigger(str, Enum):
     UPSTREAM = "upstream"
     SCM_POLLING = "scm_polling"
     UNKNOWN = "unknown"
+
+
+class NormalizedRole(str, Enum):
+    """Normalized GitHub-targetable permission archetype."""
+
+    ADMIN = "Admin"
+    MAINTAIN = "Maintain"
+    WRITE = "Write"
+    TRIAGE = "Triage"
+    READ = "Read"
+
+
+_NORMALIZED_ROLE_LOOKUP: dict[str, NormalizedRole] = {
+    "admin": NormalizedRole.ADMIN,
+    "maintain": NormalizedRole.MAINTAIN,
+    "write": NormalizedRole.WRITE,
+    "triage": NormalizedRole.TRIAGE,
+    "read": NormalizedRole.READ,
+}
+
+
+def normalize_role(role: Any) -> NormalizedRole:
+    """Normalize a role name or permission string into a NormalizedRole enum.
+
+    Args:
+        role: String or enum representation of role.
+
+    Returns:
+        The matching NormalizedRole enum.
+
+    Raises:
+        ValueError: If role cannot be mapped to a valid NormalizedRole.
+    """
+    if isinstance(role, NormalizedRole):
+        return role
+    if not role or not str(role).strip():
+        raise ValueError("Role cannot be empty.")
+    clean = str(role).strip().lower()
+    if clean in _NORMALIZED_ROLE_LOOKUP:
+        return _NORMALIZED_ROLE_LOOKUP[clean]
+    raise ValueError(
+        f"Invalid normalized role: '{role}'. Expected one of: "
+        f"{', '.join(r.value for r in NormalizedRole)}."
+    )
+
+
+_SLUGIFY_NON_WORD = re.compile(r"[^\w\s-]")
+_SLUGIFY_HYPHENS = re.compile(r"[-\s]+")
+
+
+def slugify(name: str) -> str:
+    """Convert a name into a URL and GitHub-compatible lowercase hyphenated slug."""
+    if not name or not name.strip():
+        return ""
+    cleaned = _SLUGIFY_NON_WORD.sub("", name.strip().lower())
+    return _SLUGIFY_HYPHENS.sub("-", cleaned).strip("-")
+
+
+@dataclass
+class TeamPermission:
+    """Pure data container representing team permissions on an origin platform."""
+
+    team_name: str
+    member_count: int
+    target_repo_or_project: str
+    normalized_role: NormalizedRole
+    origin_role: str
+    team_slug: str | None = None
+    metadata: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass
@@ -216,6 +286,25 @@ class PipelineScraper(Scraper[Pipeline], Protocol):
         raise NotImplementedError
 
 
+@runtime_checkable
+class TeamScraper(Scraper[TeamPermission], Protocol):
+    """Protocol defining the team topology discovery scraper contract."""
+
+    scraper_type: str = "team"
+    target_type: str = "team"
+
+    def scrape(self) -> list[TeamPermission]:
+        """Discover and return team permission mappings from the downstream platform.
+
+        Returns:
+            A list of discovered TeamPermission instances, or empty list if none found.
+
+        Raises:
+            ScraperError: If an error occurs communicating with downstream API.
+        """
+        raise NotImplementedError
+
+
 _STACK_DISPLAY_NAMES: dict[Stack, str] = {
     Stack.JAVA: "Java",
     Stack.PYTHON: "Python",
@@ -305,6 +394,7 @@ __all__ = [
     "AuthCredentials",
     "Authenticator",
     "BasicAuthenticator",
+    "NormalizedRole",
     "Pipeline",
     "PipelineScraper",
     "PipelineTrigger",
@@ -318,7 +408,11 @@ __all__ = [
     "ScraperProvider",
     "ScraperRegistry",
     "Stack",
+    "TeamPermission",
+    "TeamScraper",
     "TokenAuthenticator",
     "default_scraper_registry",
     "format_stacks",
+    "normalize_role",
+    "slugify",
 ]

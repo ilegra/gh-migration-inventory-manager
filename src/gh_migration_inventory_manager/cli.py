@@ -11,6 +11,7 @@ import gh_migration_inventory_manager.svn_scrap  # noqa: F401
 from gh_migration_inventory_manager.converter import (
     PipelineConverter,
     RepositoryConverter,
+    TeamConverter,
 )
 from gh_migration_inventory_manager.inventory import (
     Inventory,
@@ -19,6 +20,7 @@ from gh_migration_inventory_manager.inventory import (
     InventoryNotFoundError,
     MigrationStatus,
     PipelineInventory,
+    TeamInventory,
 )
 from gh_migration_inventory_manager.scrap import (
     ScraperAuthenticationError,
@@ -111,6 +113,8 @@ def run_cli(
     spreadsheet: Any = None,
     pipeline_converter: Any = None,
     pipeline_inventory: Any = None,
+    team_converter: Any = None,
+    team_inventory: Any = None,
 ) -> int | None:
     """Execute the CLI operation based on parsed arguments.
 
@@ -138,6 +142,11 @@ def run_cli(
         or getattr(scraper, "scraper_type", None) == "pipeline"
         or getattr(provider, "target_type", None) == "pipeline"
     )
+    is_team = (
+        getattr(scraper, "target_type", None) == "team"
+        or getattr(scraper, "scraper_type", None) == "team"
+        or getattr(provider, "target_type", None) == "team"
+    )
 
     def _extract_target(exc: Exception) -> str:
         return (
@@ -148,19 +157,34 @@ def run_cli(
         )
 
     try:
-        inv_cls: type[PipelineInventory] | type[Inventory]
+        inv_cls: type[PipelineInventory] | type[TeamInventory] | type[Inventory]
+        active_converter: Any
         if is_pipeline:
             sheet_name = getattr(args, "sheet_name", None) or "Workflows"
             active_converter = (
                 pipeline_converter
                 if pipeline_converter is not None
-                else PipelineConverter()
+                else (converter if converter is not None else PipelineConverter())
             )
             records = active_converter.to_pipeline_records(
                 items, initial_status=initial_status
             )
             inv_cls = PipelineInventory
-            injected_inv = pipeline_inventory
+            injected_inv = (
+                pipeline_inventory if pipeline_inventory is not None else inventory
+            )
+        elif is_team:
+            sheet_name = getattr(args, "sheet_name", None) or "Topology"
+            active_converter = (
+                team_converter
+                if team_converter is not None
+                else (converter if converter is not None else TeamConverter())
+            )
+            records = active_converter.to_team_records(
+                items, initial_status=initial_status
+            )
+            inv_cls = TeamInventory
+            injected_inv = team_inventory if team_inventory is not None else inventory
         else:
             sheet_name = getattr(args, "sheet_name", None) or "Inventario"
             active_converter = conv
