@@ -8,6 +8,8 @@ from gh_migration_inventory_manager.bitbucket_scrap import (
     BitbucketClient,
     BitbucketPoliciesScraperProvider,
     BitbucketPolicyScraper,
+    BitbucketRepositoryScraper,
+    BitbucketScraperProvider,
     BitbucketTransport,
 )
 from gh_migration_inventory_manager.converter import (
@@ -104,6 +106,8 @@ __all__ = [
     "BitbucketClient",
     "BitbucketPoliciesScraperProvider",
     "BitbucketPolicyScraper",
+    "BitbucketRepositoryScraper",
+    "BitbucketScraperProvider",
     "BitbucketTransport",
     "BranchPolicy",
     "Credentials",
