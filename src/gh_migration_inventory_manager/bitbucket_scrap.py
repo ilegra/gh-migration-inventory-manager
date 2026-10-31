@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import argparse
 import base64
 import json
 import posixpath
@@ -16,6 +17,7 @@ from gh_migration_inventory_manager.scrap import (
     Authenticator,
     BasicAuthenticator,
     BranchPolicy,
+    NormalizedRole,
     NormalizedRuleType,
     PolicyScraper,
     Repository,
@@ -25,8 +27,11 @@ from gh_migration_inventory_manager.scrap import (
     ScraperError,
     ScraperProvider,
     Stack,
+    TeamPermission,
+    TeamScraper,
     TokenAuthenticator,
     default_scraper_registry,
+    normalize_role,
     slugify,
 )
 
@@ -71,6 +76,22 @@ class BitbucketTransport(Protocol):
         self, project_key: str, repo_slug: str, limit: int = 100
     ) -> list[str]:
         """Fetch repository file paths for manifest and stack detection."""
+        raise NotImplementedError
+
+    def get_project_group_permissions(
+        self, project_key: str, limit: int = 100
+    ) -> list[dict[str, Any]]:
+        """Fetch group permissions configured at project level."""
+        raise NotImplementedError
+
+    def get_repository_group_permissions(
+        self, project_key: str, repo_slug: str, limit: int = 100
+    ) -> list[dict[str, Any]]:
+        """Fetch group permissions configured at repository level."""
+        raise NotImplementedError
+
+    def get_group_member_count(self, group_name: str) -> int:
+        """Fetch aggregate member count for a group without extracting PII."""
         raise NotImplementedError
 
 
@@ -423,6 +444,83 @@ class BitbucketClient(BitbucketTransport):
             start = data.get("nextPageStart", start + len(values))
 
         return file_paths[:limit]
+
+    def get_project_group_permissions(
+        self, project_key: str, limit: int = 100
+    ) -> list[dict[str, Any]]:
+        """Fetch all group permissions configured at project level."""
+        if not project_key or not project_key.strip():
+            raise ValueError("Project key cannot be empty.")
+        eff_limit = limit if limit > 0 else 100
+        clean_project = project_key.strip()
+        path = (
+            f"2.0/workspaces/{clean_project}/permissions/groups"
+            if self.is_cloud
+            else f"rest/api/1.0/projects/{clean_project}/permissions/groups"
+        )
+        return self._paginate(path, eff_limit)
+
+    def get_repository_group_permissions(
+        self, project_key: str, repo_slug: str, limit: int = 100
+    ) -> list[dict[str, Any]]:
+        """Fetch all group permissions configured at repository level."""
+        if not project_key or not project_key.strip():
+            raise ValueError("Project key cannot be empty.")
+        if not repo_slug or not repo_slug.strip():
+            raise ValueError("Repository slug cannot be empty.")
+        eff_limit = limit if limit > 0 else 100
+        clean_project = project_key.strip()
+        clean_repo = repo_slug.strip()
+        path = (
+            f"2.0/repositories/{clean_project}/{clean_repo}/permissions-config/groups"
+            if self.is_cloud
+            else (
+                f"rest/api/1.0/projects/{clean_project}/repos/"
+                f"{clean_repo}/permissions/groups"
+            )
+        )
+        return self._paginate(path, eff_limit)
+
+    def get_group_member_count(self, group_name: str) -> int:
+        """Fetch aggregate member count for a group without extracting PII."""
+        if not group_name or not group_name.strip():
+            raise ValueError("Group name cannot be empty.")
+        clean_group = group_name.strip()
+        if self.is_cloud:
+            return 0
+
+        path = "rest/api/1.0/admin/groups/more-members"
+        resp = self._request_json(path, {"context": clean_group, "limit": 100})
+        if not resp or not isinstance(resp, dict):
+            return 0
+
+        values = resp.get("values", [])
+        if not isinstance(values, list):
+            return 0
+
+        count = len(values)
+        if resp.get("isLastPage", True):
+            return count
+
+        start = resp.get("nextPageStart", count)
+        max_pages = 10
+        page_num = 0
+        while not resp.get("isLastPage", True) and page_num < max_pages:
+            resp = self._request_json(
+                path, {"context": clean_group, "start": start, "limit": 100}
+            )
+            if not resp or not isinstance(resp, dict):
+                break
+            page_values = resp.get("values", [])
+            if not isinstance(page_values, list) or not page_values:
+                break
+            count += len(page_values)
+            if resp.get("isLastPage", True):
+                break
+            start = resp.get("nextPageStart", start + len(page_values))
+            page_num += 1
+
+        return count
 
 
 class BitbucketPolicyScraper(PolicyScraper):
@@ -1043,11 +1141,331 @@ class BitbucketScraperProvider(ScraperProvider):
 
 default_scraper_registry.register(BitbucketScraperProvider())
 
+
+_ROLE_PRECEDENCE: dict[NormalizedRole, int] = {
+    NormalizedRole.ADMIN: 5,
+    NormalizedRole.MAINTAIN: 4,
+    NormalizedRole.WRITE: 3,
+    NormalizedRole.TRIAGE: 2,
+    NormalizedRole.READ: 1,
+}
+
+
+def _normalize_bitbucket_role(role_raw: Any) -> tuple[NormalizedRole, str]:
+    """Normalize a Bitbucket role string into a NormalizedRole enum."""
+    if not role_raw or not str(role_raw).strip():
+        raise ValueError("Bitbucket permission role cannot be empty.")
+    role_str = str(role_raw).strip()
+    try:
+        norm = normalize_role(role_str)
+        return norm, role_str
+    except ValueError as err:
+        raise ValueError(
+            f"Unrecognized Bitbucket permission role: '{role_str}'."
+        ) from err
+
+
+class BitbucketTeamScraper(TeamScraper):
+    """Platform scraper discovering team permissions from Bitbucket."""
+
+    scraper_type: str = "team"
+    target_type: str = "team"
+
+    def __init__(
+        self,
+        base_url: str | None = None,
+        project_key: str | None = None,
+        repo_slug: str | None = None,
+        client: BitbucketTransport | None = None,
+        include_repo_level: bool = True,
+        page_size: int = 100,
+    ) -> None:
+        self.base_url = base_url.strip() if base_url and base_url.strip() else None
+        self.project_key = (
+            project_key.strip() if project_key and project_key.strip() else None
+        )
+        self.repo_slug = repo_slug.strip() if repo_slug and repo_slug.strip() else None
+        self.client = client
+        self.include_repo_level = include_repo_level
+        self.page_size = page_size if page_size > 0 else 100
+        self._member_count_cache: dict[str, int] = {}
+
+    @staticmethod
+    def _extract_group_entry(entry: Any) -> tuple[str, str]:
+        """Extract group name and raw permission from Bitbucket API response item."""
+        if not isinstance(entry, dict):
+            raise ValueError(
+                f"Invalid group permission entry: '{entry}'. Expected dict."
+            )
+        group_raw = entry.get("group")
+        group_name = ""
+        if isinstance(group_raw, dict):
+            group_name = str(
+                group_raw.get("name") or group_raw.get("slug") or ""
+            ).strip()
+        elif isinstance(group_raw, str):
+            group_name = group_raw.strip()
+
+        if not group_name:
+            raise ValueError(f"Group permission entry lacks valid group name: {entry}")
+
+        permission_raw = entry.get("permission")
+        if not permission_raw or not str(permission_raw).strip():
+            raise ValueError(f"Group permission entry lacks valid permission: {entry}")
+
+        return group_name, str(permission_raw).strip()
+
+    def _resolve_member_count(self, group_name: str) -> int:
+        """Resolve member count using cache and graceful fallback on auth/API errors."""
+        if group_name in self._member_count_cache:
+            return self._member_count_cache[group_name]
+
+        count = 0
+        if self.client is not None:
+            try:
+                count = self.client.get_group_member_count(group_name)
+            except (ScraperAuthenticationError, ScraperError):
+                count = 0
+
+        self._member_count_cache[group_name] = count
+        return count
+
+    def _record_permission(
+        self,
+        perm_map: dict[tuple[str, str], TeamPermission],
+        key: tuple[str, str],
+        new_perm: TeamPermission,
+    ) -> None:
+        """Record permission with composite key deduplication by role precedence."""
+        if key not in perm_map:
+            perm_map[key] = new_perm
+            return
+        existing = perm_map[key]
+        existing_rank = _ROLE_PRECEDENCE.get(existing.normalized_role, 0)
+        new_rank = _ROLE_PRECEDENCE.get(new_perm.normalized_role, 0)
+        if new_rank > existing_rank:
+            perm_map[key] = new_perm
+
+    def _build_permission(
+        self,
+        entry: Any,
+        target: str,
+        proj_key: str,
+        repo_slug: str | None = None,
+    ) -> TeamPermission:
+        """Construct a normalized TeamPermission instance from an API group entry."""
+        group_name, origin_role = self._extract_group_entry(entry)
+        norm_role, origin_role_str = _normalize_bitbucket_role(origin_role)
+        team_slug = slugify(group_name)
+        member_count = self._resolve_member_count(group_name)
+
+        metadata: dict[str, Any] = {
+            "platform": "bitbucket",
+            "project_key": proj_key,
+            "scope": target,
+            "origin_permission": origin_role_str,
+        }
+        if repo_slug:
+            metadata["repo_slug"] = repo_slug
+
+        return TeamPermission(
+            team_name=group_name,
+            team_slug=team_slug,
+            member_count=member_count,
+            target_repo_or_project=target,
+            normalized_role=norm_role,
+            origin_role=origin_role_str,
+            metadata=metadata,
+        )
+
+    def scrape(self) -> list[TeamPermission]:
+        """Discover and return canonical team permissions from Bitbucket."""
+        if self.client is None:
+            raise ScraperError("Bitbucket client not configured.")
+
+        if self.project_key:
+            projects = [{"key": self.project_key}]
+        else:
+            projects = self.client.get_projects(limit=self.page_size)
+
+        permissions_by_key: dict[tuple[str, str], TeamPermission] = {}
+
+        for proj in projects:
+            proj_key = proj.get("key") or proj.get("slug") or proj.get("name") or ""
+            if not proj_key:
+                continue
+
+            # 1. Project-level group permissions
+            proj_perms = self.client.get_project_group_permissions(
+                proj_key, limit=self.page_size
+            )
+            target = f"project:{proj_key}"
+            for entry in proj_perms:
+                perm = self._build_permission(entry, target, proj_key)
+                composite_key = (perm.team_slug or slugify(perm.team_name), target)
+                self._record_permission(permissions_by_key, composite_key, perm)
+
+            # 2. Repository-level group permissions
+            if not self.include_repo_level:
+                continue
+
+            if self.repo_slug:
+                repos = [{"slug": self.repo_slug}]
+            else:
+                repos = self.client.get_repositories(proj_key, limit=self.page_size)
+
+            for repo in repos:
+                slug = repo.get("slug") or repo.get("name") or ""
+                if not slug:
+                    continue
+
+                repo_perms = self.client.get_repository_group_permissions(
+                    proj_key, slug, limit=self.page_size
+                )
+                repo_target = f"repo:{proj_key}/{slug}"
+                for entry in repo_perms:
+                    perm = self._build_permission(
+                        entry, repo_target, proj_key, repo_slug=slug
+                    )
+                    composite_key = (
+                        perm.team_slug or slugify(perm.team_name),
+                        repo_target,
+                    )
+                    self._record_permission(permissions_by_key, composite_key, perm)
+
+        return list(permissions_by_key.values())
+
+
+class BitbucketTeamsScraperProvider(ScraperProvider):
+    """Platform scraper provider for Bitbucket team topology discovery."""
+
+    target_type: str = "team"
+    default_sheet_name: str = "Topology"
+
+    @property
+    def platform_name(self) -> str:
+        return "bitbucket-teams"
+
+    @property
+    def description(self) -> str:
+        return "Bitbucket Server / Data Center / Cloud team topology scraper"
+
+    def configure_parser(self, parser: Any) -> None:
+        """Configure platform CLI arguments for Bitbucket team topology scraping."""
+        parser.add_argument(
+            "--base-url",
+            "--url",
+            dest="base_url",
+            required=True,
+            help="Bitbucket Server/DC base URL or Cloud API base URL",
+        )
+        parser.add_argument(
+            "--project",
+            "--project-key",
+            dest="project_key",
+            default=None,
+            help=(
+                "Optional Bitbucket project key filter "
+                "(scrapes all projects if omitted)"
+            ),
+        )
+        parser.add_argument(
+            "--repo",
+            "--repo-slug",
+            dest="repo_slug",
+            default=None,
+            help="Optional Bitbucket repository slug filter",
+        )
+        parser.add_argument(
+            "--token",
+            default=None,
+            help="Bitbucket Personal Access Token (PAT) or Bearer token",
+        )
+        parser.add_argument(
+            "--username",
+            default=None,
+            help="Bitbucket HTTP Basic authentication username",
+        )
+        parser.add_argument(
+            "--password",
+            default=None,
+            help="Bitbucket HTTP Basic authentication password",
+        )
+        parser.add_argument(
+            "--page-size",
+            type=int,
+            default=100,
+            help="Pagination window size for API requests (default: 100)",
+        )
+        parser.add_argument(
+            "--include-repo-level",
+            action=argparse.BooleanOptionalAction,
+            default=True,
+            help=(
+                "Scrape repository-specific group permissions in addition "
+                "to project-level permissions (default: true)"
+            ),
+        )
+        parser.add_argument(
+            "--timeout",
+            type=float,
+            default=15.0,
+            help="HTTP request timeout in seconds (default: 15.0)",
+        )
+        parser.add_argument(
+            "--retries",
+            type=int,
+            default=3,
+            help="Maximum retry attempts on transient network errors (default: 3)",
+        )
+        parser.add_argument(
+            "--backoff-factor",
+            type=float,
+            default=0.5,
+            help="Exponential backoff factor for retries (default: 0.5)",
+        )
+
+    def create_scraper(self, args: Any) -> BitbucketTeamScraper:
+        """Build BitbucketTeamScraper from parsed CLI arguments."""
+        auth = _resolve_auth(args)
+
+        raw_url = getattr(args, "base_url", None) or getattr(args, "url", None) or ""
+        base_url = str(raw_url).strip()
+        timeout = float(getattr(args, "timeout", 15.0) or 15.0)
+        retries = int(getattr(args, "retries", 3) or 3)
+        backoff_factor = float(getattr(args, "backoff_factor", 0.5) or 0.5)
+
+        client = BitbucketClient(
+            base_url=base_url,
+            auth=auth,
+            timeout=timeout,
+            retries=retries,
+            backoff_factor=backoff_factor,
+        )
+
+        include_repo = getattr(args, "include_repo_level", True)
+        if include_repo is None:
+            include_repo = True
+
+        return BitbucketTeamScraper(
+            base_url=base_url,
+            project_key=getattr(args, "project_key", None),
+            repo_slug=getattr(args, "repo_slug", None),
+            client=client,
+            include_repo_level=bool(include_repo),
+            page_size=getattr(args, "page_size", 100),
+        )
+
+
+default_scraper_registry.register(BitbucketTeamsScraperProvider())
+
 __all__ = [
     "BitbucketClient",
     "BitbucketPoliciesScraperProvider",
     "BitbucketPolicyScraper",
     "BitbucketRepositoryScraper",
     "BitbucketScraperProvider",
+    "BitbucketTeamScraper",
+    "BitbucketTeamsScraperProvider",
     "BitbucketTransport",
 ]
