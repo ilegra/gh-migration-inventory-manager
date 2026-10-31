@@ -95,7 +95,10 @@ class BitbucketClient(BitbucketTransport):
             clean_url = f"https://{clean_url}"
 
         self.base_url = clean_url
-        self.is_cloud = "bitbucket.org" in clean_url.lower()
+        parsed_host = (urllib.parse.urlparse(clean_url).hostname or "").lower()
+        self.is_cloud = parsed_host == "bitbucket.org" or parsed_host.endswith(
+            ".bitbucket.org"
+        )
         self.auth = auth
         self.timeout = timeout
 
