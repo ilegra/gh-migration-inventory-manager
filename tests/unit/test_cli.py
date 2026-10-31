@@ -739,6 +739,136 @@ def test_given_custom_sheet_name_for_svn_teams_when_running_cli_then_honors_shee
     assert result == 1
 
 
+def test_given_bitbucket_teams_platform_when_building_parser_then_defaults_to_topology_sheet_name() -> (
+    None
+):
+    """Test build_parser registers bitbucket-teams with default Topology sheet name."""
+    parser = build_parser()
+    args = parser.parse_args(
+        [
+            "scrape",
+            "bitbucket-teams",
+            "--base-url",
+            "https://bitbucket.example.com",
+            "--project",
+            "CORE",
+        ]
+    )
+
+    assert args.command == "scrape"
+    assert args.platform == "bitbucket-teams"
+    assert args.base_url == "https://bitbucket.example.com"
+    assert args.project_key == "CORE"
+    assert args.sheet_name == "Topology"
+    assert args.include_repo_level is True
+    assert args.initial_status == "waitting"
+
+
+def test_given_bitbucket_teams_args_and_mock_services_when_running_cli_then_synchronizes_teams_with_topology_tab() -> (
+    None
+):
+    """Test executing run_cli with bitbucket-teams invokes team sync flow."""
+    from gh_migration_inventory_manager.bitbucket_scrap import BitbucketTeamScraper
+    from gh_migration_inventory_manager.inventory import TeamRecord
+    from gh_migration_inventory_manager.scrap import NormalizedRole, TeamPermission
+
+    mock_scraper = MagicMock(spec=BitbucketTeamScraper)
+    mock_scraper.scraper_type = "team"
+    mock_perm = TeamPermission(
+        team_name="core-devs",
+        member_count=5,
+        target_repo_or_project="project:CORE",
+        normalized_role=NormalizedRole.WRITE,
+        origin_role="PROJECT_WRITE",
+    )
+    mock_scraper.scrape.return_value = [mock_perm]
+
+    mock_team_inv = MagicMock()
+    mock_team_inv.sync_records.return_value = [
+        TeamRecord(team_name="core-devs", team_slug="core-devs")
+    ]
+
+    parser = build_parser()
+    args = parser.parse_args(
+        [
+            "scrape",
+            "bitbucket-teams",
+            "--base-url",
+            "https://bitbucket.example.com",
+            "--project",
+            "CORE",
+        ]
+    )
+
+    with patch(
+        "gh_migration_inventory_manager.bitbucket_scrap.BitbucketTeamsScraperProvider.create_scraper",
+        return_value=mock_scraper,
+    ):
+        out = io.StringIO()
+        result = run_cli(
+            args,
+            team_inventory=mock_team_inv,
+            out_stream=out,
+        )
+
+    mock_team_inv.sync_records.assert_called_once()
+    assert result == 1
+    assert out.getvalue().strip() == "1"
+
+
+def test_given_custom_sheet_name_for_bitbucket_teams_when_running_cli_then_honors_sheet_name_override() -> (
+    None
+):
+    """Test passing --sheet-name explicitly overrides default Topology tab for bitbucket-teams."""
+    from gh_migration_inventory_manager.bitbucket_scrap import BitbucketTeamScraper
+    from gh_migration_inventory_manager.scrap import NormalizedRole, TeamPermission
+
+    mock_scraper = MagicMock(spec=BitbucketTeamScraper)
+    mock_scraper.scraper_type = "team"
+    mock_scraper.scrape.return_value = [
+        TeamPermission(
+            team_name="leads",
+            member_count=2,
+            target_repo_or_project="project:CORE",
+            normalized_role=NormalizedRole.ADMIN,
+            origin_role="PROJECT_ADMIN",
+        )
+    ]
+
+    mock_sheet = MagicMock(spec=Spreadsheet)
+    mock_sheet.id = "custom-bb-sheet"
+    mock_sheet.find_by.return_value = []
+    mock_sheet.add.return_value = MagicMock(row_index=2)
+
+    parser = build_parser()
+    args = parser.parse_args(
+        [
+            "scrape",
+            "bitbucket-teams",
+            "--base-url",
+            "https://bitbucket.example.com",
+            "--sheet-name",
+            "CustomTopologyTab",
+            "--spreadsheet-id",
+            "custom-bb-sheet",
+        ]
+    )
+
+    with patch(
+        "gh_migration_inventory_manager.bitbucket_scrap.BitbucketTeamsScraperProvider.create_scraper",
+        return_value=mock_scraper,
+    ):
+        out = io.StringIO()
+        result = run_cli(
+            args,
+            spreadsheet=mock_sheet,
+            out_stream=out,
+        )
+
+    mock_sheet.ensure_sheet.assert_called_with("CustomTopologyTab")
+    assert result == 1
+
+
 def test_given_bitbucket_policies_platform_when_building_parser_then_defaults_to_policies_sheet_name() -> (
     None
 ):

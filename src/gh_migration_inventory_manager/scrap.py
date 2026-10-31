@@ -82,10 +82,16 @@ class NormalizedRole(str, Enum):
 
 _NORMALIZED_ROLE_LOOKUP: dict[str, NormalizedRole] = {
     "admin": NormalizedRole.ADMIN,
+    "project_admin": NormalizedRole.ADMIN,
+    "repo_admin": NormalizedRole.ADMIN,
     "maintain": NormalizedRole.MAINTAIN,
     "write": NormalizedRole.WRITE,
+    "project_write": NormalizedRole.WRITE,
+    "repo_write": NormalizedRole.WRITE,
     "triage": NormalizedRole.TRIAGE,
     "read": NormalizedRole.READ,
+    "project_read": NormalizedRole.READ,
+    "repo_read": NormalizedRole.READ,
 }
 
 
