@@ -1,9 +1,12 @@
-"""Bitbucket branch governance discovery adapters, transport client, and CLI."""
+"""Bitbucket discovery adapters, transport client, policy scraper, and CLI."""
 
 from __future__ import annotations
 
 import base64
 import json
+import posixpath
+import urllib.parse
+from datetime import datetime, timezone
 from typing import Any, Protocol, cast, runtime_checkable
 
 import urllib3
@@ -15,10 +18,13 @@ from gh_migration_inventory_manager.scrap import (
     BranchPolicy,
     NormalizedRuleType,
     PolicyScraper,
+    Repository,
+    RepositoryScraper,
     ScraperAuthenticationError,
     ScraperConnectionError,
     ScraperError,
     ScraperProvider,
+    Stack,
     TokenAuthenticator,
     default_scraper_registry,
     slugify,
@@ -39,6 +45,32 @@ class BitbucketTransport(Protocol):
         self, project_key: str, repo_slug: str | None = None
     ) -> dict[str, Any]:
         """Fetch pull request merge checks configuration for a project or repository."""
+        raise NotImplementedError
+
+    def get_projects(self, limit: int = 100) -> list[dict[str, Any]]:
+        """Fetch all projects accessible to the caller using windowed pagination."""
+        raise NotImplementedError
+
+    def get_repositories(
+        self, project_key: str, limit: int = 100
+    ) -> list[dict[str, Any]]:
+        """Fetch all repositories within a project using windowed pagination."""
+        raise NotImplementedError
+
+    def get_default_branch(self, project_key: str, repo_slug: str) -> str | None:
+        """Fetch primary default branch name for a repository."""
+        raise NotImplementedError
+
+    def get_last_commit(
+        self, project_key: str, repo_slug: str
+    ) -> dict[str, Any] | None:
+        """Fetch the most recent commit on the repository."""
+        raise NotImplementedError
+
+    def get_repository_files(
+        self, project_key: str, repo_slug: str, limit: int = 100
+    ) -> list[str]:
+        """Fetch repository file paths for manifest and stack detection."""
         raise NotImplementedError
 
 
@@ -63,60 +95,63 @@ class BitbucketClient(BitbucketTransport):
             clean_url = f"https://{clean_url}"
 
         self.base_url = clean_url
+        parsed_host = (urllib.parse.urlparse(clean_url).hostname or "").lower()
+        self.is_cloud = parsed_host == "bitbucket.org" or parsed_host.endswith(
+            ".bitbucket.org"
+        )
         self.auth = auth
         self.timeout = timeout
+
+        self._default_headers: dict[str, str] = {"Accept": "application/json"}
+        if self.auth is not None:
+            creds = self.auth.resolve_credentials()
+            if creds.token and not creds.username:
+                self._default_headers["Authorization"] = f"Bearer {creds.token}"
+            elif creds.username:
+                secret = creds.password or creds.token or ""
+                raw_cred = f"{creds.username}:{secret}".encode()
+                encoded = base64.b64encode(raw_cred).decode("ascii")
+                self._default_headers["Authorization"] = f"Basic {encoded}"
+
+        self.retry_strategy = Retry(
+            total=retries,
+            backoff_factor=backoff_factor,
+            status_forcelist=[429, 500, 502, 503, 504],
+            allowed_methods=["GET"],
+            raise_on_status=False,
+            respect_retry_after_header=True,
+        )
 
         if pool_manager is not None:
             self._http = pool_manager
         else:
-            retry_strategy = Retry(
-                total=retries,
-                backoff_factor=backoff_factor,
-                status_forcelist=[429, 500, 502, 503, 504],
-                allowed_methods=["GET"],
-                raise_on_status=False,
-                respect_retry_after_header=True,
-            )
             self._http = urllib3.PoolManager(
-                retries=retry_strategy,
+                retries=self.retry_strategy,
                 timeout=urllib3.Timeout(timeout),
             )
 
     def _build_auth_headers(self) -> dict[str, str]:
         """Resolve authentication credentials and return HTTP headers."""
-        if hasattr(self, "_cached_auth_headers"):
-            return self._cached_auth_headers
-        if self.auth is None:
-            self._cached_auth_headers: dict[str, str] = {}
-            return self._cached_auth_headers
-        creds = self.auth.resolve_credentials()
-        headers: dict[str, str] = {}
-        if creds.token and not creds.username:
-            headers["Authorization"] = f"Bearer {creds.token}"
-        elif creds.username:
-            secret = creds.password or creds.token or ""
-            raw_cred = f"{creds.username}:{secret}".encode()
-            encoded = base64.b64encode(raw_cred).decode("ascii")
-            headers["Authorization"] = f"Basic {encoded}"
-        self._cached_auth_headers = headers
-        return headers
+        return dict(self._default_headers)
 
     def _request_json(
         self, path: str, query_params: dict[str, Any] | None = None
     ) -> Any:
         """Execute a GET request against Bitbucket REST API and return parsed JSON."""
-        clean_path = path.lstrip("/")
-        url = f"{self.base_url}/{clean_path}"
-
-        headers = self._build_auth_headers()
-        headers["Accept"] = "application/json"
+        if path.startswith("http://") or path.startswith("https://"):
+            url = path
+        else:
+            clean_path = path.lstrip("/")
+            url = f"{self.base_url}/{clean_path}"
 
         try:
             resp = self._http.request(
                 "GET",
                 url,
                 fields=query_params or {},
-                headers=headers,
+                headers=self._default_headers,
+                timeout=urllib3.Timeout(self.timeout),
+                retries=self.retry_strategy,
             )
         except urllib3.exceptions.MaxRetryError as err:
             raise ScraperConnectionError(
@@ -226,6 +261,168 @@ class BitbucketClient(BitbucketTransport):
                 return cast(dict[str, Any], data)
 
         return {}
+
+    def _paginate(self, path: str, limit: int) -> list[dict[str, Any]]:
+        """Paginate Bitbucket Cloud or Server collection endpoints."""
+        results: list[dict[str, Any]] = []
+
+        if self.is_cloud:
+            sep = "&" if "?" in path else "?"
+            next_url: str | None = f"{path}{sep}pagelen={limit}"
+            while next_url:
+                resp = self._request_json(next_url)
+                if not resp or not isinstance(resp, dict):
+                    break
+                values = resp.get("values", [])
+                results.extend(values)
+                next_url = resp.get("next")
+            return results
+
+        start = 0
+        while True:
+            resp = self._request_json(path, {"start": start, "limit": limit})
+            if not resp or not isinstance(resp, dict):
+                break
+            values = resp.get("values", [])
+            results.extend(values)
+            if resp.get("isLastPage", True) or not values:
+                break
+            start = resp.get("nextPageStart", start + len(values))
+
+        return results
+
+    def get_projects(self, limit: int = 100) -> list[dict[str, Any]]:
+        """Fetch all projects accessible to the caller using windowed pagination."""
+        eff_limit = limit if limit > 0 else 100
+        path = "2.0/workspaces" if self.is_cloud else "rest/api/1.0/projects"
+        return self._paginate(path, eff_limit)
+
+    def get_repositories(
+        self, project_key: str, limit: int = 100
+    ) -> list[dict[str, Any]]:
+        """Fetch all repositories within a project using windowed pagination."""
+        if not project_key or not project_key.strip():
+            raise ValueError("Project key cannot be empty.")
+        eff_limit = limit if limit > 0 else 100
+        clean_project = project_key.strip()
+        path = (
+            f"2.0/repositories/{clean_project}"
+            if self.is_cloud
+            else f"rest/api/1.0/projects/{clean_project}/repos"
+        )
+        return self._paginate(path, eff_limit)
+
+    def get_default_branch(self, project_key: str, repo_slug: str) -> str | None:
+        """Fetch primary default branch name for a repository."""
+        if not project_key or not project_key.strip():
+            raise ValueError("Project key cannot be empty.")
+        if not repo_slug or not repo_slug.strip():
+            raise ValueError("Repository slug cannot be empty.")
+
+        clean_project = project_key.strip()
+        clean_repo = repo_slug.strip()
+
+        if self.is_cloud:
+            data = self._request_json(f"2.0/repositories/{clean_project}/{clean_repo}")
+            if data and isinstance(data, dict):
+                mainbranch = data.get("mainbranch")
+                if isinstance(mainbranch, dict) and mainbranch.get("name"):
+                    return str(mainbranch["name"]).strip()
+            return None
+
+        data = self._request_json(
+            f"rest/api/1.0/projects/{clean_project}/repos/{clean_repo}/branches/default"
+        )
+        if data and isinstance(data, dict):
+            display_id = data.get("displayId")
+            if display_id:
+                return str(display_id).strip()
+            branch_id = data.get("id")
+            if branch_id:
+                return str(branch_id).replace("refs/heads/", "").strip()
+        return None
+
+    def get_last_commit(
+        self, project_key: str, repo_slug: str
+    ) -> dict[str, Any] | None:
+        """Fetch the most recent commit on the repository."""
+        if not project_key or not project_key.strip():
+            raise ValueError("Project key cannot be empty.")
+        if not repo_slug or not repo_slug.strip():
+            raise ValueError("Repository slug cannot be empty.")
+
+        clean_project = project_key.strip()
+        clean_repo = repo_slug.strip()
+
+        endpoint = (
+            f"2.0/repositories/{clean_project}/{clean_repo}/commits"
+            if self.is_cloud
+            else f"rest/api/1.0/projects/{clean_project}/repos/{clean_repo}/commits"
+        )
+        params = {"pagelen": 1} if self.is_cloud else {"limit": 1}
+        data = self._request_json(endpoint, params)
+        if data and isinstance(data, dict):
+            values = data.get("values", [])
+            if values and isinstance(values[0], dict):
+                return cast(dict[str, Any], values[0])
+        return None
+
+    @staticmethod
+    def _extract_file_paths(values: list[Any]) -> list[str]:
+        """Extract relative file path strings from API response items."""
+        paths: list[str] = []
+        for item in values:
+            if isinstance(item, dict) and item.get("path"):
+                paths.append(str(item["path"]))
+            elif isinstance(item, str):
+                paths.append(item)
+        return paths
+
+    def get_repository_files(
+        self, project_key: str, repo_slug: str, limit: int = 100
+    ) -> list[str]:
+        """Fetch repository file paths using windowed pagination."""
+        if not project_key or not project_key.strip():
+            raise ValueError("Project key cannot be empty.")
+        if not repo_slug or not repo_slug.strip():
+            raise ValueError("Repository slug cannot be empty.")
+        if limit <= 0:
+            limit = 100
+
+        clean_project = project_key.strip()
+        clean_repo = repo_slug.strip()
+        file_paths: list[str] = []
+
+        if self.is_cloud:
+            page_len = min(limit, 100)
+            next_url: str | None = (
+                f"2.0/repositories/{clean_project}/{clean_repo}/src?pagelen={page_len}"
+            )
+            while next_url and len(file_paths) < limit:
+                resp = self._request_json(next_url)
+                if not resp or not isinstance(resp, dict):
+                    break
+                values = resp.get("values", [])
+                file_paths.extend(self._extract_file_paths(values))
+                next_url = resp.get("next")
+            return file_paths[:limit]
+
+        start = 0
+        page_size = min(limit, 100)
+        while len(file_paths) < limit:
+            data = self._request_json(
+                f"rest/api/1.0/projects/{clean_project}/repos/{clean_repo}/files",
+                {"start": start, "limit": page_size},
+            )
+            if not data or not isinstance(data, dict):
+                break
+            values = data.get("values", [])
+            file_paths.extend(self._extract_file_paths(values))
+            if data.get("isLastPage", True) or not values:
+                break
+            start = data.get("nextPageStart", start + len(values))
+
+        return file_paths[:limit]
 
 
 class BitbucketPolicyScraper(PolicyScraper):
@@ -410,6 +607,19 @@ class BitbucketPolicyScraper(PolicyScraper):
         return policies
 
 
+def _resolve_auth(args: Any) -> Authenticator | None:
+    """Resolve Authenticator from CLI arguments."""
+    username = getattr(args, "username", None)
+    password = getattr(args, "password", None)
+    token = getattr(args, "token", None)
+
+    if username and password is not None:
+        return BasicAuthenticator(username=username, password=password)
+    if token:
+        return TokenAuthenticator(token=token)
+    return None
+
+
 class BitbucketPoliciesScraperProvider(ScraperProvider):
     """Platform scraper provider for Bitbucket branch governance discovery."""
 
@@ -468,22 +678,38 @@ class BitbucketPoliciesScraperProvider(ScraperProvider):
             default="main",
             help="Default branch name for pull request settings (default: main)",
         )
+        parser.add_argument(
+            "--timeout",
+            type=float,
+            default=15.0,
+            help="HTTP request timeout in seconds (default: 15.0)",
+        )
+        parser.add_argument(
+            "--retries",
+            type=int,
+            default=3,
+            help="Maximum retry attempts on transient network errors (default: 3)",
+        )
+        parser.add_argument(
+            "--backoff-factor",
+            type=float,
+            default=0.5,
+            help="Exponential backoff factor for retries (default: 0.5)",
+        )
 
     def create_scraper(self, args: Any) -> BitbucketPolicyScraper:
         """Build BitbucketPolicyScraper from parsed CLI arguments."""
-        auth: Authenticator | None = None
-        username = getattr(args, "username", None)
-        password = getattr(args, "password", None)
-        token = getattr(args, "token", None)
-
-        if username and password is not None:
-            auth = BasicAuthenticator(username=username, password=password)
-        elif token:
-            auth = TokenAuthenticator(token=token)
+        auth = _resolve_auth(args)
+        timeout = float(getattr(args, "timeout", 15.0) or 15.0)
+        retries = int(getattr(args, "retries", 3) or 3)
+        backoff_factor = float(getattr(args, "backoff_factor", 0.5) or 0.5)
 
         client = BitbucketClient(
             base_url=args.url,
             auth=auth,
+            timeout=timeout,
+            retries=retries,
+            backoff_factor=backoff_factor,
         )
 
         return BitbucketPolicyScraper(
@@ -496,9 +722,332 @@ class BitbucketPoliciesScraperProvider(ScraperProvider):
 
 default_scraper_registry.register(BitbucketPoliciesScraperProvider())
 
+
+class BitbucketRepositoryScraper(RepositoryScraper):
+    """Platform scraper discovering repositories and stacks from Bitbucket."""
+
+    scraper_type: str = "repository"
+    target_type: str = "repository"
+
+    def __init__(
+        self,
+        base_url: str,
+        project_key: str | None = None,
+        client: BitbucketTransport | None = None,
+        page_size: int = 100,
+        include_archived: bool = False,
+        organization: str | None = None,
+    ) -> None:
+        """Initialize a new BitbucketRepositoryScraper instance."""
+        if not base_url or not base_url.strip():
+            raise ValueError("Bitbucket base URL cannot be empty.")
+
+        self.base_url = base_url.strip().rstrip("/")
+        self.project_key = (
+            project_key.strip() if project_key and project_key.strip() else None
+        )
+        self.client = client
+        self.page_size = page_size if page_size > 0 else 100
+        self.include_archived = include_archived
+        self.organization = (
+            organization.strip() if organization and organization.strip() else None
+        )
+        self._default_org = urllib.parse.urlparse(self.base_url).netloc
+
+    @staticmethod
+    def _detect_stacks(file_paths: list[str]) -> list[Stack]:
+        """Detect technology stacks from repository manifest file signatures."""
+        detected: set[Stack] = set()
+        for raw_path in file_paths:
+            name = posixpath.basename(raw_path).lower().strip()
+            if name in (
+                "pom.xml",
+                "build.gradle",
+                "build.gradle.kts",
+                "gradlew",
+                "settings.gradle",
+            ) or name.endswith(".java"):
+                detected.add(Stack.JAVA)
+            if name in (
+                "requirements.txt",
+                "pyproject.toml",
+                "setup.py",
+                "pipfile",
+            ) or name.endswith(".py"):
+                detected.add(Stack.PYTHON)
+            if name in ("package.json", "tsconfig.json") or name.endswith(
+                (".ts", ".tsx", ".js")
+            ):
+                detected.add(Stack.TYPESCRIPT)
+            if name.endswith((".csproj", ".sln", ".cs")):
+                detected.add(Stack.C_SHARP)
+                detected.add(Stack.DOTNET_CORE)
+            if name.endswith((".tf", ".tfvars")) or name == "terragrunt.hcl":
+                detected.add(Stack.TERRAFORM)
+            if name in ("dockerfile", "makefile") or name.endswith((".sh", ".bash")):
+                detected.add(Stack.BASH)
+        return sorted(detected) if detected else [Stack.UNKNOWN]
+
+    @staticmethod
+    def _parse_commit_timestamp(commit: dict[str, Any] | None) -> datetime | None:
+        """Parse author or committer timestamp into timezone-aware UTC datetime."""
+        if not commit or not isinstance(commit, dict):
+            return None
+        ts = commit.get("committerTimestamp") or commit.get("authorTimestamp")
+        if isinstance(ts, int | float) and ts > 0:
+            secs = ts / 1000.0 if ts > 1e11 else float(ts)
+            return datetime.fromtimestamp(secs, tz=timezone.utc)
+        date_str = commit.get("date") or commit.get("timestamp")
+        if date_str and isinstance(date_str, str):
+            clean_date = date_str.strip().replace("Z", "+00:00")
+            try:
+                return datetime.fromisoformat(clean_date)
+            except (ValueError, TypeError):
+                pass
+        return None
+
+    def _resolve_clone_url(
+        self, repo: dict[str, Any], project_key: str, slug: str
+    ) -> str:
+        """Resolve canonical clone URL prioritizing HTTP/HTTPS over SSH."""
+        links = repo.get("links")
+        clone_links = links.get("clone") if isinstance(links, dict) else None
+        if isinstance(clone_links, list):
+            ssh_href: str | None = None
+            for link in clone_links:
+                if not isinstance(link, dict):
+                    continue
+                name = str(link.get("name", "")).lower()
+                href = link.get("href")
+                if not href:
+                    continue
+                clean_href = str(href).strip()
+                if name in ("http", "https"):
+                    return clean_href
+                if name == "ssh" and not ssh_href:
+                    ssh_href = clean_href
+
+            if ssh_href:
+                return ssh_href
+
+        return f"{self.base_url}/scm/{project_key.lower()}/{slug}.git"
+
+    def _resolve_organization(self, project_key: str) -> str:
+        """Determine organization name from override or base URL hostname."""
+        if self.organization:
+            return self.organization
+        return self._default_org if self._default_org else project_key
+
+    def _resolve_default_branch(
+        self, repo: dict[str, Any], proj_key: str, slug: str
+    ) -> str | None:
+        """Resolve default branch from repository payload or remote client."""
+        mainbranch = repo.get("mainbranch")
+        if isinstance(mainbranch, dict) and mainbranch.get("name"):
+            return str(mainbranch["name"]).strip()
+        if repo.get("defaultBranch"):
+            return str(repo["defaultBranch"]).strip()
+        if self.client is None:
+            return None
+        try:
+            return self.client.get_default_branch(proj_key, slug)
+        except ScraperError:
+            return None
+
+    def scrape(self) -> list[Repository]:
+        """Discover and return canonical repositories and stacks from Bitbucket."""
+        if self.client is None:
+            raise ScraperError("Bitbucket client not configured.")
+
+        if self.project_key:
+            projects = [{"key": self.project_key, "name": self.project_key}]
+        else:
+            projects = self.client.get_projects(limit=self.page_size)
+
+        repositories: list[Repository] = []
+
+        for proj in projects:
+            proj_key = proj.get("key") or proj.get("slug") or proj.get("name") or ""
+            if not proj_key:
+                continue
+
+            repos = self.client.get_repositories(proj_key, limit=self.page_size)
+
+            for repo in repos:
+                is_archived = bool(repo.get("archived", False))
+                if is_archived and not self.include_archived:
+                    continue
+
+                slug = repo.get("slug") or repo.get("name") or ""
+                if not slug:
+                    continue
+
+                repo_name = repo.get("name") or slug
+                clone_url = self._resolve_clone_url(repo, proj_key, slug)
+                org = self._resolve_organization(proj_key)
+                default_branch = self._resolve_default_branch(repo, proj_key, slug)
+
+                last_commit_dt: datetime | None = None
+                try:
+                    commit = self.client.get_last_commit(proj_key, slug)
+                    last_commit_dt = self._parse_commit_timestamp(commit)
+                except ScraperError:
+                    last_commit_dt = None
+
+                files: list[str] = []
+                try:
+                    files = self.client.get_repository_files(proj_key, slug, limit=100)
+                except ScraperError:
+                    files = []
+                stacks = self._detect_stacks(files)
+
+                repositories.append(
+                    Repository(
+                        name=slug,
+                        organization=org,
+                        project=proj_key,
+                        url=clone_url,
+                        default_branch=default_branch,
+                        last_commit=last_commit_dt,
+                        stacks=stacks,
+                        metadata={
+                            "id": repo.get("id"),
+                            "slug": slug,
+                            "name": repo_name,
+                            "description": repo.get("description", ""),
+                            "public": repo.get("public", False),
+                            "archived": is_archived,
+                            "fork": repo.get("fork", False),
+                            "scm_id": repo.get("scmId", "git"),
+                            "project_key": proj_key,
+                            "project_name": proj.get("name", proj_key),
+                            "raw": repo,
+                        },
+                    )
+                )
+
+        return repositories
+
+
+class BitbucketScraperProvider(ScraperProvider):
+    """Platform scraper provider for Bitbucket repository discovery."""
+
+    target_type: str = "repository"
+    default_sheet_name: str = "Inventario"
+
+    @property
+    def platform_name(self) -> str:
+        return "bitbucket"
+
+    @property
+    def description(self) -> str:
+        return "Bitbucket Server / Data Center / Cloud repository scraper"
+
+    def configure_parser(self, parser: Any) -> None:
+        """Configure platform CLI arguments for Bitbucket repository scraping."""
+        parser.add_argument(
+            "--base-url",
+            "--url",
+            dest="base_url",
+            required=True,
+            help="Bitbucket Server/DC base URL or Cloud API base URL",
+        )
+        parser.add_argument(
+            "--project",
+            "--project-key",
+            dest="project_key",
+            default=None,
+            help=(
+                "Optional Bitbucket project key filter "
+                "(scrapes all projects if omitted)"
+            ),
+        )
+        parser.add_argument(
+            "--token",
+            default=None,
+            help="Bitbucket Personal Access Token (PAT) or Bearer token",
+        )
+        parser.add_argument(
+            "--username",
+            default=None,
+            help="Bitbucket HTTP Basic authentication username",
+        )
+        parser.add_argument(
+            "--password",
+            default=None,
+            help="Bitbucket HTTP Basic authentication password",
+        )
+        parser.add_argument(
+            "--page-size",
+            type=int,
+            default=100,
+            help="Pagination window size for API requests (default: 100)",
+        )
+        parser.add_argument(
+            "--include-archived",
+            action="store_true",
+            default=False,
+            help="Include archived repositories in discovery (default: excluded)",
+        )
+        parser.add_argument(
+            "--organization",
+            default=None,
+            help="Target organization override for inventory records",
+        )
+        parser.add_argument(
+            "--timeout",
+            type=float,
+            default=15.0,
+            help="HTTP request timeout in seconds (default: 15.0)",
+        )
+        parser.add_argument(
+            "--retries",
+            type=int,
+            default=3,
+            help="Maximum retry attempts on transient network errors (default: 3)",
+        )
+        parser.add_argument(
+            "--backoff-factor",
+            type=float,
+            default=0.5,
+            help="Exponential backoff factor for retries (default: 0.5)",
+        )
+
+    def create_scraper(self, args: Any) -> BitbucketRepositoryScraper:
+        """Build BitbucketRepositoryScraper from parsed CLI arguments."""
+        auth = _resolve_auth(args)
+
+        raw_url = getattr(args, "base_url", None) or getattr(args, "url", None) or ""
+        base_url = str(raw_url).strip()
+        timeout = float(getattr(args, "timeout", 15.0) or 15.0)
+        retries = int(getattr(args, "retries", 3) or 3)
+        backoff_factor = float(getattr(args, "backoff_factor", 0.5) or 0.5)
+
+        client = BitbucketClient(
+            base_url=base_url,
+            auth=auth,
+            timeout=timeout,
+            retries=retries,
+            backoff_factor=backoff_factor,
+        )
+
+        return BitbucketRepositoryScraper(
+            base_url=base_url,
+            project_key=getattr(args, "project_key", None),
+            client=client,
+            page_size=getattr(args, "page_size", 100),
+            include_archived=bool(getattr(args, "include_archived", False)),
+            organization=getattr(args, "organization", None),
+        )
+
+
+default_scraper_registry.register(BitbucketScraperProvider())
+
 __all__ = [
     "BitbucketClient",
     "BitbucketPoliciesScraperProvider",
     "BitbucketPolicyScraper",
+    "BitbucketRepositoryScraper",
+    "BitbucketScraperProvider",
     "BitbucketTransport",
 ]

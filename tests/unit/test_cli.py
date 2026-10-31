@@ -16,6 +16,7 @@ from gh_migration_inventory_manager.cli import (
 from gh_migration_inventory_manager.converter import RepositoryConverter
 from gh_migration_inventory_manager.google import Spreadsheet
 from gh_migration_inventory_manager.inventory import (
+    Inventory,
     InventoryAccessError,
     InventoryError,
     InventoryNotFoundError,
@@ -863,4 +864,142 @@ def test_given_custom_sheet_name_for_bitbucket_policies_when_running_cli_then_ho
         )
 
     mock_sheet.ensure_sheet.assert_called_with("GovernanceTab")
+    assert result == 1
+
+
+def test_given_bitbucket_platform_when_building_parser_then_defaults_to_inventario_sheet_name() -> (
+    None
+):
+    """Test bitbucket platform subcommand defaults --sheet-name to 'Inventario'."""
+    parser = build_parser()
+    args = parser.parse_args(
+        [
+            "scrape",
+            "bitbucket",
+            "--url",
+            "https://bitbucket.corp.local",
+            "--spreadsheet-id",
+            "sheet-bb-123",
+        ]
+    )
+    assert args.platform == "bitbucket"
+    assert args.sheet_name == "Inventario"
+    assert args.base_url == "https://bitbucket.corp.local"
+
+
+def test_given_bitbucket_args_and_mock_services_when_running_cli_then_synchronizes_repositories_with_inventario_tab() -> (
+    None
+):
+    """Test running CLI with bitbucket synchronizes records to Inventory."""
+    from gh_migration_inventory_manager.bitbucket_scrap import (
+        BitbucketRepositoryScraper,
+    )
+
+    mock_scraper = MagicMock(spec=BitbucketRepositoryScraper)
+    mock_scraper.target_type = "repository"
+    mock_scraper.scrape.return_value = [
+        Repository(
+            name="auth-service",
+            project="CORE",
+            organization="bitbucket.corp.local",
+            url="https://bitbucket.corp.local/scm/core/auth-service.git",
+            stacks=[Stack.JAVA],
+        )
+    ]
+
+    mock_inv = MagicMock(spec=Inventory)
+    mock_inv.sync_records.return_value = [
+        InventoryRecord(name="auth-service", project="CORE", stack="Java")
+    ]
+
+    parser = build_parser()
+    args = parser.parse_args(
+        [
+            "scrape",
+            "bitbucket",
+            "--base-url",
+            "https://bitbucket.corp.local",
+            "--project",
+            "CORE",
+            "--spreadsheet-id",
+            "test-sheet-id",
+        ]
+    )
+
+    with patch(
+        "gh_migration_inventory_manager.bitbucket_scrap.BitbucketScraperProvider.create_scraper",
+        return_value=mock_scraper,
+    ):
+        out = io.StringIO()
+        result = run_cli(
+            args,
+            inventory=mock_inv,
+            out_stream=out,
+        )
+
+    mock_inv.sync_records.assert_called_once()
+    assert result == 1
+    assert out.getvalue().strip() == "1"
+
+
+def test_given_custom_sheet_name_for_bitbucket_when_running_cli_then_honors_sheet_name_override() -> (
+    None
+):
+    """Test passing --sheet-name explicitly overrides default Inventario tab for bitbucket."""
+    from gh_migration_inventory_manager.bitbucket_scrap import (
+        BitbucketRepositoryScraper,
+    )
+
+    mock_scraper = MagicMock(spec=BitbucketRepositoryScraper)
+    mock_scraper.target_type = "repository"
+    mock_scraper.scrape.return_value = [
+        Repository(
+            name="payment-svc",
+            project="PAY",
+            stacks=[Stack.PYTHON],
+        )
+    ]
+
+    mock_sheet = MagicMock(spec=Spreadsheet)
+    mock_sheet.id = "custom-bb-sheet"
+
+    parser = build_parser()
+    args = parser.parse_args(
+        [
+            "scrape",
+            "bitbucket",
+            "--base-url",
+            "https://bitbucket.corp.local",
+            "--sheet-name",
+            "CustomRepos",
+            "--spreadsheet-id",
+            "custom-bb-sheet",
+        ]
+    )
+
+    with (
+        patch(
+            "gh_migration_inventory_manager.bitbucket_scrap.BitbucketScraperProvider.create_scraper",
+            return_value=mock_scraper,
+        ),
+        patch("gh_migration_inventory_manager.cli.Inventory") as mock_inv_cls,
+    ):
+        mock_inv = mock_inv_cls.return_value
+        mock_inv.sync_records.return_value = [
+            InventoryRecord(name="payment-svc", project="PAY", stack="Python")
+        ]
+        out = io.StringIO()
+        result = run_cli(
+            args,
+            spreadsheet=mock_sheet,
+            out_stream=out,
+        )
+
+    mock_inv_cls.assert_called_once_with(
+        spreadsheet=mock_sheet,
+        spreadsheet_id="custom-bb-sheet",
+        credentials_path=None,
+        sheet_name="CustomRepos",
+        converter=mock_inv_cls.call_args[1]["converter"],
+    )
     assert result == 1
