@@ -266,3 +266,44 @@ def test_given_api_error_when_clearing_tab_then_raises_spreadsheet_error(
 
     with pytest.raises(SpreadsheetError, match="Error clearing sheet"):
         mock_policies_spreadsheet.clear_tab("Policies")
+
+
+def test_given_existing_empty_policies_tab_when_ensuring_sheet_then_provisions_headers(
+    mock_policies_spreadsheet: Spreadsheet,
+    mock_sheets_service: MagicMock,
+) -> None:
+    """Verify ensure_sheet writes POLICIES_HEADERS if tab exists but row 1 is empty."""
+    get_meta = mock_sheets_service.spreadsheets().get
+    get_meta.return_value.execute.return_value = {
+        "sheets": [{"properties": {"title": "Policies"}}]
+    }
+    values_get = mock_sheets_service.spreadsheets().values().get
+    values_get.return_value.execute.return_value = {"values": []}
+
+    mock_policies_spreadsheet.ensure_sheet("Policies")
+
+    update_vals = mock_sheets_service.spreadsheets().values().update
+    update_vals.assert_called_once_with(
+        spreadsheetId="policies-sheet-id",
+        range="Policies!A1:G1",
+        valueInputOption="USER_ENTERED",
+        body={"values": [POLICIES_HEADERS]},
+    )
+
+
+def test_given_existing_policies_tab_with_headers_when_ensuring_sheet_then_skips_header_update(
+    mock_policies_spreadsheet: Spreadsheet,
+    mock_sheets_service: MagicMock,
+) -> None:
+    """Verify ensure_sheet skips header write if tab already contains headers."""
+    get_meta = mock_sheets_service.spreadsheets().get
+    get_meta.return_value.execute.return_value = {
+        "sheets": [{"properties": {"title": "Policies"}}]
+    }
+    values_get = mock_sheets_service.spreadsheets().values().get
+    values_get.return_value.execute.return_value = {"values": [POLICIES_HEADERS]}
+
+    mock_policies_spreadsheet.ensure_sheet("Policies")
+
+    update_vals = mock_sheets_service.spreadsheets().values().update
+    update_vals.assert_not_called()

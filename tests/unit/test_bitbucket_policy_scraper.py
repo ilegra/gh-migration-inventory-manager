@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import argparse
 import json
+from typing import Any
 from unittest.mock import MagicMock
 
 import pytest
@@ -10,6 +12,7 @@ import urllib3
 
 from gh_migration_inventory_manager.bitbucket_scrap import (
     BitbucketClient,
+    BitbucketPoliciesScraperProvider,
     BitbucketPolicyScraper,
     BitbucketTransport,
 )
@@ -342,3 +345,129 @@ def test_given_scraper_without_client_when_scraping_then_raises_scraper_error() 
     scraper = BitbucketPolicyScraper(project_key="CORE", client=None)
     with pytest.raises(ScraperError, match="Bitbucket client not configured"):
         scraper.scrape()
+
+
+def test_given_none_project_key_when_initializing_scraper_then_succeeds_with_none() -> (
+    None
+):
+    """Verify initializing BitbucketPolicyScraper without project_key defaults to None."""
+    scraper = BitbucketPolicyScraper(project_key=None)
+    assert scraper.project_key is None
+    assert scraper.page_size == 100
+
+
+def test_given_omitted_project_key_when_scraping_then_traverses_all_projects_and_repositories() -> (
+    None
+):
+    """Test BitbucketPolicyScraper traverses all projects and repos when project_key is None."""
+    mock_client = MagicMock(spec=BitbucketTransport)
+    mock_client.get_projects.return_value = [
+        {"key": "CORE", "name": "Core Platform"},
+        {"key": "PAY", "name": "Payments"},
+    ]
+
+    def mock_get_branch_restrictions(
+        proj_key: str, repo_slug: str | None = None
+    ) -> list[dict[str, Any]]:
+        if repo_slug is None:
+            return [
+                {
+                    "id": f"proj-{proj_key}",
+                    "type": "no-deletes",
+                    "matcher": {"id": "main"},
+                    "groups": ["admins"],
+                }
+            ]
+        return [
+            {
+                "id": f"repo-{proj_key}-{repo_slug}",
+                "type": "pull-request-only",
+                "matcher": {"id": "main"},
+                "groups": ["devs"],
+            }
+        ]
+
+    def mock_get_pr_settings(
+        proj_key: str, repo_slug: str | None = None
+    ) -> dict[str, Any]:
+        if repo_slug is None:
+            return {}
+        return {
+            "requiredApprovers": {"enabled": True, "count": 1},
+        }
+
+    def mock_get_repositories(proj_key: str, limit: int = 100) -> list[dict[str, Any]]:
+        if proj_key == "CORE":
+            return [{"slug": "auth-service", "name": "auth-service"}]
+        if proj_key == "PAY":
+            return [{"slug": "checkout-api", "name": "checkout-api"}]
+        return []
+
+    mock_client.get_branch_restrictions.side_effect = mock_get_branch_restrictions
+    mock_client.get_pull_request_settings.side_effect = mock_get_pr_settings
+    mock_client.get_repositories.side_effect = mock_get_repositories
+
+    scraper = BitbucketPolicyScraper(
+        project_key=None,
+        client=mock_client,
+        default_branch="main",
+    )
+    policies = scraper.scrape()
+
+    # CORE: 1 proj policy + 1 repo restriction + 1 repo PR setting = 3
+    # PAY:  1 proj policy + 1 repo restriction + 1 repo PR setting = 3
+    # Total: 6 policies
+    assert len(policies) == 6
+
+    scopes = [p.policy_scope for p in policies]
+    assert "project:CORE" in scopes
+    assert "project:PAY" in scopes
+    assert "repo:auth-service" in scopes
+    assert "repo:checkout-api" in scopes
+
+    # Check mock client interactions
+    mock_client.get_projects.assert_called_once_with(limit=100)
+    assert mock_client.get_repositories.call_count == 2
+    mock_client.get_repositories.assert_any_call("CORE", limit=100)
+    mock_client.get_repositories.assert_any_call("PAY", limit=100)
+
+
+def test_given_policies_provider_when_project_omitted_then_parses_as_none() -> None:
+    """Verify BitbucketPoliciesScraperProvider allows omitting --project and defaults to None."""
+    provider = BitbucketPoliciesScraperProvider()
+    parser = argparse.ArgumentParser()
+    provider.configure_parser(parser)
+
+    args = parser.parse_args(["--url", "https://bitbucket.corp.local"])
+    assert args.project_key is None
+    assert args.base_url == "https://bitbucket.corp.local"
+
+    scraper = provider.create_scraper(args)
+    assert scraper.project_key is None
+    assert scraper.page_size == 100
+
+
+def test_given_policies_provider_when_project_provided_then_parses_project_key() -> (
+    None
+):
+    """Verify BitbucketPoliciesScraperProvider parses project and custom page-size."""
+    provider = BitbucketPoliciesScraperProvider()
+    parser = argparse.ArgumentParser()
+    provider.configure_parser(parser)
+
+    args = parser.parse_args(
+        [
+            "--base-url",
+            "https://bitbucket.corp.local",
+            "--project-key",
+            "FIN",
+            "--page-size",
+            "50",
+        ]
+    )
+    assert args.project_key == "FIN"
+    assert args.page_size == 50
+
+    scraper = provider.create_scraper(args)
+    assert scraper.project_key == "FIN"
+    assert scraper.page_size == 50
