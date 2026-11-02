@@ -830,3 +830,105 @@ def test_given_spreadsheet_api_error_when_syncing_records_then_raises_spreadshee
     inventory = Inventory(spreadsheet=mock_sheet)
     with pytest.raises(SpreadsheetError, match="Backend service unavailable"):
         inventory.sync_records([])
+
+
+def test_given_inventory_when_querying_repositories_then_returns_records() -> None:
+    """Test Inventory collection query methods."""
+    mock_sheet = MagicMock(spec=Spreadsheet)
+    r1 = Row(data={"name": "repo-1", "project": "proj-a"}, row_index=2)
+    r2 = Row(data={"name": "repo-2", "project": "proj-b"}, row_index=3)
+    mock_sheet.get_all_rows.return_value = [r1, r2]
+    mock_sheet.find_by.return_value = [r1]
+
+    inv = Inventory(spreadsheet=mock_sheet)
+
+    assert len(inv.get_all_repositories()) == 2
+    assert len(inv.get_repositories_for_project("proj-a")) == 1
+
+    with pytest.raises(ValueError, match="Project slug cannot be empty"):
+        inv.get_repositories_for_project("")
+
+
+def test_given_team_inventory_when_querying_teams_then_filters_correctly() -> None:
+    """Test TeamInventory collection query methods."""
+    from gh_migration_inventory_manager.inventory import TeamInventory
+
+    mock_sheet = MagicMock(spec=Spreadsheet)
+    r1 = Row(
+        data={"team_name": "Devs", "project": "proj-a", "repository": "repo-1"},
+        row_index=2,
+    )
+    r2 = Row(
+        data={"team_name": "Ops", "project": "proj-a", "repository": ""}, row_index=3
+    )
+    mock_sheet.get_all_rows.return_value = [r1, r2]
+
+    inv = TeamInventory(spreadsheet=mock_sheet)
+
+    assert len(inv.get_all_teams()) == 2
+    assert len(inv.get_teams_for_project("proj-a")) == 2
+    assert (
+        len(inv.get_teams_for_repository("proj-a", "repo-1", include_inherited=False))
+        == 1
+    )
+    assert (
+        len(inv.get_teams_for_repository("proj-a", "repo-1", include_inherited=True))
+        == 2
+    )
+
+    with pytest.raises(ValueError, match="Project slug cannot be empty"):
+        inv.get_teams_for_project("")
+    with pytest.raises(ValueError, match="Project slug cannot be empty"):
+        inv.get_teams_for_repository("", "repo-1")
+    with pytest.raises(ValueError, match="Repository slug cannot be empty"):
+        inv.get_teams_for_repository("proj-a", "")
+
+
+def test_given_policy_inventory_when_querying_policies_then_filters_correctly() -> None:
+    """Test PolicyInventory collection query methods."""
+    from gh_migration_inventory_manager.inventory import PolicyInventory
+
+    mock_sheet = MagicMock(spec=Spreadsheet)
+    r1 = Row(
+        data={
+            "policy_scope": "repo:proj-a/repo-1",
+            "target_ref_pattern": "refs/heads/main",
+            "normalized_rule_type": "RequirePullRequest",
+            "project": "proj-a",
+            "repository": "repo-1",
+        },
+        row_index=2,
+    )
+    r2 = Row(
+        data={
+            "policy_scope": "project:proj-a",
+            "target_ref_pattern": "refs/heads/main",
+            "normalized_rule_type": "BlockForcePush",
+            "project": "proj-a",
+            "repository": "",
+        },
+        row_index=3,
+    )
+    mock_sheet.get_all_rows.return_value = [r1, r2]
+
+    inv = PolicyInventory(spreadsheet=mock_sheet)
+
+    assert len(inv.get_all_policies()) == 2
+    assert len(inv.get_policies_for_project("proj-a")) == 1
+    assert (
+        len(
+            inv.get_policies_for_repository("proj-a", "repo-1", include_inherited=False)
+        )
+        == 1
+    )
+    assert (
+        len(inv.get_policies_for_repository("proj-a", "repo-1", include_inherited=True))
+        == 2
+    )
+
+    with pytest.raises(ValueError, match="Project slug cannot be empty"):
+        inv.get_policies_for_project("")
+    with pytest.raises(ValueError, match="Project slug cannot be empty"):
+        inv.get_policies_for_repository("", "repo-1")
+    with pytest.raises(ValueError, match="Repository slug cannot be empty"):
+        inv.get_policies_for_repository("proj-a", "")

@@ -37,6 +37,8 @@ def sample_pipeline_record() -> PipelineRecord:
         last_build=datetime(2026, 10, 27, 10, 0, 0, tzinfo=timezone.utc),
         last_status="SUCCESS",
         migration_status=MigrationStatus.ACTIVE_IN_BOTH,
+        project="org",
+        repository="prod-deploy-scripts",
     )
 
 
@@ -54,12 +56,12 @@ def mock_workflow_spreadsheet(mock_sheets_service: MagicMock) -> Spreadsheet:
 # --- WorkflowRowConverter Tests ---
 
 
-def test_given_pipeline_record_when_converting_to_row_then_maps_all_twelve_columns(
+def test_given_pipeline_record_when_converting_to_row_then_maps_all_fourteen_columns(
     sample_pipeline_record: PipelineRecord,
     mock_workflow_spreadsheet: Spreadsheet,
     mock_sheets_service: MagicMock,
 ) -> None:
-    """Test WorkflowRowConverter creates a Row and Spreadsheet serializes all 12 columns."""
+    """Test WorkflowRowConverter creates a Row and Spreadsheet serializes all 14 columns."""
     row = WorkflowRowConverter.from_pipeline_record(sample_pipeline_record, row_index=5)
 
     assert row.row_index == 5
@@ -76,16 +78,18 @@ def test_given_pipeline_record_when_converting_to_row_then_maps_all_twelve_colum
     assert row.data["branch"] == "main"
     assert row.data["last_status"] == "SUCCESS"
     assert row.data["migration_status"] == MigrationStatus.ACTIVE_IN_BOTH
+    assert row.data["project"] == "org"
+    assert row.data["repository"] == "prod-deploy-scripts"
 
     mock_append = (
         mock_sheets_service.spreadsheets.return_value.values.return_value.append
     )
     mock_append.return_value.execute.return_value = {
-        "updates": {"updatedRange": "Workflows!A5:L5"}
+        "updates": {"updatedRange": "Workflows!A5:N5"}
     }
 
     added_row = mock_workflow_spreadsheet.add(row)
-    assert len(added_row.values) == 12
+    assert len(added_row.values) == 14
     assert added_row.values[0] == "deployments/prod-deploy"
     assert added_row.values[1] == "jenkins"
     assert added_row.values[2] == "declarative"
@@ -98,6 +102,8 @@ def test_given_pipeline_record_when_converting_to_row_then_maps_all_twelve_colum
     assert "27/10/2026" in added_row.values[9]
     assert added_row.values[10] == "SUCCESS"
     assert added_row.values[11] == "Migrando (Ativos em Ambas)"
+    assert added_row.values[12] == "org"
+    assert added_row.values[13] == "prod-deploy-scripts"
 
 
 def test_given_row_when_converting_to_pipeline_record_then_populates_pipeline_record() -> (
@@ -118,6 +124,8 @@ def test_given_row_when_converting_to_pipeline_record_then_populates_pipeline_re
             "last_build": "2026-10-25T14:30:00",
             "last_status": "FAILURE",
             "migration_status": "Migrados (Somente GitHub)",
+            "project": "fintech",
+            "repository": "auth-service",
         },
         row_index=3,
     )
@@ -136,6 +144,8 @@ def test_given_row_when_converting_to_pipeline_record_then_populates_pipeline_re
     assert record.last_status == "FAILURE"
     assert record.migration_status == MigrationStatus.MIGRATED
     assert record.last_build == datetime(2026, 10, 25, 14, 30, 0)
+    assert record.project == "fintech"
+    assert record.repository == "auth-service"
 
 
 def test_given_none_pipeline_record_when_converting_to_row_then_raises_value_error() -> (
@@ -341,10 +351,10 @@ def test_given_empty_workflow_id_when_updating_pipeline_progress_then_raises_val
 # --- Multi-tab Spreadsheet Tests ---
 
 
-def test_given_workflows_sheet_name_when_finding_row_then_queries_twelve_column_range(
+def test_given_workflows_sheet_name_when_finding_row_then_queries_fourteen_column_range(
     mock_workflow_spreadsheet: Spreadsheet, mock_sheets_service: MagicMock
 ) -> None:
-    """Test find_by on 'Workflows' tab uses A2:L 12-column range."""
+    """Test find_by on 'Workflows' tab uses A2:N 14-column range."""
     mock_get = mock_sheets_service.spreadsheets.return_value.values.return_value.get
     mock_get.return_value.execute.return_value = {
         "values": [
@@ -361,6 +371,8 @@ def test_given_workflows_sheet_name_when_finding_row_then_queries_twelve_column_
                 "2026-10-27 10:00:00",
                 "SUCCESS",
                 "Aguardando Migração",
+                "org",
+                "repo",
             ]
         ]
     }
@@ -371,16 +383,18 @@ def test_given_workflows_sheet_name_when_finding_row_then_queries_twelve_column_
     assert results[0].data["workflow_id"] == "ci/deploy"
     assert results[0].data["shared_components"] == "shared-lib"
     assert results[0].data["execution_environment"] == "linux-docker"
+    assert results[0].data["project"] == "org"
+    assert results[0].data["repository"] == "repo"
     mock_get.assert_called_once_with(
         spreadsheetId="workflows-sheet-id",
-        range="Workflows!A2:L",
+        range="Workflows!A2:N",
     )
 
 
 def test_given_ensure_sheet_when_workflows_tab_missing_then_adds_sheet_with_headers(
     mock_workflow_spreadsheet: Spreadsheet, mock_sheets_service: MagicMock
 ) -> None:
-    """Test ensure_sheet provisions the 'Workflows' tab and initializes 12 header columns."""
+    """Test ensure_sheet provisions the 'Workflows' tab and initializes 14 header columns."""
     mock_get = mock_sheets_service.spreadsheets.return_value.get
     mock_get.return_value.execute.return_value = {
         "sheets": [{"properties": {"title": "Inventario"}}]
@@ -397,5 +411,120 @@ def test_given_ensure_sheet_when_workflows_tab_missing_then_adds_sheet_with_head
     mock_batch.assert_called_once()
     mock_update.assert_called_once()
     call_kwargs = mock_update.call_args[1]
-    assert call_kwargs["range"] == "Workflows!A1:L1"
+    assert call_kwargs["range"] == "Workflows!A1:N1"
     assert call_kwargs["body"]["values"] == [WORKFLOW_HEADERS]
+
+
+def test_given_project_alias_when_finding_by_project_then_queries_correct_column(
+    mock_workflow_spreadsheet: Spreadsheet, mock_sheets_service: MagicMock
+) -> None:
+    """Test find_by translates 'project' to column 12 (0-indexed)."""
+    mock_get = mock_sheets_service.spreadsheets.return_value.values.return_value.get
+    mock_get.return_value.execute.return_value = {
+        "values": [
+            [
+                "ci/deploy-1",
+                "jenkins",
+                "declarative",
+                "org/repo-1",
+                "",
+                "",
+                "",
+                "",
+                "",
+                "",
+                "SUCCESS",
+                "Migrado",
+                "org",
+                "repo-1",
+            ],
+            [
+                "ci/deploy-2",
+                "jenkins",
+                "declarative",
+                "other/repo-2",
+                "",
+                "",
+                "",
+                "",
+                "",
+                "",
+                "SUCCESS",
+                "Migrado",
+                "other",
+                "repo-2",
+            ],
+        ]
+    }
+
+    results = mock_workflow_spreadsheet.find_by("project", "org")
+
+    assert len(results) == 1
+    assert results[0].data["workflow_id"] == "ci/deploy-1"
+    assert results[0].data["project"] == "org"
+
+
+def test_given_repository_alias_when_finding_by_repository_then_queries_correct_column(
+    mock_workflow_spreadsheet: Spreadsheet, mock_sheets_service: MagicMock
+) -> None:
+    """Test find_by translates 'repository' to column 13 (0-indexed)."""
+    mock_get = mock_sheets_service.spreadsheets.return_value.values.return_value.get
+    mock_get.return_value.execute.return_value = {
+        "values": [
+            [
+                "ci/deploy-1",
+                "jenkins",
+                "declarative",
+                "org/repo-1",
+                "",
+                "",
+                "",
+                "",
+                "",
+                "",
+                "SUCCESS",
+                "Migrado",
+                "org",
+                "repo-1",
+            ],
+        ]
+    }
+
+    results = mock_workflow_spreadsheet.find_by("repository", "repo-1")
+
+    assert len(results) == 1
+    assert results[0].data["repository"] == "repo-1"
+
+
+def test_given_pipeline_inventory_when_querying_collections_then_filters_properly() -> (
+    None
+):
+    """Test PipelineInventory collection queries for all, project, and repository."""
+    mock_sheet = MagicMock(spec=Spreadsheet)
+    r1 = Row(
+        data={"workflow_id": "w1", "project": "proj-a", "repository": "repo-1"},
+        row_index=2,
+    )
+    r2 = Row(
+        data={"workflow_id": "w2", "project": "proj-a", "repository": "repo-2"},
+        row_index=3,
+    )
+    mock_sheet.get_all_rows.return_value = [r1, r2]
+    mock_sheet.find_by.side_effect = lambda field, val: (
+        [r1, r2]
+        if field == "project" and val == "proj-a"
+        else ([r1] if field == "repository" and val == "repo-1" else [])
+    )
+
+    inv = PipelineInventory(spreadsheet=mock_sheet)
+
+    assert len(inv.get_all_pipelines()) == 2
+    assert len(inv.get_pipelines_for_project("proj-a")) == 2
+    assert len(inv.get_pipelines_for_repository("proj-a", "repo-1")) == 1
+
+    with pytest.raises(ValueError, match="Project slug cannot be empty"):
+        inv.get_pipelines_for_project("")
+    with pytest.raises(ValueError, match="Project slug cannot be empty"):
+        inv.get_pipelines_for_repository("", "repo-1")
+    with pytest.raises(ValueError, match="Repository slug cannot be empty"):
+        inv.get_pipelines_for_repository("proj-a", "")
