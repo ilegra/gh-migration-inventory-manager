@@ -756,3 +756,326 @@ def test_given_cli_page_size_arg_when_creating_scraper_then_configures_page_size
 
     scraper = provider.create_scraper(args)
     assert scraper.page_size == 500
+
+
+# --- SCM URL Parsing and Advanced Extraction Tests ---
+
+
+def test_given_bitbucket_server_http_url_when_parsing_scm_url_then_extracts_project_and_repo() -> (
+    None
+):
+    """Test Bitbucket Server HTTP /scm/<project>/<repo>.git extraction."""
+    proj, repo = JenkinsPipelineScraper.parse_scm_url(
+        "https://bitbucket.example.com/scm/CORE/payment-service.git"
+    )
+    assert proj == "CORE"
+    assert repo == "payment-service"
+
+
+def test_given_bitbucket_server_browse_url_when_parsing_scm_url_then_extracts_project_and_repo() -> (
+    None
+):
+    """Test Bitbucket Server web/browse /projects/<project>/repos/<repo> extraction."""
+    proj, repo = JenkinsPipelineScraper.parse_scm_url(
+        "https://bitbucket.example.com/projects/PAY/repos/gateway-service/browse?at=refs%2Fheads%2Fmain"
+    )
+    assert proj == "PAY"
+    assert repo == "gateway-service"
+
+
+def test_given_bitbucket_server_ssh_url_when_parsing_scm_url_then_extracts_project_and_repo() -> (
+    None
+):
+    """Test Bitbucket Server SSH URL with port extraction."""
+    proj, repo = JenkinsPipelineScraper.parse_scm_url(
+        "ssh://git@bitbucket.corp.internal:7999/INFRA/deploy-tools.git"
+    )
+    assert proj == "INFRA"
+    assert repo == "deploy-tools"
+
+
+def test_given_scp_style_ssh_url_when_parsing_scm_url_then_extracts_project_and_repo() -> (
+    None
+):
+    """Test SCP-style SSH url git@host:project/repo.git extraction."""
+    proj, repo = JenkinsPipelineScraper.parse_scm_url(
+        "git@bitbucket.internal:FINANCE/ledger-service.git"
+    )
+    assert proj == "FINANCE"
+    assert repo == "ledger-service"
+
+
+def test_given_github_url_when_parsing_scm_url_then_extracts_org_and_repo() -> None:
+    """Test standard GitHub repository URL extraction."""
+    proj, repo = JenkinsPipelineScraper.parse_scm_url(
+        "https://github.com/my-org/checkout-api.git"
+    )
+    assert proj == "my-org"
+    assert repo == "checkout-api"
+
+
+def test_given_gitlab_nested_groups_url_when_parsing_scm_url_then_extracts_full_subgroup_project_and_repo() -> (
+    None
+):
+    """Test GitLab nested subgroup namespace URL extraction."""
+    proj, repo = JenkinsPipelineScraper.parse_scm_url(
+        "https://gitlab.com/group/subgroup/deep-team/microservice.git"
+    )
+    assert proj == "group/subgroup/deep-team"
+    assert repo == "microservice"
+
+
+def test_given_svn_multi_project_url_when_parsing_scm_url_then_extracts_project_and_repo() -> (
+    None
+):
+    """Test SVN multi-project trunk URL extraction."""
+    proj, repo = JenkinsPipelineScraper.parse_scm_url(
+        "http://svn.example.com/svn/PROJECT_X/auth-module/trunk"
+    )
+    assert proj == "PROJECT_X"
+    assert repo == "auth-module"
+
+
+def test_given_svn_standard_url_when_parsing_scm_url_then_returns_none_project_and_repo() -> (
+    None
+):
+    """Test standard SVN repository trunk URL with no project namespace."""
+    proj, repo = JenkinsPipelineScraper.parse_scm_url(
+        "http://svn.example.com/svn/legacy-monolith/trunk"
+    )
+    assert proj is None
+    assert repo == "legacy-monolith"
+
+
+def test_given_single_segment_url_when_parsing_scm_url_then_returns_none_project_and_repo() -> (
+    None
+):
+    """Test URL with single path segment has no project."""
+    proj, repo = JenkinsPipelineScraper.parse_scm_url("http://git.local/monorepo.git")
+    assert proj is None
+    assert repo == "monorepo"
+
+
+def test_given_empty_url_when_parsing_scm_url_then_returns_none_project_and_empty_repo() -> (
+    None
+):
+    """Test empty URL returns (None, '')."""
+    proj, repo = JenkinsPipelineScraper.parse_scm_url("   ")
+    assert proj is None
+    assert repo == ""
+
+
+def test_given_bitbucket_scm_source_with_repo_owner_when_scraping_then_extracts_project_and_repository() -> (
+    None
+):
+    """Test multibranch pipeline using BitbucketSCMSource extracts projectKey and repositorySlug."""
+    mock_transport = MagicMock(spec=JenkinsTransport)
+    mock_transport.base_url = "http://jenkins:8080"
+    mock_transport.get_json.return_value = {
+        "jobs": [
+            {
+                "name": "billing-multibranch",
+                "url": "http://jenkins:8080/job/billing-multibranch/",
+                "_class": "org.jenkinsci.plugins.workflow.multibranch.WorkflowMultiBranchProject",
+                "disabled": False,
+                "sources": [
+                    {
+                        "source": {
+                            "_class": "com.cloudbees.jenkins.plugins.bitbucket.BitbucketSCMSource",
+                            "projectKey": "FIN",
+                            "repositorySlug": "billing-app",
+                            "repoOwner": "FIN",
+                            "repository": "billing-app",
+                            "credentialsId": "bb-token",
+                        }
+                    }
+                ],
+            }
+        ]
+    }
+
+    scraper = JenkinsPipelineScraper(client=mock_transport)
+    pipelines = scraper.scrape()
+
+    assert len(pipelines) == 1
+    pipe = pipelines[0]
+    assert pipe.name == "billing-multibranch"
+    assert pipe.project == "FIN"
+    assert pipe.repository is not None
+    assert pipe.repository.name == "billing-app"
+    assert pipe.repository.project == "FIN"
+
+
+def test_given_git_scm_source_with_remote_url_when_scraping_then_parses_remote_for_project_and_repo() -> (
+    None
+):
+    """Test multibranch pipeline with GitSCMSource parses remote URL into project and repository."""
+    mock_transport = MagicMock(spec=JenkinsTransport)
+    mock_transport.base_url = "http://jenkins:8080"
+    mock_transport.get_json.return_value = {
+        "jobs": [
+            {
+                "name": "cart-multibranch",
+                "url": "http://jenkins:8080/job/cart-multibranch/",
+                "_class": "org.jenkinsci.plugins.workflow.multibranch.WorkflowMultiBranchProject",
+                "disabled": False,
+                "sources": [
+                    {
+                        "source": {
+                            "_class": "jenkins.plugins.git.GitSCMSource",
+                            "remote": "https://bitbucket.corp.com/scm/ECOMM/cart-service.git",
+                        }
+                    }
+                ],
+            }
+        ]
+    }
+
+    scraper = JenkinsPipelineScraper(client=mock_transport)
+    pipelines = scraper.scrape()
+
+    assert len(pipelines) == 1
+    pipe = pipelines[0]
+    assert pipe.project == "ECOMM"
+    assert pipe.repository is not None
+    assert pipe.repository.name == "cart-service"
+    assert pipe.repository.project == "ECOMM"
+
+
+def test_given_scripted_pipeline_with_inline_git_step_when_scraping_then_extracts_repo_and_branch() -> (
+    None
+):
+    """Test inline script fallback extracting repository and branch from git step."""
+    mock_transport = MagicMock(spec=JenkinsTransport)
+    mock_transport.base_url = "http://jenkins:8080"
+    mock_transport.get_json.return_value = {
+        "jobs": [
+            {
+                "name": "scripted-pipeline-inline",
+                "url": "http://jenkins:8080/job/scripted-pipeline-inline/",
+                "_class": "org.jenkinsci.plugins.workflow.job.WorkflowJob",
+                "definition": {
+                    "_class": "org.jenkinsci.plugins.workflow.cps.CpsFlowDefinition",
+                    "script": "node {\n    git url: 'https://github.com/retail-org/inventory-api.git', branch: 'release-2.0'\n}",
+                },
+            }
+        ]
+    }
+
+    scraper = JenkinsPipelineScraper(client=mock_transport)
+    pipelines = scraper.scrape()
+
+    assert len(pipelines) == 1
+    pipe = pipelines[0]
+    assert pipe.project == "retail-org"
+    assert pipe.repository is not None
+    assert pipe.repository.name == "inventory-api"
+    assert pipe.repository.project == "retail-org"
+    assert pipe.branch == "release-2.0"
+    assert pipe.repository.default_branch == "release-2.0"
+
+
+def test_given_scripted_pipeline_with_user_remote_configs_when_scraping_then_extracts_repo_and_branch() -> (
+    None
+):
+    """Test inline script fallback extracting repository and branch from checkout userRemoteConfigs."""
+    mock_transport = MagicMock(spec=JenkinsTransport)
+    mock_transport.base_url = "http://jenkins:8080"
+    mock_transport.get_json.return_value = {
+        "jobs": [
+            {
+                "name": "scripted-checkout-step",
+                "url": "http://jenkins:8080/job/scripted-checkout-step/",
+                "_class": "org.jenkinsci.plugins.workflow.job.WorkflowJob",
+                "definition": {
+                    "_class": "org.jenkinsci.plugins.workflow.cps.CpsFlowDefinition",
+                    "script": (
+                        "checkout([\n"
+                        "    $class: 'GitSCM',\n"
+                        "    branches: [[name: '*/develop']],\n"
+                        "    userRemoteConfigs: [[url: 'ssh://git@bb.internal:7999/PLATFORM/shared-kernel.git']]\n"
+                        "])"
+                    ),
+                },
+            }
+        ]
+    }
+
+    scraper = JenkinsPipelineScraper(client=mock_transport)
+    pipelines = scraper.scrape()
+
+    assert len(pipelines) == 1
+    pipe = pipelines[0]
+    assert pipe.project == "PLATFORM"
+    assert pipe.repository is not None
+    assert pipe.repository.name == "shared-kernel"
+    assert pipe.repository.project == "PLATFORM"
+    assert pipe.branch == "develop"
+    assert pipe.repository.default_branch == "develop"
+
+
+def test_given_scripted_pipeline_with_svn_locations_when_scraping_then_extracts_repo_and_default_trunk() -> (
+    None
+):
+    """Test inline script fallback extracting Subversion remote and trunk default branch."""
+    mock_transport = MagicMock(spec=JenkinsTransport)
+    mock_transport.base_url = "http://jenkins:8080"
+    mock_transport.get_json.return_value = {
+        "jobs": [
+            {
+                "name": "scripted-svn-step",
+                "url": "http://jenkins:8080/job/scripted-svn-step/",
+                "_class": "org.jenkinsci.plugins.workflow.job.WorkflowJob",
+                "definition": {
+                    "_class": "org.jenkinsci.plugins.workflow.cps.CpsFlowDefinition",
+                    "script": (
+                        "checkout([\n"
+                        "    $class: 'SubversionSCM',\n"
+                        "    locations: [[remote: 'http://svn.example.com/svn/LEGACY/old-billing/trunk']]\n"
+                        "])"
+                    ),
+                },
+            }
+        ]
+    }
+
+    scraper = JenkinsPipelineScraper(client=mock_transport)
+    pipelines = scraper.scrape()
+
+    assert len(pipelines) == 1
+    pipe = pipelines[0]
+    assert pipe.project == "LEGACY"
+    assert pipe.repository is not None
+    assert pipe.repository.name == "old-billing"
+    assert pipe.repository.project == "LEGACY"
+    assert pipe.branch == "trunk"
+
+
+def test_given_pipeline_without_repository_or_script_linkage_when_scraping_then_sets_repository_none_and_empty_project() -> (
+    None
+):
+    """Test ops/utility pipeline without SCM produces repository=None and empty project."""
+    mock_transport = MagicMock(spec=JenkinsTransport)
+    mock_transport.base_url = "http://jenkins:8080"
+    mock_transport.get_json.return_value = {
+        "jobs": [
+            {
+                "name": "docker-cleanup-task",
+                "url": "http://jenkins:8080/job/docker-cleanup-task/",
+                "_class": "org.jenkinsci.plugins.workflow.job.WorkflowJob",
+                "definition": {
+                    "_class": "org.jenkinsci.plugins.workflow.cps.CpsFlowDefinition",
+                    "script": "node {\n    sh 'docker system prune -af'\n}",
+                },
+            }
+        ]
+    }
+
+    scraper = JenkinsPipelineScraper(client=mock_transport)
+    pipelines = scraper.scrape()
+
+    assert len(pipelines) == 1
+    pipe = pipelines[0]
+    assert pipe.name == "docker-cleanup-task"
+    assert pipe.repository is None
+    assert pipe.project == ""
