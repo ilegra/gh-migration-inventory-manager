@@ -890,6 +890,25 @@ def test_given_bitbucket_policies_platform_when_building_parser_then_defaults_to
     assert args.project_key == "MIG"
 
 
+def test_given_bitbucket_policies_when_project_omitted_then_parses_project_as_none() -> (
+    None
+):
+    """Test bitbucket-policies platform subcommand allows omitting --project and defaults to None."""
+    parser = build_parser()
+    args = parser.parse_args(
+        [
+            "scrape",
+            "bitbucket-policies",
+            "--url",
+            "https://bitbucket.corp.local",
+        ]
+    )
+
+    assert args.platform == "bitbucket-policies"
+    assert args.sheet_name == "Policies"
+    assert args.project_key is None
+
+
 def test_given_bitbucket_policies_args_and_mock_services_when_running_cli_then_synchronizes_policies_with_policies_tab() -> (
     None
 ):

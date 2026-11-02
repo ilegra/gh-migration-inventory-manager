@@ -651,6 +651,30 @@ class Spreadsheet:
                         valueInputOption="USER_ENTERED",
                         body={"values": [hdrs]},
                     ).execute()
+            elif hdrs:
+                end_col = chr(ord("A") + len(hdrs) - 1)
+                header_range = f"{target}!A1:{end_col}1"
+                resp = (
+                    self._service.spreadsheets()
+                    .values()
+                    .get(spreadsheetId=clean_id, range=header_range)
+                    .execute()
+                )
+                values = resp.get("values", []) if isinstance(resp, dict) else None
+                if values is not None:
+                    is_empty = not values or not any(
+                        str(cell).strip()
+                        for cell in (
+                            values[0] if isinstance(values, list) and values else []
+                        )
+                    )
+                    if is_empty:
+                        self._service.spreadsheets().values().update(
+                            spreadsheetId=clean_id,
+                            range=header_range,
+                            valueInputOption="USER_ENTERED",
+                            body={"values": [hdrs]},
+                        ).execute()
         except Exception as err:
             raise SpreadsheetError(f"Error ensuring sheet '{target}': {err}") from err
 

@@ -531,19 +531,23 @@ class BitbucketPolicyScraper(PolicyScraper):
 
     def __init__(
         self,
-        project_key: str,
+        project_key: str | None = None,
         repo_slug: str | None = None,
         client: BitbucketTransport | None = None,
         default_branch: str = "main",
+        page_size: int = 100,
     ) -> None:
         """Initialize a new BitbucketPolicyScraper instance."""
-        if not project_key or not project_key.strip():
+        if project_key is not None and not project_key.strip():
             raise ValueError("Project key cannot be empty.")
 
-        self.project_key = project_key.strip()
+        self.project_key = (
+            project_key.strip() if project_key and project_key.strip() else None
+        )
         self.repo_slug = repo_slug.strip() if repo_slug and repo_slug.strip() else None
         self.client = client
         self.default_branch = default_branch.strip() if default_branch else "main"
+        self.page_size = page_size if page_size > 0 else 100
 
     @staticmethod
     def _extract_enabled_count(setting: Any) -> int | None:
@@ -582,23 +586,11 @@ class BitbucketPolicyScraper(PolicyScraper):
                 slugs.append(slug)
         return sorted(set(slugs))
 
-    def scrape(self) -> list[BranchPolicy]:
-        """Discover and return canonical branch policies from Bitbucket."""
-        if self.client is None:
-            raise ScraperError("Bitbucket client not configured.")
-
-        scope = (
-            f"repo:{self.repo_slug}"
-            if self.repo_slug
-            else f"project:{self.project_key}"
-        )
+    def _parse_restrictions(
+        self, restrictions: list[dict[str, Any]], scope: str
+    ) -> list[BranchPolicy]:
+        """Convert Bitbucket branch restrictions to canonical BranchPolicy instances."""
         policies: list[BranchPolicy] = []
-
-        # 1. Scrape branch restrictions
-        restrictions = self.client.get_branch_restrictions(
-            self.project_key, self.repo_slug
-        )
-
         for item in restrictions:
             rule_type_raw = str(item.get("type", "")).strip().lower()
             matcher = item.get("matcher", {}) or {}
@@ -653,54 +645,134 @@ class BitbucketPolicyScraper(PolicyScraper):
                         platform="bitbucket",
                     )
                 )
+        return policies
 
-        # 2. Scrape pull request merge checks
-        pr_settings = self.client.get_pull_request_settings(
-            self.project_key, self.repo_slug
+    def _parse_pr_settings(
+        self, pr_settings: dict[str, Any], scope: str
+    ) -> list[BranchPolicy]:
+        """Convert Bitbucket PR settings to canonical BranchPolicy instances."""
+        policies: list[BranchPolicy] = []
+        if not pr_settings:
+            return policies
+
+        raw_pr_origin = json.dumps(pr_settings, sort_keys=True)
+        default_ref = self._canonicalize_ref(self.default_branch)
+
+        min_count = self._extract_enabled_count(pr_settings.get("requiredApprovers"))
+        if min_count is not None:
+            all_tasks = bool(pr_settings.get("requiredAllTasksComplete", False))
+            all_approvers = bool(pr_settings.get("requiredAllApprovers", False))
+            policies.append(
+                BranchPolicy(
+                    policy_scope=scope,
+                    target_ref_pattern=default_ref,
+                    normalized_rule_type=NormalizedRuleType.REQUIRE_PULL_REQUEST,
+                    rule_parameters={
+                        "min_approvals": min_count,
+                        "require_all_tasks_complete": all_tasks,
+                        "require_all_approvers": all_approvers,
+                    },
+                    origin_raw_policy=raw_pr_origin,
+                    platform="bitbucket",
+                )
+            )
+
+        build_count = self._extract_enabled_count(
+            pr_settings.get("requiredSuccessfulBuilds")
         )
-
-        if pr_settings:
-            raw_pr_origin = json.dumps(pr_settings, sort_keys=True)
-            default_ref = self._canonicalize_ref(self.default_branch)
-
-            min_count = self._extract_enabled_count(
-                pr_settings.get("requiredApprovers")
-            )
-            if min_count is not None:
-                all_tasks = bool(pr_settings.get("requiredAllTasksComplete", False))
-                all_approvers = bool(pr_settings.get("requiredAllApprovers", False))
-                policies.append(
-                    BranchPolicy(
-                        policy_scope=scope,
-                        target_ref_pattern=default_ref,
-                        normalized_rule_type=NormalizedRuleType.REQUIRE_PULL_REQUEST,
-                        rule_parameters={
-                            "min_approvals": min_count,
-                            "require_all_tasks_complete": all_tasks,
-                            "require_all_approvers": all_approvers,
-                        },
-                        origin_raw_policy=raw_pr_origin,
-                        platform="bitbucket",
-                    )
+        if build_count is not None:
+            policies.append(
+                BranchPolicy(
+                    policy_scope=scope,
+                    target_ref_pattern=default_ref,
+                    normalized_rule_type=NormalizedRuleType.REQUIRE_STATUS_CHECKS,
+                    rule_parameters={
+                        "min_successful_builds": build_count,
+                        "strict": True,
+                    },
+                    origin_raw_policy=raw_pr_origin,
+                    platform="bitbucket",
                 )
-
-            build_count = self._extract_enabled_count(
-                pr_settings.get("requiredSuccessfulBuilds")
             )
-            if build_count is not None:
-                policies.append(
-                    BranchPolicy(
-                        policy_scope=scope,
-                        target_ref_pattern=default_ref,
-                        normalized_rule_type=NormalizedRuleType.REQUIRE_STATUS_CHECKS,
-                        rule_parameters={
-                            "min_successful_builds": build_count,
-                            "strict": True,
-                        },
-                        origin_raw_policy=raw_pr_origin,
-                        platform="bitbucket",
+        return policies
+
+    def scrape(self) -> list[BranchPolicy]:
+        """Discover and return canonical branch policies from Bitbucket."""
+        if self.client is None:
+            raise ScraperError("Bitbucket client not configured.")
+
+        policies: list[BranchPolicy] = []
+
+        if self.project_key:
+            scope = (
+                f"repo:{self.repo_slug}"
+                if self.repo_slug
+                else f"project:{self.project_key}"
+            )
+            restrictions = self.client.get_branch_restrictions(
+                self.project_key, self.repo_slug
+            )
+            policies.extend(self._parse_restrictions(restrictions, scope))
+
+            pr_settings = self.client.get_pull_request_settings(
+                self.project_key, self.repo_slug
+            )
+            policies.extend(self._parse_pr_settings(pr_settings, scope))
+            return policies
+
+        # Full estate traversal across all projects and repositories
+        projects = self.client.get_projects(limit=self.page_size)
+        for proj in projects:
+            proj_key = proj.get("key") or proj.get("slug") or proj.get("name") or ""
+            if not proj_key:
+                continue
+
+            proj_scope = f"project:{proj_key}"
+            try:
+                proj_restrictions = self.client.get_branch_restrictions(proj_key)
+                policies.extend(self._parse_restrictions(proj_restrictions, proj_scope))
+            except ScraperError:
+                pass
+
+            try:
+                proj_pr_settings = self.client.get_pull_request_settings(proj_key)
+                policies.extend(self._parse_pr_settings(proj_pr_settings, proj_scope))
+            except ScraperError:
+                pass
+
+            if self.repo_slug:
+                repos = [{"slug": self.repo_slug}]
+            else:
+                try:
+                    repos = self.client.get_repositories(proj_key, limit=self.page_size)
+                except ScraperError:
+                    repos = []
+
+            for repo in repos:
+                slug = repo.get("slug") or repo.get("name") or ""
+                if not slug:
+                    continue
+
+                repo_scope = f"repo:{slug}"
+                try:
+                    repo_restrictions = self.client.get_branch_restrictions(
+                        proj_key, slug
                     )
-                )
+                    policies.extend(
+                        self._parse_restrictions(repo_restrictions, repo_scope)
+                    )
+                except ScraperError:
+                    pass
+
+                try:
+                    repo_pr_settings = self.client.get_pull_request_settings(
+                        proj_key, slug
+                    )
+                    policies.extend(
+                        self._parse_pr_settings(repo_pr_settings, repo_scope)
+                    )
+                except ScraperError:
+                    pass
 
         return policies
 
@@ -735,16 +807,21 @@ class BitbucketPoliciesScraperProvider(ScraperProvider):
     def configure_parser(self, parser: Any) -> None:
         """Configure platform CLI arguments for Bitbucket policy scraping."""
         parser.add_argument(
+            "--base-url",
             "--url",
+            dest="base_url",
             required=True,
-            help="Bitbucket server or API base URL (e.g. https://bitbucket.corp.local)",
+            help="Bitbucket Server/DC base URL or Cloud API base URL",
         )
         parser.add_argument(
             "--project",
             "--project-key",
             dest="project_key",
-            required=True,
-            help="Bitbucket project key (e.g. CORE)",
+            default=None,
+            help=(
+                "Optional Bitbucket project key filter "
+                "(scrapes all projects if omitted)"
+            ),
         )
         parser.add_argument(
             "--repo",
@@ -777,6 +854,12 @@ class BitbucketPoliciesScraperProvider(ScraperProvider):
             help="Default branch name for pull request settings (default: main)",
         )
         parser.add_argument(
+            "--page-size",
+            type=int,
+            default=100,
+            help="Pagination window size for API requests (default: 100)",
+        )
+        parser.add_argument(
             "--timeout",
             type=float,
             default=15.0,
@@ -798,12 +881,14 @@ class BitbucketPoliciesScraperProvider(ScraperProvider):
     def create_scraper(self, args: Any) -> BitbucketPolicyScraper:
         """Build BitbucketPolicyScraper from parsed CLI arguments."""
         auth = _resolve_auth(args)
+        raw_url = getattr(args, "base_url", None) or getattr(args, "url", None) or ""
+        base_url = str(raw_url).strip()
         timeout = float(getattr(args, "timeout", 15.0) or 15.0)
         retries = int(getattr(args, "retries", 3) or 3)
         backoff_factor = float(getattr(args, "backoff_factor", 0.5) or 0.5)
 
         client = BitbucketClient(
-            base_url=args.url,
+            base_url=base_url,
             auth=auth,
             timeout=timeout,
             retries=retries,
@@ -811,10 +896,11 @@ class BitbucketPoliciesScraperProvider(ScraperProvider):
         )
 
         return BitbucketPolicyScraper(
-            project_key=args.project_key,
+            project_key=getattr(args, "project_key", None),
             repo_slug=getattr(args, "repo_slug", None),
             client=client,
             default_branch=getattr(args, "default_branch", "main"),
+            page_size=int(getattr(args, "page_size", 100) or 100),
         )
 
 
