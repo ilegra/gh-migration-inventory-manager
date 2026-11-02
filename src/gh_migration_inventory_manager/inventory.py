@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from enum import Enum
 from pathlib import Path
@@ -35,6 +35,8 @@ class SpreadsheetClient(Protocol):
     def add(self, row: Any) -> Any: ...
 
     def update_row(self, row: Any) -> Any: ...
+
+    def get_all_rows(self) -> list[Any]: ...
 
 
 _PT_MONTHS: dict[int, str] = {
@@ -93,7 +95,7 @@ def _from_sheet_label(label: str) -> MigrationStatus:
     clean = (label or "").strip().lower()
     if not clean:
         return MigrationStatus.WAITTING
-    if "somente github" in clean or clean in ("migrated", "migrados"):
+    if "somente github" in clean or clean in ("migrated", "migrados", "migrado"):
         return MigrationStatus.MIGRATED
     if "ativos em ambas" in clean or "migrando" in clean or clean == "active_in_both":
         return MigrationStatus.ACTIVE_IN_BOTH
@@ -191,6 +193,8 @@ class PipelineRecord:
     last_build: datetime | None = None
     last_status: str = ""
     migration_status: MigrationStatus = MigrationStatus.WAITTING
+    project: str = ""
+    repository: str = ""
 
 
 @dataclass
@@ -204,6 +208,8 @@ class TeamRecord:
     origin_role: str = ""
     team_slug: str = ""
     migration_status: MigrationStatus = MigrationStatus.WAITTING
+    project: str = ""
+    repository: str = ""
 
 
 @dataclass
@@ -217,6 +223,8 @@ class PolicyRecord:
     bypass_team_slugs: str = ""
     origin_raw_policy: str = ""
     migration_status: MigrationStatus = MigrationStatus.WAITTING
+    project: str = ""
+    repository: str = ""
 
 
 def _build_credentials(credentials: Any, credentials_path: str | None) -> Any:
@@ -421,6 +429,29 @@ class Inventory:
 
         row = self._find_row(repository_name, project)
         return RowConverter.to_inventory_record(row) if row is not None else None
+
+    def get_all_repositories(self) -> list[InventoryRecord]:
+        """Retrieve all repositories recorded in the inventory."""
+        from gh_migration_inventory_manager.google import RowConverter
+
+        sheet = self._validate_and_build_spreadsheet()
+        if hasattr(sheet, "get_all_rows") and callable(sheet.get_all_rows):
+            rows = sheet.get_all_rows()
+        else:
+            rows = []
+        return [RowConverter.to_inventory_record(r) for r in rows]
+
+    def get_repositories_for_project(self, project_slug: str) -> list[InventoryRecord]:
+        """Retrieve all repositories associated with a given project."""
+        clean_project = (
+            str(project_slug).strip().lower() if project_slug is not None else ""
+        )
+        if not clean_project:
+            raise ValueError("Project slug cannot be empty.")
+        all_repos = self.get_all_repositories()
+        return [
+            r for r in all_repos if (r.project or "").strip().lower() == clean_project
+        ]
 
     def register_record(self, record: InventoryRecord) -> InventoryRecord:
         """Register or synchronize an InventoryRecord in the inventory.
@@ -714,6 +745,62 @@ class PipelineInventory:
         row = self._find_row(workflow_id)
         return WorkflowRowConverter.to_pipeline_record(row) if row is not None else None
 
+    def get_all_pipelines(self) -> list[PipelineRecord]:
+        """Retrieve all CI/CD pipelines recorded in the workflows inventory."""
+        from gh_migration_inventory_manager.google import WorkflowRowConverter
+
+        sheet = self._get_spreadsheet()
+        if hasattr(sheet, "get_all_rows") and callable(sheet.get_all_rows):
+            rows = sheet.get_all_rows()
+        else:
+            rows = []
+        return [WorkflowRowConverter.to_pipeline_record(r) for r in rows]
+
+    def get_pipelines_for_project(self, project_slug: str) -> list[PipelineRecord]:
+        """Retrieve all pipelines associated with a given project."""
+        clean_proj = (
+            str(project_slug).strip().lower() if project_slug is not None else ""
+        )
+        if not clean_proj:
+            raise ValueError("Project slug cannot be empty.")
+        all_pipes = self.get_all_pipelines()
+        return [
+            p
+            for p in all_pipes
+            if (p.project or "").strip().lower() == clean_proj
+            or (p.repository_association or "")
+            .strip()
+            .lower()
+            .startswith(f"{clean_proj}/")
+        ]
+
+    def get_pipelines_for_repository(
+        self, project_slug: str, repo_slug: str
+    ) -> list[PipelineRecord]:
+        """Retrieve all pipelines associated with a specific repository."""
+        clean_proj = (
+            str(project_slug).strip().lower() if project_slug is not None else ""
+        )
+        clean_repo = str(repo_slug).strip().lower() if repo_slug is not None else ""
+        if not clean_proj:
+            raise ValueError("Project slug cannot be empty.")
+        if not clean_repo:
+            raise ValueError("Repository slug cannot be empty.")
+
+        all_pipes = self.get_all_pipelines()
+        matched: list[PipelineRecord] = []
+        for p in all_pipes:
+            p_proj = (p.project or "").strip().lower()
+            p_repo = (p.repository or "").strip().lower()
+            if p_repo == clean_repo and (not p_proj or p_proj == clean_proj):
+                matched.append(p)
+            elif (p.repository_association or "").strip().lower() in (
+                f"{clean_proj}/{clean_repo}",
+                clean_repo,
+            ):
+                matched.append(p)
+        return matched
+
     def sync_records(self, records: list[PipelineRecord]) -> list[PipelineRecord]:
         """Synchronize a collection of PipelineRecord instances."""
         if records is None:
@@ -923,6 +1010,71 @@ class TeamInventory:
 
         row = self._find_row(team_slug, target_repo_or_project)
         return TeamRowConverter.to_team_record(row) if row is not None else None
+
+    def get_all_teams(self) -> list[TeamRecord]:
+        """Retrieve all team topology records from the inventory."""
+        from gh_migration_inventory_manager.google import TeamRowConverter
+
+        sheet = self._get_spreadsheet()
+        if hasattr(sheet, "get_all_rows") and callable(sheet.get_all_rows):
+            rows = sheet.get_all_rows()
+        else:
+            rows = []
+        return [TeamRowConverter.to_team_record(r) for r in rows]
+
+    def get_teams_for_project(self, project_slug: str) -> list[TeamRecord]:
+        """Retrieve all team permissions scoped to a given project."""
+        clean_proj = (
+            str(project_slug).strip().lower() if project_slug is not None else ""
+        )
+        if not clean_proj:
+            raise ValueError("Project slug cannot be empty.")
+        all_teams = self.get_all_teams()
+        return [
+            t
+            for t in all_teams
+            if (t.project or "").strip().lower() == clean_proj
+            or (t.target_repo_or_project or "").strip().lower()
+            in (f"project:{clean_proj}", clean_proj)
+        ]
+
+    def get_teams_for_repository(
+        self, project_slug: str, repo_slug: str, include_inherited: bool = True
+    ) -> list[TeamRecord]:
+        """Retrieve team permissions for a repository with optional inheritance."""
+        clean_proj = (
+            str(project_slug).strip().lower() if project_slug is not None else ""
+        )
+        clean_repo = str(repo_slug).strip().lower() if repo_slug is not None else ""
+        if not clean_proj:
+            raise ValueError("Project slug cannot be empty.")
+        if not clean_repo:
+            raise ValueError("Repository slug cannot be empty.")
+
+        all_teams = self.get_all_teams()
+        matched: list[TeamRecord] = []
+        for t in all_teams:
+            t_proj = (t.project or "").strip().lower()
+            t_repo = (t.repository or "").strip().lower()
+            target = (t.target_repo_or_project or "").strip().lower()
+
+            is_repo_match = (
+                t_repo == clean_repo and (not t_proj or t_proj == clean_proj)
+            ) or target in (
+                f"repo:{clean_proj}/{clean_repo}",
+                f"repo:{clean_repo}",
+                f"{clean_proj}/{clean_repo}",
+            )
+            if is_repo_match:
+                matched.append(t)
+            elif include_inherited:
+                is_proj_inherited = (t_proj == clean_proj and not t_repo) or target in (
+                    f"project:{clean_proj}",
+                    clean_proj,
+                )
+                if is_proj_inherited:
+                    matched.append(t)
+        return matched
 
     def sync_records(self, records: list[TeamRecord]) -> list[TeamRecord]:
         """Synchronize a collection of TeamRecord instances."""
@@ -1152,12 +1304,356 @@ class PolicyInventory:
         row = self._find_row(policy_scope, target_ref_pattern, normalized_rule_type)
         return PolicyRowConverter.to_policy_record(row) if row is not None else None
 
+    def get_all_policies(self) -> list[PolicyRecord]:
+        """Retrieve all branch governance policy records from the inventory."""
+        from gh_migration_inventory_manager.google import PolicyRowConverter
+
+        sheet = self._get_spreadsheet()
+        if hasattr(sheet, "get_all_rows") and callable(sheet.get_all_rows):
+            rows = sheet.get_all_rows()
+        else:
+            rows = []
+        return [PolicyRowConverter.to_policy_record(r) for r in rows]
+
+    def get_policies_for_project(self, project_slug: str) -> list[PolicyRecord]:
+        """Retrieve all branch policies scoped to a given project."""
+        clean_proj = (
+            str(project_slug).strip().lower() if project_slug is not None else ""
+        )
+        if not clean_proj:
+            raise ValueError("Project slug cannot be empty.")
+        all_policies = self.get_all_policies()
+        return [
+            p
+            for p in all_policies
+            if (
+                (p.project or "").strip().lower() == clean_proj
+                and not (p.repository or "").strip()
+            )
+            or (p.policy_scope or "").strip().lower() == f"project:{clean_proj}"
+        ]
+
+    def get_policies_for_repository(
+        self, project_slug: str, repo_slug: str, include_inherited: bool = True
+    ) -> list[PolicyRecord]:
+        """Retrieve branch policies for a repository with optional inheritance."""
+        clean_proj = (
+            str(project_slug).strip().lower() if project_slug is not None else ""
+        )
+        clean_repo = str(repo_slug).strip().lower() if repo_slug is not None else ""
+        if not clean_proj:
+            raise ValueError("Project slug cannot be empty.")
+        if not clean_repo:
+            raise ValueError("Repository slug cannot be empty.")
+
+        all_policies = self.get_all_policies()
+        matched: list[PolicyRecord] = []
+        for p in all_policies:
+            p_proj = (p.project or "").strip().lower()
+            p_repo = (p.repository or "").strip().lower()
+            scope = (p.policy_scope or "").strip().lower()
+
+            is_repo_match = (
+                p_repo == clean_repo and (not p_proj or p_proj == clean_proj)
+            ) or scope in (
+                f"repo:{clean_proj}/{clean_repo}",
+                f"repo:{clean_repo}",
+                f"{clean_proj}/{clean_repo}",
+            )
+            if is_repo_match:
+                matched.append(p)
+            elif include_inherited:
+                is_proj_inherited = (
+                    p_proj == clean_proj and not p_repo
+                ) or scope == f"project:{clean_proj}"
+                is_global = scope in ("global", "") or (
+                    not p_proj and not p_repo and not scope
+                )
+                if is_proj_inherited or is_global:
+                    matched.append(p)
+        return matched
+
     def sync_records(self, records: list[PolicyRecord]) -> list[PolicyRecord]:
         """Synchronize a collection of PolicyRecord instances."""
         if records is None:
             raise ValueError("Records collection cannot be None.")
         self._get_spreadsheet()
         return [self.register_record(rec) for rec in records]
+
+
+@dataclass
+class CorrelatedRepositoryProfile:
+    """Correlated cross-tab view of a single repository and its related entities."""
+
+    project_slug: str
+    repo_slug: str
+    repository: InventoryRecord | None = None
+    effective_policies: list[PolicyRecord] = field(default_factory=list)
+    pipelines: list[PipelineRecord] = field(default_factory=list)
+    teams: list[TeamRecord] = field(default_factory=list)
+
+
+@dataclass
+class CorrelatedProjectProfile:
+    """Correlated cross-tab view of an entire project and its related entities."""
+
+    project_slug: str
+    repositories: list[InventoryRecord] = field(default_factory=list)
+    project_policies: list[PolicyRecord] = field(default_factory=list)
+    pipelines: list[PipelineRecord] = field(default_factory=list)
+    teams: list[TeamRecord] = field(default_factory=list)
+
+
+class InventoryGraph:
+    """Relational synthesis layer across inventory tabs."""
+
+    def __init__(
+        self,
+        repositories: list[InventoryRecord] | None = None,
+        pipelines: list[PipelineRecord] | None = None,
+        policies: list[PolicyRecord] | None = None,
+        teams: list[TeamRecord] | None = None,
+    ) -> None:
+        self.repositories = list(repositories or [])
+        self.pipelines = list(pipelines or [])
+        self.policies = list(policies or [])
+        self.teams = list(teams or [])
+
+    @classmethod
+    def from_records(
+        cls,
+        repositories: list[InventoryRecord] | None = None,
+        pipelines: list[PipelineRecord] | None = None,
+        policies: list[PolicyRecord] | None = None,
+        teams: list[TeamRecord] | None = None,
+    ) -> InventoryGraph:
+        """Construct an InventoryGraph directly from lists of records (zero-I/O)."""
+        return cls(repositories, pipelines, policies, teams)
+
+    @classmethod
+    def from_inventories(
+        cls,
+        inventory: Inventory | None = None,
+        pipeline_inventory: PipelineInventory | None = None,
+        policy_inventory: PolicyInventory | None = None,
+        team_inventory: TeamInventory | None = None,
+        *,
+        repository_inventory: Inventory | None = None,
+    ) -> InventoryGraph:
+        """Construct an InventoryGraph by loading all 4 inventory tabs once."""
+        effective_repo_inv = inventory or repository_inventory
+        if (
+            effective_repo_inv is None
+            or pipeline_inventory is None
+            or policy_inventory is None
+            or team_inventory is None
+        ):
+            raise ValueError("All inventory managers must be provided.")
+
+        repos = effective_repo_inv.get_all_repositories()
+        pipelines = pipeline_inventory.get_all_pipelines()
+        policies = policy_inventory.get_all_policies()
+        teams = team_inventory.get_all_teams()
+        return cls(repos, pipelines, policies, teams)
+
+    def get_repository_profile(
+        self, project_slug: str, repo_slug: str
+    ) -> CorrelatedRepositoryProfile:
+        """Return the complete correlated profile for a specific repository."""
+        clean_proj = (
+            str(project_slug).strip().lower() if project_slug is not None else ""
+        )
+        clean_repo = str(repo_slug).strip().lower() if repo_slug is not None else ""
+        if not clean_proj:
+            raise ValueError("Project slug cannot be empty.")
+        if not clean_repo:
+            raise ValueError("Repository slug cannot be empty.")
+
+        matched_repo: InventoryRecord | None = None
+        for r in self.repositories:
+            if (r.name or "").strip().lower() == clean_repo and (
+                not r.project or (r.project or "").strip().lower() == clean_proj
+            ):
+                matched_repo = r
+                break
+
+        # Effective policies (repo + project-inherited + global)
+        effective_policies: list[PolicyRecord] = []
+        for p in self.policies:
+            p_proj = (p.project or "").strip().lower()
+            p_repo = (p.repository or "").strip().lower()
+            scope = (p.policy_scope or "").strip().lower()
+
+            is_repo = (
+                p_repo == clean_repo and (not p_proj or p_proj == clean_proj)
+            ) or scope in (
+                f"repo:{clean_proj}/{clean_repo}",
+                f"repo:{clean_repo}",
+                f"{clean_proj}/{clean_repo}",
+            )
+            if is_repo:
+                effective_policies.append(p)
+            elif (
+                p_proj == clean_proj and not p_repo
+            ) or scope == f"project:{clean_proj}":
+                effective_policies.append(p)
+            elif scope in ("global", "") or (not p_proj and not p_repo and not scope):
+                effective_policies.append(p)
+
+        # Correlated pipelines
+        correlated_pipelines: list[PipelineRecord] = []
+        for pl in self.pipelines:
+            pl_proj = (pl.project or "").strip().lower()
+            pl_repo = (pl.repository or "").strip().lower()
+            assoc = (pl.repository_association or "").strip().lower()
+
+            is_pipe_match = (
+                pl_repo == clean_repo and (not pl_proj or pl_proj == clean_proj)
+            ) or assoc in (
+                f"{clean_proj}/{clean_repo}",
+                clean_repo,
+            )
+            if is_pipe_match:
+                correlated_pipelines.append(pl)
+
+        # Correlated teams (repo + project-inherited)
+        effective_teams: list[TeamRecord] = []
+        for t in self.teams:
+            t_proj = (t.project or "").strip().lower()
+            t_repo = (t.repository or "").strip().lower()
+            target = (t.target_repo_or_project or "").strip().lower()
+
+            is_team_match = (
+                t_repo == clean_repo and (not t_proj or t_proj == clean_proj)
+            ) or target in (
+                f"repo:{clean_proj}/{clean_repo}",
+                f"repo:{clean_repo}",
+                f"{clean_proj}/{clean_repo}",
+            )
+            if is_team_match:
+                effective_teams.append(t)
+            elif (t_proj == clean_proj and not t_repo) or target in (
+                f"project:{clean_proj}",
+                clean_proj,
+            ):
+                effective_teams.append(t)
+
+        return CorrelatedRepositoryProfile(
+            project_slug=project_slug,
+            repo_slug=repo_slug,
+            repository=matched_repo,
+            effective_policies=effective_policies,
+            pipelines=correlated_pipelines,
+            teams=effective_teams,
+        )
+
+    def get_project_profile(self, project_slug: str) -> CorrelatedProjectProfile:
+        """Return the correlated profile for an entire project."""
+        clean_proj = (
+            str(project_slug).strip().lower() if project_slug is not None else ""
+        )
+        if not clean_proj:
+            raise ValueError("Project slug cannot be empty.")
+
+        repos = [
+            r
+            for r in self.repositories
+            if (r.project or "").strip().lower() == clean_proj
+        ]
+        policies = [
+            p
+            for p in self.policies
+            if (
+                (p.project or "").strip().lower() == clean_proj
+                and not (p.repository or "").strip()
+            )
+            or (p.policy_scope or "").strip().lower() == f"project:{clean_proj}"
+        ]
+        pipelines = [
+            pl
+            for pl in self.pipelines
+            if (pl.project or "").strip().lower() == clean_proj
+            or (pl.repository_association or "")
+            .strip()
+            .lower()
+            .startswith(f"{clean_proj}/")
+        ]
+        teams = [
+            t
+            for t in self.teams
+            if (t.project or "").strip().lower() == clean_proj
+            or (t.target_repo_or_project or "").strip().lower()
+            in (f"project:{clean_proj}", clean_proj)
+            or (t.target_repo_or_project or "")
+            .strip()
+            .lower()
+            .startswith(f"repo:{clean_proj}/")
+        ]
+
+        return CorrelatedProjectProfile(
+            project_slug=project_slug,
+            repositories=repos,
+            project_policies=policies,
+            pipelines=pipelines,
+            teams=teams,
+        )
+
+    def find_unlinked_workflows(self) -> list[PipelineRecord]:
+        """Find pipelines whose repository is not among indexed repositories."""
+        indexed_repos: set[tuple[str, str]] = set()
+        indexed_names: set[str] = set()
+
+        for r in self.repositories:
+            p = (r.project or "").strip().lower()
+            n = (r.name or "").strip().lower()
+            if p and n:
+                indexed_repos.add((p, n))
+            if n:
+                indexed_names.add(n)
+
+        unlinked: list[PipelineRecord] = []
+        for pl in self.pipelines:
+            pl_proj = (pl.project or "").strip().lower()
+            pl_repo = (pl.repository or "").strip().lower()
+            assoc = (pl.repository_association or "").strip().lower()
+
+            if not pl_repo and assoc:
+                if "/" in assoc:
+                    parts = assoc.split("/", 1)
+                    pl_proj, pl_repo = parts[0].strip(), parts[1].strip()
+                else:
+                    pl_repo = assoc
+
+            if not pl_repo:
+                unlinked.append(pl)
+            elif pl_proj and (pl_proj, pl_repo) in indexed_repos:
+                continue
+            elif not pl_proj and pl_repo in indexed_names:
+                continue
+            else:
+                unlinked.append(pl)
+
+        return unlinked
+
+    def find_global_policies(self) -> list[PolicyRecord]:
+        """Find policies configured with global scope."""
+        global_policies: list[PolicyRecord] = []
+        for p in self.policies:
+            scope = (p.policy_scope or "").strip().lower()
+            proj = (p.project or "").strip()
+            repo = (p.repository or "").strip()
+            if scope == "global" or (not proj and not repo and not scope):
+                global_policies.append(p)
+        return global_policies
+
+    def find_standalone_workflows(self) -> list[PipelineRecord]:
+        """Find pipelines that have no repository association whatsoever."""
+        return [
+            pl
+            for pl in self.pipelines
+            if not (pl.repository or "").strip()
+            and not (pl.repository_association or "").strip()
+        ]
 
 
 def __getattr__(name: str) -> Any:

@@ -99,6 +99,46 @@ def test_given_none_permission_when_converting_then_raises_value_error() -> None
         converter.to_team_record(None)
 
 
+def test_given_permission_with_explicit_project_and_repo_when_converting_then_populates_fields() -> (
+    None
+):
+    """Verify explicit project and repository fields map correctly to TeamRecord."""
+    converter = TeamConverter()
+    permission = TeamPermission(
+        team_name="Devs",
+        member_count=3,
+        target_repo_or_project="/core/app",
+        normalized_role=NormalizedRole.WRITE,
+        origin_role="rw",
+        project="core",
+        repository="app",
+    )
+
+    record = converter.to_team_record(permission)
+
+    assert record.project == "core"
+    assert record.repository == "app"
+
+
+def test_given_permission_with_composite_target_when_converting_then_falls_back_to_parsing() -> (
+    None
+):
+    """Verify fallback parsing of project and repository from target_repo_or_project."""
+    converter = TeamConverter()
+    permission = TeamPermission(
+        team_name="Devs",
+        member_count=3,
+        target_repo_or_project="/billing/invoicing/trunk",
+        normalized_role=NormalizedRole.WRITE,
+        origin_role="rw",
+    )
+
+    record = converter.to_team_record(permission)
+
+    assert record.project == "billing"
+    assert record.repository == "invoicing"
+
+
 def test_given_empty_team_name_when_converting_then_raises_value_error() -> None:
     """Verify permission with empty team name raises ValueError."""
     converter = TeamConverter()

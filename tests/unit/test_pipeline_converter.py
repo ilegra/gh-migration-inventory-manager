@@ -251,3 +251,49 @@ def test_given_none_collection_when_converting_to_records_then_raises_value_erro
     converter = PipelineConverter()
     with pytest.raises(ValueError, match="Pipelines collection cannot be None"):
         converter.to_pipeline_records(None)  # type: ignore[arg-type]
+
+
+def test_given_pipeline_with_explicit_project_and_repo_when_converting_then_populates_both() -> (
+    None
+):
+    """Test explicit project and repository on pipeline model are propagated to record."""
+    converter = PipelineConverter()
+    pipeline = Pipeline(
+        name="job-abc",
+        platform="jenkins",
+        full_path="proj-x/job-abc",
+        url="http://jenkins/proj-x/job-abc",
+        project="proj-x",
+        repository=Repository(
+            name="repo-abc",
+            project="proj-x",
+            url="https://github.com/proj-x/repo-abc.git",
+        ),
+    )
+
+    record = converter.to_pipeline_record(pipeline)
+
+    assert record.project == "proj-x"
+    assert record.repository == "repo-abc"
+
+
+def test_given_pipeline_with_composite_repo_association_when_converting_then_falls_back_to_parsing() -> (
+    None
+):
+    """Test fallback parsing of project and repository from composite repo association string."""
+    converter = PipelineConverter()
+    pipeline = Pipeline(
+        name="job-xyz",
+        platform="jenkins",
+        full_path="job-xyz",
+        url="http://jenkins/job-xyz",
+        repository=Repository(
+            name="fintech/core-payment",
+            url="https://github.com/fintech/core-payment.git",
+        ),
+    )
+
+    record = converter.to_pipeline_record(pipeline)
+
+    assert record.project == "fintech"
+    assert record.repository == "core-payment"

@@ -233,6 +233,8 @@ class BranchPolicy:
     policy_scope: str
     target_ref_pattern: str
     normalized_rule_type: NormalizedRuleType
+    project: str = ""
+    repository: str = ""
     rule_parameters: dict[str, Any] | str = field(default_factory=dict)
     bypass_team_slugs: list[str] = field(default_factory=list)
     origin_raw_policy: str = ""
@@ -249,6 +251,8 @@ class TeamPermission:
     target_repo_or_project: str
     normalized_role: NormalizedRole
     origin_role: str
+    project: str = ""
+    repository: str = ""
     team_slug: str | None = None
     metadata: dict[str, Any] = field(default_factory=dict)
 
@@ -263,6 +267,7 @@ class Pipeline:
     url: str
     pipeline_type: PipelineType = PipelineType.UNKNOWN
     repository: Repository | None = None
+    project: str = ""
     file_path: str | None = None
     branch: str | None = None
     triggers: list[PipelineTrigger] = field(default_factory=list)
