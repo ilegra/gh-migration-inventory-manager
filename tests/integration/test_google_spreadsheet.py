@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import os
 import uuid
 
 import pytest
@@ -29,28 +28,10 @@ from gh_migration_inventory_manager.inventory import (
 _SPREADSHEET_ID = "1Z0PAjv8KK6WBrS2356gtR3VE0ulD1-8LM4DPQiG-Nkk"
 
 
-def _get_credentials_path() -> str | None:
-    for candidate in (
-        os.environ.get("GCP_KEY_PATH"),
-        os.environ.get("GOOGLE_APPLICATION_CREDENTIALS"),
-        "gcp-key.json",
-        "gcp-api-keys.json",
-    ):
-        if candidate and os.path.exists(candidate):
-            return candidate
-    return None
-
-
 @pytest.fixture(scope="module")
-def live_spreadsheet() -> Spreadsheet:
+def live_spreadsheet(gcp_credentials_path: str) -> Spreadsheet:
     """Fixture providing an authenticated Spreadsheet client ensuring all tabs exist."""
-    creds_path = _get_credentials_path()
-    if not creds_path:
-        pytest.skip(
-            "GCP credentials file not found; skipping live Google Spreadsheet integration tests."
-        )
-
-    credentials = Credentials(credentials_path=creds_path)
+    credentials = Credentials(credentials_path=gcp_credentials_path)
     sheet = Spreadsheet(
         id=_SPREADSHEET_ID,
         credentials=credentials,
@@ -76,8 +57,8 @@ def test_given_spreadsheet_template_when_ensuring_all_tabs_then_all_tabs_and_col
     )
     inv_headers = res_inv.get("values", [[]])[0]
     assert len(inv_headers) >= 8
-    assert inv_headers[0] == INVENTORY_HEADERS[0]  # Nome do Repositório
-    assert inv_headers[1] == INVENTORY_HEADERS[1]  # Projeto
+    assert inv_headers[0] == INVENTORY_HEADERS[0]  # Projeto
+    assert inv_headers[1] == INVENTORY_HEADERS[1]  # Nome do Repositório
 
     # 2. Tab: Workflows (14 columns, A:N)
     res_wf = (
@@ -124,11 +105,9 @@ def test_given_inventario_tab_when_writing_record_then_google_api_verifies_cells
 ) -> None:
     """Validate writing to 'Inventario' tab and assert cell contents directly using Google API."""
     service = live_spreadsheet._service
-    creds_path = _get_credentials_path()
-    assert creds_path is not None
     inv_sheet = Spreadsheet(
         id=_SPREADSHEET_ID,
-        credentials=Credentials(credentials_path=creds_path),
+        credentials=live_spreadsheet.credentials,
         sheet_name="Inventario",
     )
     inventory = Inventory(spreadsheet=inv_sheet)
@@ -172,11 +151,9 @@ def test_given_workflows_tab_when_writing_pipeline_then_google_api_verifies_four
 ) -> None:
     """Validate writing to 'Workflows' tab and assert all 14 cells including project/repo directly using Google API."""
     service = live_spreadsheet._service
-    creds_path = _get_credentials_path()
-    assert creds_path is not None
     wf_sheet = Spreadsheet(
         id=_SPREADSHEET_ID,
-        credentials=Credentials(credentials_path=creds_path),
+        credentials=live_spreadsheet.credentials,
         sheet_name="Workflows",
     )
     pipe_inv = PipelineInventory(spreadsheet=wf_sheet)
@@ -243,11 +220,9 @@ def test_given_topology_tab_when_writing_team_then_google_api_verifies_nine_colu
 ) -> None:
     """Validate writing to 'Topology' tab and assert all 9 cells including project/repo directly using Google API."""
     service = live_spreadsheet._service
-    creds_path = _get_credentials_path()
-    assert creds_path is not None
     topo_sheet = Spreadsheet(
         id=_SPREADSHEET_ID,
-        credentials=Credentials(credentials_path=creds_path),
+        credentials=live_spreadsheet.credentials,
         sheet_name="Topology",
     )
     team_inv = TeamInventory(spreadsheet=topo_sheet)
@@ -313,11 +288,9 @@ def test_given_policies_tab_when_writing_policy_then_google_api_verifies_nine_co
 ) -> None:
     """Validate writing to 'Policies' tab and assert all 9 cells including project/repo directly using Google API."""
     service = live_spreadsheet._service
-    creds_path = _get_credentials_path()
-    assert creds_path is not None
     pol_sheet = Spreadsheet(
         id=_SPREADSHEET_ID,
-        credentials=Credentials(credentials_path=creds_path),
+        credentials=live_spreadsheet.credentials,
         sheet_name="Policies",
     )
     pol_inv = PolicyInventory(spreadsheet=pol_sheet)
@@ -382,8 +355,6 @@ def test_given_all_tabs_when_querying_get_all_rows_then_data_matches_direct_goog
 ) -> None:
     """Validate Spreadsheet.get_all_rows() across all tabs against direct raw Google API calls."""
     service = live_spreadsheet._service
-    creds_path = _get_credentials_path()
-    assert creds_path is not None
 
     for tab_name, col_end in [
         ("Inventario", "H"),
@@ -393,7 +364,7 @@ def test_given_all_tabs_when_querying_get_all_rows_then_data_matches_direct_goog
     ]:
         tab_sheet = Spreadsheet(
             id=_SPREADSHEET_ID,
-            credentials=Credentials(credentials_path=creds_path),
+            credentials=live_spreadsheet.credentials,
             sheet_name=tab_name,
         )
         rows_from_client = tab_sheet.get_all_rows()

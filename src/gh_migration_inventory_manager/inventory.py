@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from enum import Enum
@@ -297,6 +298,8 @@ class Inventory:
             InventoryError: For general inventory storage errors.
         """
         if self.spreadsheet is not None:
+            if getattr(self, "_spreadsheet_initialized", False):
+                return self.spreadsheet
             if self.spreadsheet_id is not None:
                 configured_id = getattr(self.spreadsheet, "id", None)
                 if configured_id and configured_id != str(self.spreadsheet_id).strip():
@@ -309,6 +312,7 @@ class Inventory:
                 self.spreadsheet.validate
             ):
                 self.spreadsheet.validate()
+            self._spreadsheet_initialized = True
             return self.spreadsheet
 
         if not self.spreadsheet_id or not str(self.spreadsheet_id).strip():
@@ -329,6 +333,7 @@ class Inventory:
         return self.spreadsheet
 
     _build_spreadsheet = _validate_and_build_spreadsheet
+    _get_spreadsheet = _validate_and_build_spreadsheet
 
     @staticmethod
     def _from_sheet_label(label: str) -> MigrationStatus:
@@ -434,11 +439,8 @@ class Inventory:
         """Retrieve all repositories recorded in the inventory."""
         from gh_migration_inventory_manager.google import RowConverter
 
-        sheet = self._validate_and_build_spreadsheet()
-        if hasattr(sheet, "get_all_rows") and callable(sheet.get_all_rows):
-            rows = sheet.get_all_rows()
-        else:
-            rows = []
+        sheet = self._get_spreadsheet()
+        rows = sheet.get_all_rows()
         return [RowConverter.to_inventory_record(r) for r in rows]
 
     def get_repositories_for_project(self, project_slug: str) -> list[InventoryRecord]:
@@ -750,10 +752,7 @@ class PipelineInventory:
         from gh_migration_inventory_manager.google import WorkflowRowConverter
 
         sheet = self._get_spreadsheet()
-        if hasattr(sheet, "get_all_rows") and callable(sheet.get_all_rows):
-            rows = sheet.get_all_rows()
-        else:
-            rows = []
+        rows = sheet.get_all_rows()
         return [WorkflowRowConverter.to_pipeline_record(r) for r in rows]
 
     def get_pipelines_for_project(self, project_slug: str) -> list[PipelineRecord]:
@@ -763,15 +762,12 @@ class PipelineInventory:
         )
         if not clean_proj:
             raise ValueError("Project slug cannot be empty.")
-        all_pipes = self.get_all_pipelines()
+        proj_prefix = f"{clean_proj}/"
         return [
             p
-            for p in all_pipes
+            for p in self.get_all_pipelines()
             if (p.project or "").strip().lower() == clean_proj
-            or (p.repository_association or "")
-            .strip()
-            .lower()
-            .startswith(f"{clean_proj}/")
+            or (p.repository_association or "").strip().lower().startswith(proj_prefix)
         ]
 
     def get_pipelines_for_repository(
@@ -787,17 +783,14 @@ class PipelineInventory:
         if not clean_repo:
             raise ValueError("Repository slug cannot be empty.")
 
-        all_pipes = self.get_all_pipelines()
+        pipe_assoc_targets = {f"{clean_proj}/{clean_repo}", clean_repo}
         matched: list[PipelineRecord] = []
-        for p in all_pipes:
+        for p in self.get_all_pipelines():
             p_proj = (p.project or "").strip().lower()
             p_repo = (p.repository or "").strip().lower()
             if p_repo == clean_repo and (not p_proj or p_proj == clean_proj):
                 matched.append(p)
-            elif (p.repository_association or "").strip().lower() in (
-                f"{clean_proj}/{clean_repo}",
-                clean_repo,
-            ):
+            elif (p.repository_association or "").strip().lower() in pipe_assoc_targets:
                 matched.append(p)
         return matched
 
@@ -1016,10 +1009,7 @@ class TeamInventory:
         from gh_migration_inventory_manager.google import TeamRowConverter
 
         sheet = self._get_spreadsheet()
-        if hasattr(sheet, "get_all_rows") and callable(sheet.get_all_rows):
-            rows = sheet.get_all_rows()
-        else:
-            rows = []
+        rows = sheet.get_all_rows()
         return [TeamRowConverter.to_team_record(r) for r in rows]
 
     def get_teams_for_project(self, project_slug: str) -> list[TeamRecord]:
@@ -1029,13 +1019,12 @@ class TeamInventory:
         )
         if not clean_proj:
             raise ValueError("Project slug cannot be empty.")
-        all_teams = self.get_all_teams()
+        proj_targets = {f"project:{clean_proj}", clean_proj}
         return [
             t
-            for t in all_teams
+            for t in self.get_all_teams()
             if (t.project or "").strip().lower() == clean_proj
-            or (t.target_repo_or_project or "").strip().lower()
-            in (f"project:{clean_proj}", clean_proj)
+            or (t.target_repo_or_project or "").strip().lower() in proj_targets
         ]
 
     def get_teams_for_repository(
@@ -1051,27 +1040,28 @@ class TeamInventory:
         if not clean_repo:
             raise ValueError("Repository slug cannot be empty.")
 
-        all_teams = self.get_all_teams()
+        repo_targets = {
+            f"repo:{clean_proj}/{clean_repo}",
+            f"repo:{clean_repo}",
+            f"{clean_proj}/{clean_repo}",
+        }
+        proj_targets = {f"project:{clean_proj}", clean_proj}
+
         matched: list[TeamRecord] = []
-        for t in all_teams:
+        for t in self.get_all_teams():
             t_proj = (t.project or "").strip().lower()
             t_repo = (t.repository or "").strip().lower()
             target = (t.target_repo_or_project or "").strip().lower()
 
             is_repo_match = (
                 t_repo == clean_repo and (not t_proj or t_proj == clean_proj)
-            ) or target in (
-                f"repo:{clean_proj}/{clean_repo}",
-                f"repo:{clean_repo}",
-                f"{clean_proj}/{clean_repo}",
-            )
+            ) or target in repo_targets
             if is_repo_match:
                 matched.append(t)
             elif include_inherited:
-                is_proj_inherited = (t_proj == clean_proj and not t_repo) or target in (
-                    f"project:{clean_proj}",
-                    clean_proj,
-                )
+                is_proj_inherited = (
+                    t_proj == clean_proj and not t_repo
+                ) or target in proj_targets
                 if is_proj_inherited:
                     matched.append(t)
         return matched
@@ -1309,10 +1299,7 @@ class PolicyInventory:
         from gh_migration_inventory_manager.google import PolicyRowConverter
 
         sheet = self._get_spreadsheet()
-        if hasattr(sheet, "get_all_rows") and callable(sheet.get_all_rows):
-            rows = sheet.get_all_rows()
-        else:
-            rows = []
+        rows = sheet.get_all_rows()
         return [PolicyRowConverter.to_policy_record(r) for r in rows]
 
     def get_policies_for_project(self, project_slug: str) -> list[PolicyRecord]:
@@ -1322,15 +1309,15 @@ class PolicyInventory:
         )
         if not clean_proj:
             raise ValueError("Project slug cannot be empty.")
-        all_policies = self.get_all_policies()
+        proj_scope = f"project:{clean_proj}"
         return [
             p
-            for p in all_policies
+            for p in self.get_all_policies()
             if (
                 (p.project or "").strip().lower() == clean_proj
                 and not (p.repository or "").strip()
             )
-            or (p.policy_scope or "").strip().lower() == f"project:{clean_proj}"
+            or (p.policy_scope or "").strip().lower() == proj_scope
         ]
 
     def get_policies_for_repository(
@@ -1346,26 +1333,28 @@ class PolicyInventory:
         if not clean_repo:
             raise ValueError("Repository slug cannot be empty.")
 
-        all_policies = self.get_all_policies()
+        repo_targets = {
+            f"repo:{clean_proj}/{clean_repo}",
+            f"repo:{clean_repo}",
+            f"{clean_proj}/{clean_repo}",
+        }
+        proj_scope = f"project:{clean_proj}"
+
         matched: list[PolicyRecord] = []
-        for p in all_policies:
+        for p in self.get_all_policies():
             p_proj = (p.project or "").strip().lower()
             p_repo = (p.repository or "").strip().lower()
             scope = (p.policy_scope or "").strip().lower()
 
             is_repo_match = (
                 p_repo == clean_repo and (not p_proj or p_proj == clean_proj)
-            ) or scope in (
-                f"repo:{clean_proj}/{clean_repo}",
-                f"repo:{clean_repo}",
-                f"{clean_proj}/{clean_repo}",
-            )
+            ) or scope in repo_targets
             if is_repo_match:
                 matched.append(p)
             elif include_inherited:
                 is_proj_inherited = (
                     p_proj == clean_proj and not p_repo
-                ) or scope == f"project:{clean_proj}"
+                ) or scope == proj_scope
                 is_global = scope in ("global", "") or (
                     not p_proj and not p_repo and not scope
                 )
@@ -1440,8 +1429,8 @@ class InventoryGraph:
         *,
         repository_inventory: Inventory | None = None,
     ) -> InventoryGraph:
-        """Construct an InventoryGraph by loading all 4 inventory tabs once."""
-        effective_repo_inv = inventory or repository_inventory
+        """Construct an InventoryGraph by loading all 4 inventory tabs concurrently."""
+        effective_repo_inv = repository_inventory or inventory
         if (
             effective_repo_inv is None
             or pipeline_inventory is None
@@ -1450,10 +1439,17 @@ class InventoryGraph:
         ):
             raise ValueError("All inventory managers must be provided.")
 
-        repos = effective_repo_inv.get_all_repositories()
-        pipelines = pipeline_inventory.get_all_pipelines()
-        policies = policy_inventory.get_all_policies()
-        teams = team_inventory.get_all_teams()
+        with ThreadPoolExecutor(max_workers=4) as executor:
+            fut_repos = executor.submit(effective_repo_inv.get_all_repositories)
+            fut_pipes = executor.submit(pipeline_inventory.get_all_pipelines)
+            fut_pols = executor.submit(policy_inventory.get_all_policies)
+            fut_teams = executor.submit(team_inventory.get_all_teams)
+
+            repos = fut_repos.result()
+            pipelines = fut_pipes.result()
+            policies = fut_pols.result()
+            teams = fut_teams.result()
+
         return cls(repos, pipelines, policies, teams)
 
     def get_repository_profile(
@@ -1477,6 +1473,15 @@ class InventoryGraph:
                 matched_repo = r
                 break
 
+        repo_targets = {
+            f"repo:{clean_proj}/{clean_repo}",
+            f"repo:{clean_repo}",
+            f"{clean_proj}/{clean_repo}",
+        }
+        pipe_assoc_targets = {f"{clean_proj}/{clean_repo}", clean_repo}
+        proj_scope = f"project:{clean_proj}"
+        proj_targets = {proj_scope, clean_proj}
+
         # Effective policies (repo + project-inherited + global)
         effective_policies: list[PolicyRecord] = []
         for p in self.policies:
@@ -1486,16 +1491,10 @@ class InventoryGraph:
 
             is_repo = (
                 p_repo == clean_repo and (not p_proj or p_proj == clean_proj)
-            ) or scope in (
-                f"repo:{clean_proj}/{clean_repo}",
-                f"repo:{clean_repo}",
-                f"{clean_proj}/{clean_repo}",
-            )
+            ) or scope in repo_targets
             if is_repo:
                 effective_policies.append(p)
-            elif (
-                p_proj == clean_proj and not p_repo
-            ) or scope == f"project:{clean_proj}":
+            elif (p_proj == clean_proj and not p_repo) or scope == proj_scope:
                 effective_policies.append(p)
             elif scope in ("global", "") or (not p_proj and not p_repo and not scope):
                 effective_policies.append(p)
@@ -1509,10 +1508,7 @@ class InventoryGraph:
 
             is_pipe_match = (
                 pl_repo == clean_repo and (not pl_proj or pl_proj == clean_proj)
-            ) or assoc in (
-                f"{clean_proj}/{clean_repo}",
-                clean_repo,
-            )
+            ) or assoc in pipe_assoc_targets
             if is_pipe_match:
                 correlated_pipelines.append(pl)
 
@@ -1525,17 +1521,10 @@ class InventoryGraph:
 
             is_team_match = (
                 t_repo == clean_repo and (not t_proj or t_proj == clean_proj)
-            ) or target in (
-                f"repo:{clean_proj}/{clean_repo}",
-                f"repo:{clean_repo}",
-                f"{clean_proj}/{clean_repo}",
-            )
+            ) or target in repo_targets
             if is_team_match:
                 effective_teams.append(t)
-            elif (t_proj == clean_proj and not t_repo) or target in (
-                f"project:{clean_proj}",
-                clean_proj,
-            ):
+            elif (t_proj == clean_proj and not t_repo) or target in proj_targets:
                 effective_teams.append(t)
 
         return CorrelatedRepositoryProfile(
@@ -1555,6 +1544,11 @@ class InventoryGraph:
         if not clean_proj:
             raise ValueError("Project slug cannot be empty.")
 
+        proj_scope = f"project:{clean_proj}"
+        proj_prefix = f"{clean_proj}/"
+        proj_targets = {proj_scope, clean_proj}
+        proj_repo_prefix = f"repo:{clean_proj}/"
+
         repos = [
             r
             for r in self.repositories
@@ -1567,27 +1561,23 @@ class InventoryGraph:
                 (p.project or "").strip().lower() == clean_proj
                 and not (p.repository or "").strip()
             )
-            or (p.policy_scope or "").strip().lower() == f"project:{clean_proj}"
+            or (p.policy_scope or "").strip().lower() == proj_scope
         ]
         pipelines = [
             pl
             for pl in self.pipelines
             if (pl.project or "").strip().lower() == clean_proj
-            or (pl.repository_association or "")
-            .strip()
-            .lower()
-            .startswith(f"{clean_proj}/")
+            or (pl.repository_association or "").strip().lower().startswith(proj_prefix)
         ]
         teams = [
             t
             for t in self.teams
             if (t.project or "").strip().lower() == clean_proj
-            or (t.target_repo_or_project or "").strip().lower()
-            in (f"project:{clean_proj}", clean_proj)
+            or (t.target_repo_or_project or "").strip().lower() in proj_targets
             or (t.target_repo_or_project or "")
             .strip()
             .lower()
-            .startswith(f"repo:{clean_proj}/")
+            .startswith(proj_repo_prefix)
         ]
 
         return CorrelatedProjectProfile(
@@ -1600,6 +1590,10 @@ class InventoryGraph:
 
     def find_unlinked_workflows(self) -> list[PipelineRecord]:
         """Find pipelines whose repository is not among indexed repositories."""
+        from gh_migration_inventory_manager.converter import (
+            _parse_repo_assoc_project_repo,
+        )
+
         indexed_repos: set[tuple[str, str]] = set()
         indexed_names: set[str] = set()
 
@@ -1618,19 +1612,15 @@ class InventoryGraph:
             assoc = (pl.repository_association or "").strip().lower()
 
             if not pl_repo and assoc:
-                if "/" in assoc:
-                    parts = assoc.split("/", 1)
-                    pl_proj, pl_repo = parts[0].strip(), parts[1].strip()
-                else:
-                    pl_repo = assoc
+                parsed_proj, parsed_repo = _parse_repo_assoc_project_repo(assoc)
+                pl_proj = pl_proj or parsed_proj.lower()
+                pl_repo = parsed_repo.lower()
 
-            if not pl_repo:
-                unlinked.append(pl)
-            elif pl_proj and (pl_proj, pl_repo) in indexed_repos:
-                continue
-            elif not pl_proj and pl_repo in indexed_names:
-                continue
-            else:
+            is_linked = bool(
+                (pl_proj and (pl_proj, pl_repo) in indexed_repos)
+                or (not pl_proj and pl_repo and pl_repo in indexed_names)
+            )
+            if not is_linked:
                 unlinked.append(pl)
 
         return unlinked

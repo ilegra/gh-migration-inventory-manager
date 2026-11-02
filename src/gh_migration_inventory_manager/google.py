@@ -11,6 +11,10 @@ from google.oauth2 import service_account
 from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
 
+from gh_migration_inventory_manager.converter import (
+    _parse_repo_assoc_project_repo,
+    _parse_scope_project_repo,
+)
 from gh_migration_inventory_manager.inventory import (
     InventoryAccessError,
     InventoryError,
@@ -23,7 +27,7 @@ from gh_migration_inventory_manager.inventory import (
     _from_sheet_label,
     format_migration_month,
 )
-from gh_migration_inventory_manager.scrap import normalize_role
+from gh_migration_inventory_manager.scrap import NormalizedRole, normalize_role
 
 
 class SpreadsheetError(InventoryError):
@@ -103,57 +107,6 @@ def _format_date(dt: datetime | str | None) -> str:
     if isinstance(dt, datetime):
         return dt.strftime(_DATE_FORMAT)
     return str(dt or "")
-
-
-def _parse_scope_project_repo(scope: str) -> tuple[str, str]:
-    """Extract (project, repository) from a legacy scope or target string.
-
-    Rules:
-    - 'project:KEY' -> ('KEY', '')
-    - 'repo:KEY/SLUG' -> ('KEY', 'SLUG')
-    - 'repo:SLUG' -> ('', 'SLUG')
-    - 'global' or empty -> ('', '')
-    - 'PROJ/REPO' or '/PROJ/REPO' -> ('PROJ', 'REPO')
-    - other -> ('', scope)
-    """
-    clean = str(scope or "").strip()
-    if not clean or clean.lower() == "global":
-        return "", ""
-    if clean.startswith("project:"):
-        return clean[len("project:") :].strip(), ""
-    if clean.startswith("repo:"):
-        rest = clean[len("repo:") :].strip()
-        if "/" in rest:
-            p, r = rest.split("/", 1)
-            return p.strip(), r.strip()
-        return "", rest
-    if "/" in clean:
-        parts = [p.strip() for p in clean.strip("/").split("/") if p.strip()]
-        if len(parts) >= 2:
-            return parts[0], parts[1]
-        if len(parts) == 1:
-            return "", parts[0]
-    return "", clean
-
-
-def _parse_repo_assoc_project_repo(assoc: str) -> tuple[str, str]:
-    """Extract (project, repository) from a repository association string.
-
-    Rules:
-    - 'PROJ/REPO' -> ('PROJ', 'REPO')
-    - 'REPO' -> ('', 'REPO')
-    - empty -> ('', '')
-    """
-    clean = str(assoc or "").strip()
-    if not clean:
-        return "", ""
-    if "/" in clean:
-        parts = [p.strip() for p in clean.strip("/").split("/") if p.strip()]
-        if len(parts) >= 2:
-            return parts[0], parts[1]
-        if len(parts) == 1:
-            return "", parts[0]
-    return "", clean
 
 
 @dataclass
@@ -639,13 +592,6 @@ class RowConverter:
         }
         return Row(row_index=row_index, data=data)
 
-    to_team_record = staticmethod(TeamRowConverter.to_team_record)
-    from_team_record = staticmethod(TeamRowConverter.from_team_record)
-    to_policy_record = staticmethod(PolicyRowConverter.to_policy_record)
-    from_policy_record = staticmethod(PolicyRowConverter.from_policy_record)
-    to_pipeline_record = staticmethod(WorkflowRowConverter.to_pipeline_record)
-    from_pipeline_record = staticmethod(WorkflowRowConverter.from_pipeline_record)
-
 
 @dataclass
 class Credentials:
@@ -747,6 +693,7 @@ class Spreadsheet:
         self,
         sheet_name: str | None = None,
         headers: list[str] | None = None,
+        existing_sheets: list[str] | set[str] | None = None,
     ) -> None:
         """Ensure the target sheet tab exists, creating it with headers if missing."""
         target = sheet_name or self.sheet_name
@@ -770,17 +717,21 @@ class Spreadsheet:
             return
 
         try:
-            meta = (
-                self._service.spreadsheets()
-                .get(spreadsheetId=clean_id, fields="sheets.properties.title")
-                .execute()
-            )
-            existing_sheets = [
-                s.get("properties", {}).get("title")
-                for s in meta.get("sheets", [])
-                if s.get("properties", {}).get("title")
-            ]
-            is_new = target not in existing_sheets
+            if existing_sheets is None:
+                meta = (
+                    self._service.spreadsheets()
+                    .get(spreadsheetId=clean_id, fields="sheets.properties.title")
+                    .execute()
+                )
+                known_sheets = [
+                    s.get("properties", {}).get("title")
+                    for s in meta.get("sheets", [])
+                    if s.get("properties", {}).get("title")
+                ]
+            else:
+                known_sheets = list(existing_sheets)
+
+            is_new = target not in known_sheets
             if is_new:
                 req = {"addSheet": {"properties": {"title": target}}}
                 self._service.spreadsheets().batchUpdate(
@@ -823,13 +774,34 @@ class Spreadsheet:
 
     def ensure_all_tabs(self) -> None:
         """Ensure all canonical migration tabs exist with up-to-date row 1 headers."""
+        clean_id = (self.id or "").strip()
+        known_sheets = None
+        if clean_id:
+            try:
+                meta = (
+                    self._service.spreadsheets()
+                    .get(spreadsheetId=clean_id, fields="sheets.properties.title")
+                    .execute()
+                )
+                known_sheets = [
+                    s.get("properties", {}).get("title")
+                    for s in meta.get("sheets", [])
+                    if s.get("properties", {}).get("title")
+                ]
+            except Exception:
+                known_sheets = None
+
         for sheet_name, headers in (
             ("Inventario", _HEADERS),
             ("Workflows", _WORKFLOW_HEADERS),
             ("Topology", _TOPOLOGY_HEADERS),
             ("Policies", _POLICIES_HEADERS),
         ):
-            self.ensure_sheet(sheet_name=sheet_name, headers=headers)
+            self.ensure_sheet(
+                sheet_name=sheet_name,
+                headers=headers,
+                existing_sheets=known_sheets,
+            )
 
     def clear_tab(self, sheet_name: str | None = None) -> None:
         """Clear all data rows in target tab (keeping row 1 headers intact)."""
@@ -912,7 +884,7 @@ class Spreadsheet:
                 except ValueError:
                     norm_role = str(raw_role)
             else:
-                norm_role = "Read"
+                norm_role = NormalizedRole.READ.value
             origin_role = str(row.data.get("origin_role", ""))
             status_str = _format_status_label(
                 row.data.get("migration_status", MigrationStatus.WAITTING)
