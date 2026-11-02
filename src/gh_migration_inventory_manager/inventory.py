@@ -1192,6 +1192,10 @@ class PolicyInventory:
         )
 
         matching_rows = sheet.find_by("policy_scope", clean_scope)
+        if not matching_rows and clean_scope.startswith("repo:") and "/" in clean_scope:
+            _, legacy_repo = clean_scope[len("repo:") :].split("/", 1)
+            matching_rows = sheet.find_by("policy_scope", f"repo:{legacy_repo}")
+
         if not matching_rows:
             return None
 

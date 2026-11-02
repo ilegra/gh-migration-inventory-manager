@@ -38,6 +38,10 @@ def test_given_live_bitbucket_server_when_scraping_then_discovers_branch_restric
 
     assert len(policies) == 4
 
+    expected_scope = (
+        f"repo:{bitbucket_server['project_key']}/{bitbucket_server['repo_slug']}"
+    )
+
     # 1. Branch restriction: pull-request-only on main
     pr_restriction = next(
         p
@@ -47,7 +51,9 @@ def test_given_live_bitbucket_server_when_scraping_then_discovers_branch_restric
         and isinstance(p.rule_parameters, dict)
         and p.rule_parameters.get("enforce_pr") is True
     )
-    assert pr_restriction.policy_scope == f"repo:{bitbucket_server['repo_slug']}"
+    assert pr_restriction.policy_scope == expected_scope
+    assert pr_restriction.project == bitbucket_server["project_key"]
+    assert pr_restriction.repository == bitbucket_server["repo_slug"]
     assert pr_restriction.platform == "bitbucket"
     assert "core-leads" in pr_restriction.bypass_team_slugs
 
@@ -58,7 +64,9 @@ def test_given_live_bitbucket_server_when_scraping_then_discovers_branch_restric
         if p.target_ref_pattern == "refs/heads/release/*"
         and p.normalized_rule_type == NormalizedRuleType.BLOCK_FORCE_PUSH
     )
-    assert ff_restriction.policy_scope == f"repo:{bitbucket_server['repo_slug']}"
+    assert ff_restriction.policy_scope == expected_scope
+    assert ff_restriction.project == bitbucket_server["project_key"]
+    assert ff_restriction.repository == bitbucket_server["repo_slug"]
     assert ff_restriction.rule_parameters == {"linear_history": True}
 
     # 3. Branch restriction: no-deletes on *
@@ -68,7 +76,9 @@ def test_given_live_bitbucket_server_when_scraping_then_discovers_branch_restric
         if p.target_ref_pattern == "refs/heads/*"
         and p.normalized_rule_type == NormalizedRuleType.PREVENT_BRANCH_DELETION
     )
-    assert delete_restriction.policy_scope == f"repo:{bitbucket_server['repo_slug']}"
+    assert delete_restriction.policy_scope == expected_scope
+    assert delete_restriction.project == bitbucket_server["project_key"]
+    assert delete_restriction.repository == bitbucket_server["repo_slug"]
     assert delete_restriction.rule_parameters == {"prevent_deletion": True}
 
     # 4. Pull request settings on default branch (main)
@@ -80,6 +90,9 @@ def test_given_live_bitbucket_server_when_scraping_then_discovers_branch_restric
         and isinstance(p.rule_parameters, dict)
         and "min_approvals" in p.rule_parameters
     )
+    assert pr_setting_policy.policy_scope == expected_scope
+    assert pr_setting_policy.project == bitbucket_server["project_key"]
+    assert pr_setting_policy.repository == bitbucket_server["repo_slug"]
     assert isinstance(pr_setting_policy.rule_parameters, dict)
     assert pr_setting_policy.rule_parameters["min_approvals"] == 2
     assert pr_setting_policy.rule_parameters["require_all_tasks_complete"] is True
@@ -141,6 +154,11 @@ def test_given_live_bitbucket_server_when_syncing_with_policy_inventory_then_per
     assert len(synced) == 4
     for record in synced:
         assert record.migration_status == MigrationStatus.WAITTING
-        assert record.policy_scope == f"repo:{bitbucket_server['repo_slug']}"
+        assert (
+            record.policy_scope
+            == f"repo:{bitbucket_server['project_key']}/{bitbucket_server['repo_slug']}"
+        )
+        assert record.project == bitbucket_server["project_key"]
+        assert record.repository == bitbucket_server["repo_slug"]
     assert any(r.target_ref_pattern == "refs/heads/main" for r in synced)
     assert any(r.target_ref_pattern == "refs/heads/release/*" for r in synced)
