@@ -42,12 +42,12 @@ def mock_policies_spreadsheet(mock_sheets_service: MagicMock) -> Spreadsheet:
     )
 
 
-def test_given_policy_record_when_converting_to_row_then_maps_all_seven_columns(
+def test_given_policy_record_when_converting_to_row_then_maps_all_nine_columns(
     sample_policy_record: PolicyRecord,
     mock_policies_spreadsheet: Spreadsheet,
     mock_sheets_service: MagicMock,
 ) -> None:
-    """Test PolicyRowConverter creates a Row and Spreadsheet serializes all 7 columns."""
+    """Test PolicyRowConverter creates a Row and Spreadsheet serializes all 9 columns."""
     row = PolicyRowConverter.from_policy_record(sample_policy_record, row_index=4)
 
     assert row.row_index == 4
@@ -63,11 +63,11 @@ def test_given_policy_record_when_converting_to_row_then_maps_all_seven_columns(
         mock_sheets_service.spreadsheets.return_value.values.return_value.append
     )
     mock_append.return_value.execute.return_value = {
-        "updates": {"updatedRange": "Policies!A4:G4"}
+        "updates": {"updatedRange": "Policies!A4:I4"}
     }
 
     added_row = mock_policies_spreadsheet.add(row)
-    assert len(added_row.values) == 7
+    assert len(added_row.values) == 9
     assert added_row.values[0] == "repo:payment-service"
     assert added_row.values[1] == "refs/heads/main"
     assert added_row.values[2] == "RequirePullRequest"
@@ -75,6 +75,8 @@ def test_given_policy_record_when_converting_to_row_then_maps_all_seven_columns(
     assert added_row.values[4] == "core-devs, release-leads"
     assert added_row.values[5] == '{"id": 101, "type": "pull-request-only"}'
     assert added_row.values[6] == "Migrando (Ativos em Ambas)"
+    assert added_row.values[7] == ""
+    assert added_row.values[8] == ""
 
 
 def test_given_row_when_converting_to_policy_record_then_populates_record() -> None:
@@ -120,11 +122,11 @@ def test_given_none_row_when_converting_to_policy_record_then_raises_value_error
         PolicyRowConverter.to_policy_record(None)  # type: ignore[arg-type]
 
 
-def test_given_policies_sheet_name_when_finding_row_then_queries_seven_column_range(
+def test_given_policies_sheet_name_when_finding_row_then_queries_nine_column_range(
     mock_policies_spreadsheet: Spreadsheet,
     mock_sheets_service: MagicMock,
 ) -> None:
-    """Test find_by queries A2:G range when tab is Policies."""
+    """Test find_by queries A2:I range when tab is Policies."""
     values_get = mock_sheets_service.spreadsheets().values().get
     values_get.return_value.execute.return_value = {
         "values": [
@@ -136,6 +138,8 @@ def test_given_policies_sheet_name_when_finding_row_then_queries_seven_column_ra
                 "core-devs",
                 "{}",
                 "Aguardando Migração",
+                "",
+                "frontend",
             ]
         ]
     }
@@ -148,7 +152,7 @@ def test_given_policies_sheet_name_when_finding_row_then_queries_seven_column_ra
     assert rows[0].data["normalized_rule_type"] == "RequirePullRequest"
     values_get.assert_called_with(
         spreadsheetId="policies-sheet-id",
-        range="Policies!A2:G",
+        range="Policies!A2:I",
     )
 
 
@@ -178,6 +182,12 @@ def test_given_policies_sheet_name_when_finding_row_then_queries_seven_column_ra
         ("migration_status", 6),
         ("status da migração", 6),
         ("status", 6),
+        ("project", 7),
+        ("projeto", 7),
+        ("repository", 8),
+        ("repositório", 8),
+        ("repositorio", 8),
+        ("repo", 8),
     ],
 )
 def test_given_column_alias_when_finding_by_then_resolves_correct_policies_column(
@@ -187,7 +197,7 @@ def test_given_column_alias_when_finding_by_then_resolves_correct_policies_colum
     expected_col_idx: int,
 ) -> None:
     """Verify all English and Portuguese column aliases map to correct column index."""
-    row_vals = [""] * 7
+    row_vals = [""] * 9
     target_val = "waitting" if expected_col_idx == 6 else "target-val"
     row_vals[expected_col_idx] = target_val
     values_get = mock_sheets_service.spreadsheets().values().get
@@ -227,7 +237,7 @@ def test_given_ensure_sheet_when_policies_tab_missing_then_adds_sheet_with_heade
     update_vals = mock_sheets_service.spreadsheets().values().update
     update_vals.assert_called_once_with(
         spreadsheetId="policies-sheet-id",
-        range="Policies!A1:G1",
+        range="Policies!A1:I1",
         valueInputOption="USER_ENTERED",
         body={"values": [POLICIES_HEADERS]},
     )
@@ -237,7 +247,7 @@ def test_given_clear_tab_when_called_then_clears_data_rows_range(
     mock_policies_spreadsheet: Spreadsheet,
     mock_sheets_service: MagicMock,
 ) -> None:
-    """Verify clear_tab clears range A2:G in Policies tab."""
+    """Verify clear_tab clears range A2:I in Policies tab."""
     get_meta = mock_sheets_service.spreadsheets().get
     get_meta.return_value.execute.return_value = {
         "sheets": [{"properties": {"title": "Policies"}}]
@@ -248,7 +258,7 @@ def test_given_clear_tab_when_called_then_clears_data_rows_range(
     clear_vals = mock_sheets_service.spreadsheets().values().clear
     clear_vals.assert_called_once_with(
         spreadsheetId="policies-sheet-id",
-        range="Policies!A2:G",
+        range="Policies!A2:I",
     )
 
 
@@ -285,7 +295,7 @@ def test_given_existing_empty_policies_tab_when_ensuring_sheet_then_provisions_h
     update_vals = mock_sheets_service.spreadsheets().values().update
     update_vals.assert_called_once_with(
         spreadsheetId="policies-sheet-id",
-        range="Policies!A1:G1",
+        range="Policies!A1:I1",
         valueInputOption="USER_ENTERED",
         body={"values": [POLICIES_HEADERS]},
     )

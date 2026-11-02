@@ -11,6 +11,10 @@ from google.oauth2 import service_account
 from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
 
+from gh_migration_inventory_manager.converter import (
+    _parse_repo_assoc_project_repo,
+    _parse_scope_project_repo,
+)
 from gh_migration_inventory_manager.inventory import (
     InventoryAccessError,
     InventoryError,
@@ -23,7 +27,7 @@ from gh_migration_inventory_manager.inventory import (
     _from_sheet_label,
     format_migration_month,
 )
-from gh_migration_inventory_manager.scrap import normalize_role
+from gh_migration_inventory_manager.scrap import NormalizedRole, normalize_role
 
 
 class SpreadsheetError(InventoryError):
@@ -56,6 +60,7 @@ _HEADERS = [
     "Mês de Migração",
 ]
 HEADERS = _HEADERS
+INVENTORY_HEADERS = _HEADERS
 
 _COLUMN_ALIAS_MAP: dict[str, int] = {
     "project": 0,
@@ -126,6 +131,8 @@ _WORKFLOW_HEADERS = [
     "Último Build",
     "Status do Último Build",
     "Status da Migração",
+    "Projeto",
+    "Repositório",
 ]
 WORKFLOW_HEADERS = _WORKFLOW_HEADERS
 
@@ -189,6 +196,12 @@ _WORKFLOW_COLUMN_ALIAS_MAP: dict[str, int] = {
     "status da migração": 11,
     "status da migracao": 11,
     "status": 11,
+    "project": 12,
+    "projeto": 12,
+    "repository": 13,
+    "repositório": 13,
+    "repositorio": 13,
+    "repo": 13,
 }
 
 _TOPOLOGY_HEADERS = [
@@ -199,6 +212,8 @@ _TOPOLOGY_HEADERS = [
     "Papel Normalizado (GitHub)",
     "Papel de Origem",
     "Status da Migração",
+    "Projeto",
+    "Repositório",
 ]
 TOPOLOGY_HEADERS = _TOPOLOGY_HEADERS
 _WORKFLOW_SHEET_NAMES: tuple[str, ...] = ("workflows", "pipelines")
@@ -211,6 +226,8 @@ _POLICIES_HEADERS = [
     "Slugs de Times de Bypass",
     "Política de Origem (Raw)",
     "Status da Migração",
+    "Projeto",
+    "Repositório",
 ]
 POLICIES_HEADERS = _POLICIES_HEADERS
 _POLICIES_SHEET_NAMES: tuple[str, ...] = (
@@ -264,6 +281,12 @@ _POLICIES_COLUMN_ALIAS_MAP: dict[str, int] = {
     "status da migração": 6,
     "status da migracao": 6,
     "status": 6,
+    "project": 7,
+    "projeto": 7,
+    "repository": 8,
+    "repositório": 8,
+    "repositorio": 8,
+    "repo": 8,
 }
 
 _TOPOLOGY_COLUMN_ALIAS_MAP: dict[str, int] = {
@@ -284,11 +307,10 @@ _TOPOLOGY_COLUMN_ALIAS_MAP: dict[str, int] = {
     "target_repo_or_project": 3,
     "repositório / projeto": 3,
     "repositorio / projeto": 3,
-    "repositório": 3,
-    "repositorio": 3,
     "target": 3,
     "scope": 3,
-    "project": 3,
+    "project": 7,
+    "projeto": 7,
     "normalized_role": 4,
     "papel normalizado (github)": 4,
     "papel normalizado": 4,
@@ -301,6 +323,10 @@ _TOPOLOGY_COLUMN_ALIAS_MAP: dict[str, int] = {
     "status da migração": 6,
     "status da migracao": 6,
     "status": 6,
+    "repository": 8,
+    "repositório": 8,
+    "repositorio": 8,
+    "repo": 8,
 }
 
 
@@ -333,14 +359,22 @@ class TeamRowConverter:
             except ValueError:
                 norm_role = str(norm_role)
 
+        project = str(row.data.get("project", "")).strip()
+        repository = str(row.data.get("repository", "")).strip()
+        target = str(row.data.get("target_repo_or_project", "")).strip()
+        if not project and not repository and target:
+            project, repository = _parse_scope_project_repo(target)
+
         return TeamRecord(
             team_name=str(row.data.get("team_name", "")),
             team_slug=str(row.data.get("team_slug", "")),
             member_count=member_count,
-            target_repo_or_project=str(row.data.get("target_repo_or_project", "")),
+            target_repo_or_project=target,
             normalized_role=str(norm_role),
             origin_role=str(row.data.get("origin_role", "")),
             migration_status=status,
+            project=project,
+            repository=repository,
         )
 
     @staticmethod
@@ -351,14 +385,27 @@ class TeamRowConverter:
         norm_role = getattr(
             record.normalized_role, "value", str(record.normalized_role)
         )
+        target = record.target_repo_or_project
+        if not target:
+            if record.repository:
+                target = (
+                    f"repo:{record.project}/{record.repository}"
+                    if record.project
+                    else f"repo:{record.repository}"
+                )
+            elif record.project:
+                target = f"project:{record.project}"
+
         data: dict[str, Any] = {
             "team_name": record.team_name,
             "team_slug": record.team_slug,
             "member_count": record.member_count,
-            "target_repo_or_project": record.target_repo_or_project,
+            "target_repo_or_project": target,
             "normalized_role": norm_role,
             "origin_role": record.origin_role,
             "migration_status": record.migration_status,
+            "project": record.project,
+            "repository": record.repository,
         }
         return Row(row_index=row_index, data=data)
 
@@ -375,14 +422,22 @@ class PolicyRowConverter:
         if isinstance(status, str):
             status = _from_sheet_label(status)
 
+        project = str(row.data.get("project", "")).strip()
+        repository = str(row.data.get("repository", "")).strip()
+        scope = str(row.data.get("policy_scope", "")).strip()
+        if not project and not repository and scope:
+            project, repository = _parse_scope_project_repo(scope)
+
         return PolicyRecord(
-            policy_scope=str(row.data.get("policy_scope", "")),
+            policy_scope=scope,
             target_ref_pattern=str(row.data.get("target_ref_pattern", "")),
             normalized_rule_type=str(row.data.get("normalized_rule_type", "")),
             rule_parameters=str(row.data.get("rule_parameters", "")),
             bypass_team_slugs=str(row.data.get("bypass_team_slugs", "")),
             origin_raw_policy=str(row.data.get("origin_raw_policy", "")),
             migration_status=status,
+            project=project,
+            repository=repository,
         )
 
     @staticmethod
@@ -390,14 +445,29 @@ class PolicyRowConverter:
         """Construct a Row instance from a PolicyRecord."""
         if record is None:
             raise ValueError("PolicyRecord cannot be None.")
+        scope = record.policy_scope
+        if not scope:
+            if record.repository:
+                scope = (
+                    f"repo:{record.project}/{record.repository}"
+                    if record.project
+                    else f"repo:{record.repository}"
+                )
+            elif record.project:
+                scope = f"project:{record.project}"
+            else:
+                scope = "global"
+
         data: dict[str, Any] = {
-            "policy_scope": record.policy_scope,
+            "policy_scope": scope,
             "target_ref_pattern": record.target_ref_pattern,
             "normalized_rule_type": record.normalized_rule_type,
             "rule_parameters": record.rule_parameters,
             "bypass_team_slugs": record.bypass_team_slugs,
             "origin_raw_policy": record.origin_raw_policy,
             "migration_status": record.migration_status,
+            "project": record.project,
+            "repository": record.repository,
         }
         return Row(row_index=row_index, data=data)
 
@@ -427,11 +497,17 @@ class WorkflowRowConverter:
             or ""
         )
 
+        project = str(row.data.get("project", "")).strip()
+        repository = str(row.data.get("repository", "")).strip()
+        repo_assoc = str(row.data.get("repository_association", "")).strip()
+        if not project and not repository and repo_assoc:
+            project, repository = _parse_repo_assoc_project_repo(repo_assoc)
+
         return PipelineRecord(
             workflow_id=str(row.data.get("workflow_id", "")),
             platform=str(row.data.get("platform", "jenkins")),
             pipeline_type=str(row.data.get("pipeline_type", "")),
-            repository_association=str(row.data.get("repository_association", "")),
+            repository_association=repo_assoc,
             repository_url=str(row.data.get("repository_url", "")),
             file_path=str(row.data.get("file_path", "")),
             shared_components=shared_components,
@@ -440,6 +516,8 @@ class WorkflowRowConverter:
             last_build=_parse_date(row.data.get("last_build")),
             last_status=str(row.data.get("last_status", "")),
             migration_status=status,
+            project=project,
+            repository=repository,
         )
 
     @staticmethod
@@ -449,11 +527,18 @@ class WorkflowRowConverter:
         """Construct a Row instance from a PipelineRecord."""
         if record is None:
             raise ValueError("PipelineRecord cannot be None.")
+        repo_assoc = record.repository_association
+        if not repo_assoc:
+            if record.project and record.repository:
+                repo_assoc = f"{record.project}/{record.repository}"
+            elif record.repository:
+                repo_assoc = record.repository
+
         data: dict[str, Any] = {
             "workflow_id": record.workflow_id,
             "platform": record.platform,
             "pipeline_type": record.pipeline_type,
-            "repository_association": record.repository_association,
+            "repository_association": repo_assoc,
             "repository_url": record.repository_url,
             "file_path": record.file_path,
             "shared_components": record.shared_components,
@@ -462,12 +547,14 @@ class WorkflowRowConverter:
             "last_build": record.last_build,
             "last_status": record.last_status,
             "migration_status": record.migration_status,
+            "project": record.project,
+            "repository": record.repository,
         }
         return Row(row_index=row_index, data=data)
 
 
 class RowConverter:
-    """Conversion utility between Row and InventoryRecord instances."""
+    """Conversion utility between Row and inventory record instances."""
 
     @staticmethod
     def to_inventory_record(row: Row) -> InventoryRecord:
@@ -588,9 +675,9 @@ class Spreadsheet:
         """Return the last column letter for the specified or active sheet."""
         clean = (target or self.sheet_name or "").strip().lower()
         if clean in _WORKFLOW_SHEET_NAMES:
-            return "L"
+            return "N"
         if clean in _TOPOLOGY_SHEET_NAMES or clean in _POLICIES_SHEET_NAMES:
-            return "G"
+            return "I"
         return "H"
 
     def _is_workflow_sheet(self) -> bool:
@@ -606,6 +693,7 @@ class Spreadsheet:
         self,
         sheet_name: str | None = None,
         headers: list[str] | None = None,
+        existing_sheets: list[str] | set[str] | None = None,
     ) -> None:
         """Ensure the target sheet tab exists, creating it with headers if missing."""
         target = sheet_name or self.sheet_name
@@ -629,17 +717,21 @@ class Spreadsheet:
             return
 
         try:
-            meta = (
-                self._service.spreadsheets()
-                .get(spreadsheetId=clean_id, fields="sheets.properties.title")
-                .execute()
-            )
-            existing_sheets = [
-                s.get("properties", {}).get("title")
-                for s in meta.get("sheets", [])
-                if s.get("properties", {}).get("title")
-            ]
-            is_new = target not in existing_sheets
+            if existing_sheets is None:
+                meta = (
+                    self._service.spreadsheets()
+                    .get(spreadsheetId=clean_id, fields="sheets.properties.title")
+                    .execute()
+                )
+                known_sheets = [
+                    s.get("properties", {}).get("title")
+                    for s in meta.get("sheets", [])
+                    if s.get("properties", {}).get("title")
+                ]
+            else:
+                known_sheets = list(existing_sheets)
+
+            is_new = target not in known_sheets
             if is_new:
                 req = {"addSheet": {"properties": {"title": target}}}
                 self._service.spreadsheets().batchUpdate(
@@ -663,7 +755,9 @@ class Spreadsheet:
                         first_row = (
                             values[0] if values and isinstance(values[0], list) else []
                         )
-                        should_write = not any(str(cell).strip() for cell in first_row)
+                        should_write = len(first_row) < len(hdrs) or not any(
+                            str(cell).strip() for cell in first_row
+                        )
 
                 if should_write:
                     self._service.spreadsheets().values().update(
@@ -677,6 +771,37 @@ class Spreadsheet:
                 self._ensured_sheets.add(target)
         except Exception as err:
             raise SpreadsheetError(f"Error ensuring sheet '{target}': {err}") from err
+
+    def ensure_all_tabs(self) -> None:
+        """Ensure all canonical migration tabs exist with up-to-date row 1 headers."""
+        clean_id = (self.id or "").strip()
+        known_sheets = None
+        if clean_id:
+            try:
+                meta = (
+                    self._service.spreadsheets()
+                    .get(spreadsheetId=clean_id, fields="sheets.properties.title")
+                    .execute()
+                )
+                known_sheets = [
+                    s.get("properties", {}).get("title")
+                    for s in meta.get("sheets", [])
+                    if s.get("properties", {}).get("title")
+                ]
+            except Exception:
+                known_sheets = None
+
+        for sheet_name, headers in (
+            ("Inventario", _HEADERS),
+            ("Workflows", _WORKFLOW_HEADERS),
+            ("Topology", _TOPOLOGY_HEADERS),
+            ("Policies", _POLICIES_HEADERS),
+        ):
+            self.ensure_sheet(
+                sheet_name=sheet_name,
+                headers=headers,
+                existing_sheets=known_sheets,
+            )
 
     def clear_tab(self, sheet_name: str | None = None) -> None:
         """Clear all data rows in target tab (keeping row 1 headers intact)."""
@@ -725,6 +850,8 @@ class Spreadsheet:
             status_str = _format_status_label(
                 row.data.get("migration_status", MigrationStatus.WAITTING)
             )
+            project = str(row.data.get("project", ""))
+            repository = str(row.data.get("repository", ""))
 
             return [
                 workflow_id,
@@ -739,6 +866,8 @@ class Spreadsheet:
                 last_build_str,
                 last_status,
                 status_str,
+                project,
+                repository,
             ]
 
         if self._is_topology_sheet():
@@ -755,11 +884,13 @@ class Spreadsheet:
                 except ValueError:
                     norm_role = str(raw_role)
             else:
-                norm_role = "Read"
+                norm_role = NormalizedRole.READ.value
             origin_role = str(row.data.get("origin_role", ""))
             status_str = _format_status_label(
                 row.data.get("migration_status", MigrationStatus.WAITTING)
             )
+            project = str(row.data.get("project", ""))
+            repository = str(row.data.get("repository", ""))
             return [
                 team_name,
                 team_slug,
@@ -768,6 +899,8 @@ class Spreadsheet:
                 norm_role,
                 origin_role,
                 status_str,
+                project,
+                repository,
             ]
 
         if self._is_policy_sheet():
@@ -780,6 +913,8 @@ class Spreadsheet:
             status_str = _format_status_label(
                 row.data.get("migration_status", MigrationStatus.WAITTING)
             )
+            project = str(row.data.get("project", ""))
+            repository = str(row.data.get("repository", ""))
             return [
                 policy_scope,
                 target_ref,
@@ -788,6 +923,8 @@ class Spreadsheet:
                 bypasses,
                 origin_raw,
                 status_str,
+                project,
+                repository,
             ]
 
         project = str(row.data.get("project", ""))
@@ -821,11 +958,17 @@ class Spreadsheet:
         """Parse raw sheet cell values into a Row."""
         if self._is_workflow_sheet():
             padded = values + [""] * max(0, len(_WORKFLOW_HEADERS) - len(values))
+            project = padded[12].strip()
+            repository = padded[13].strip()
+            repo_assoc = padded[3].strip()
+            if not project and not repository and repo_assoc:
+                project, repository = _parse_repo_assoc_project_repo(repo_assoc)
+
             data: dict[str, Any] = {
                 "workflow_id": padded[0],
                 "platform": padded[1],
                 "pipeline_type": padded[2],
-                "repository_association": padded[3],
+                "repository_association": repo_assoc,
                 "repository_url": padded[4],
                 "file_path": padded[5],
                 "shared_components": padded[6],
@@ -834,6 +977,8 @@ class Spreadsheet:
                 "last_build": _parse_date(padded[9]),
                 "last_status": padded[10],
                 "migration_status": _from_sheet_label(padded[11]),
+                "project": project,
+                "repository": repository,
             }
             return Row(row_index=row_index, data=data, values=values)
 
@@ -843,27 +988,43 @@ class Spreadsheet:
                 cnt = int(padded[2]) if padded[2].strip() else 0
             except (ValueError, TypeError):
                 cnt = 0
+            target = padded[3].strip()
+            project = padded[7].strip()
+            repository = padded[8].strip()
+            if not project and not repository and target:
+                project, repository = _parse_scope_project_repo(target)
+
             data = {
                 "team_name": padded[0],
                 "team_slug": padded[1],
                 "member_count": cnt,
-                "target_repo_or_project": padded[3],
+                "target_repo_or_project": target,
                 "normalized_role": padded[4],
                 "origin_role": padded[5],
                 "migration_status": _from_sheet_label(padded[6]),
+                "project": project,
+                "repository": repository,
             }
             return Row(row_index=row_index, data=data, values=values)
 
         if self._is_policy_sheet():
             padded = values + [""] * max(0, len(_POLICIES_HEADERS) - len(values))
+            scope = padded[0].strip()
+            project = padded[7].strip()
+            repository = padded[8].strip()
+            if not project and not repository and scope:
+                project, repository = _parse_scope_project_repo(scope)
+
             data = {
-                "policy_scope": padded[0],
+                "policy_scope": scope,
                 "target_ref_pattern": padded[1],
                 "normalized_rule_type": padded[2],
                 "rule_parameters": padded[3],
                 "bypass_team_slugs": padded[4],
                 "origin_raw_policy": padded[5],
                 "migration_status": _from_sheet_label(padded[6]),
+                "project": project,
+                "repository": repository,
             }
             return Row(row_index=row_index, data=data, values=values)
 
@@ -879,6 +1040,23 @@ class Spreadsheet:
             "migration_month": padded[7],
         }
         return Row(row_index=row_index, data=data, values=values)
+
+    def get_all_rows(self) -> list[Row]:
+        """Retrieve all data rows from the active sheet tab without filtering."""
+        read_range = f"{self.sheet_name}!A2:{self._end_column}"
+        resp = (
+            self._service.spreadsheets()
+            .values()
+            .get(spreadsheetId=self.id, range=read_range)
+            .execute()
+        )
+        raw_rows: list[list[str]] = resp.get("values", []) or []
+        rows: list[Row] = []
+        for idx, row_vals in enumerate(raw_rows):
+            actual_row_number = idx + 2
+            if any(str(cell).strip() for cell in row_vals):
+                rows.append(self._from_sheet_row(row_vals, row_index=actual_row_number))
+        return rows
 
     @property
     def _end_column(self) -> str:

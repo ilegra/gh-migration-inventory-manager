@@ -42,12 +42,12 @@ def mock_topology_spreadsheet(mock_sheets_service: MagicMock) -> Spreadsheet:
     )
 
 
-def test_given_team_record_when_converting_to_row_then_maps_all_seven_columns(
+def test_given_team_record_when_converting_to_row_then_maps_all_nine_columns(
     sample_team_record: TeamRecord,
     mock_topology_spreadsheet: Spreadsheet,
     mock_sheets_service: MagicMock,
 ) -> None:
-    """Test TeamRowConverter creates a Row and Spreadsheet serializes all 7 columns."""
+    """Test TeamRowConverter creates a Row and Spreadsheet serializes all 9 columns."""
     row = TeamRowConverter.from_team_record(sample_team_record, row_index=3)
 
     assert row.row_index == 3
@@ -63,11 +63,11 @@ def test_given_team_record_when_converting_to_row_then_maps_all_seven_columns(
         mock_sheets_service.spreadsheets.return_value.values.return_value.append
     )
     mock_append.return_value.execute.return_value = {
-        "updates": {"updatedRange": "Topology!A3:G3"}
+        "updates": {"updatedRange": "Topology!A3:I3"}
     }
 
     added_row = mock_topology_spreadsheet.add(row)
-    assert len(added_row.values) == 7
+    assert len(added_row.values) == 9
     assert added_row.values[0] == "Core Devs"
     assert added_row.values[1] == "core-devs"
     assert added_row.values[2] == "5"
@@ -75,6 +75,8 @@ def test_given_team_record_when_converting_to_row_then_maps_all_seven_columns(
     assert added_row.values[4] == "Write"
     assert added_row.values[5] == "rw"
     assert added_row.values[6] == "Migrando (Ativos em Ambas)"
+    assert added_row.values[7] == ""
+    assert added_row.values[8] == ""
 
 
 def test_given_row_when_converting_to_team_record_then_populates_team_record() -> None:
@@ -119,11 +121,11 @@ def test_given_none_row_when_converting_to_team_record_then_raises_value_error()
         TeamRowConverter.to_team_record(None)  # type: ignore[arg-type]
 
 
-def test_given_topology_sheet_name_when_finding_row_then_queries_seven_column_range(
+def test_given_topology_sheet_name_when_finding_row_then_queries_nine_column_range(
     mock_topology_spreadsheet: Spreadsheet,
     mock_sheets_service: MagicMock,
 ) -> None:
-    """Test that finding rows on a Topology sheet queries A2:G range."""
+    """Test that finding rows on a Topology sheet queries A2:I range."""
     mock_get = mock_sheets_service.spreadsheets.return_value.values.return_value.get
     mock_get.return_value.execute.return_value = {
         "values": [
@@ -135,6 +137,8 @@ def test_given_topology_sheet_name_when_finding_row_then_queries_seven_column_ra
                 "Write",
                 "rw",
                 "Aguardando Migração",
+                "",
+                "trunk",
             ]
         ]
     }
@@ -147,7 +151,7 @@ def test_given_topology_sheet_name_when_finding_row_then_queries_seven_column_ra
     assert rows[0].data["member_count"] == 4
     mock_get.assert_called_with(
         spreadsheetId="topology-sheet-id",
-        range="Topology!A2:G",
+        range="Topology!A2:I",
     )
 
 
@@ -162,7 +166,7 @@ def test_given_column_alias_when_finding_by_then_resolves_correct_topology_colum
     mock_topology_spreadsheet.find_by("slug do time", "devs")
     mock_get.assert_called_with(
         spreadsheetId="topology-sheet-id",
-        range="Topology!A2:G",
+        range="Topology!A2:I",
     )
 
 
@@ -177,7 +181,7 @@ def test_given_invalid_column_name_when_finding_row_then_raises_value_error(
 def test_given_ensure_sheet_when_topology_tab_missing_then_adds_sheet_with_headers(
     mock_sheets_service: MagicMock,
 ) -> None:
-    """Test ensure_sheet creates Topology tab with 7 headers when missing."""
+    """Test ensure_sheet creates Topology tab with 9 headers when missing."""
     mock_meta = mock_sheets_service.spreadsheets.return_value.get.return_value.execute
     mock_meta.return_value = {"sheets": [{"properties": {"title": "Inventario"}}]}
 
@@ -197,7 +201,7 @@ def test_given_ensure_sheet_when_topology_tab_missing_then_adds_sheet_with_heade
     )
     mock_update.assert_called_once_with(
         spreadsheetId="topology-sheet-id",
-        range="Topology!A1:G1",
+        range="Topology!A1:I1",
         valueInputOption="USER_ENTERED",
         body={"values": [TOPOLOGY_HEADERS]},
     )
@@ -207,7 +211,7 @@ def test_given_clear_tab_when_called_then_clears_data_rows_range(
     mock_topology_spreadsheet: Spreadsheet,
     mock_sheets_service: MagicMock,
 ) -> None:
-    """Test clear_tab clears range A2:G to reset spreadsheet state."""
+    """Test clear_tab clears range A2:I to reset spreadsheet state."""
     mock_meta = mock_sheets_service.spreadsheets.return_value.get.return_value.execute
     mock_meta.return_value = {"sheets": [{"properties": {"title": "Topology"}}]}
 
@@ -218,7 +222,7 @@ def test_given_clear_tab_when_called_then_clears_data_rows_range(
 
     mock_clear.assert_called_once_with(
         spreadsheetId="topology-sheet-id",
-        range="Topology!A2:G",
+        range="Topology!A2:I",
     )
 
 

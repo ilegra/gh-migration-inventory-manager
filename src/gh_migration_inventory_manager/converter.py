@@ -136,6 +136,57 @@ def _format_delimited_string(raw: Any) -> str:
     return str(raw).strip() if raw is not None else ""
 
 
+def _parse_scope_project_repo(scope: str) -> tuple[str, str]:
+    """Extract (project, repository) from a legacy scope or target string.
+
+    Rules:
+    - 'project:KEY' -> ('KEY', '')
+    - 'repo:KEY/SLUG' -> ('KEY', 'SLUG')
+    - 'repo:SLUG' -> ('', 'SLUG')
+    - 'global' or empty -> ('', '')
+    - 'PROJ/REPO' or '/PROJ/REPO' -> ('PROJ', 'REPO')
+    - other -> ('', scope)
+    """
+    clean = str(scope or "").strip()
+    if not clean or clean.lower() == "global":
+        return "", ""
+    if clean.startswith("project:"):
+        return clean[len("project:") :].strip(), ""
+    if clean.startswith("repo:"):
+        rest = clean[len("repo:") :].strip()
+        if "/" in rest:
+            p, r = rest.split("/", 1)
+            return p.strip(), r.strip()
+        return "", rest
+    if "/" in clean:
+        parts = [p.strip() for p in clean.strip("/").split("/") if p.strip()]
+        if len(parts) >= 2:
+            return parts[0], parts[1]
+        if len(parts) == 1:
+            return "", parts[0]
+    return "", clean
+
+
+def _parse_repo_assoc_project_repo(assoc: str) -> tuple[str, str]:
+    """Extract (project, repository) from a repository association string.
+
+    Rules:
+    - 'PROJ/REPO' -> ('PROJ', 'REPO')
+    - 'REPO' -> ('', 'REPO')
+    - empty -> ('', '')
+    """
+    clean = str(assoc or "").strip()
+    if not clean:
+        return "", ""
+    if "/" in clean:
+        parts = [p.strip() for p in clean.strip("/").split("/") if p.strip()]
+        if len(parts) >= 2:
+            return parts[0], parts[1]
+        if len(parts) == 1:
+            return "", parts[0]
+    return "", clean
+
+
 class PipelineConverter:
     """Conversion adapter for CI/CD pipeline discovery models and inventory entities."""
 
@@ -182,6 +233,9 @@ class PipelineConverter:
         repo_assoc = ""
         repo_url = ""
         branch = str(getattr(pipeline, "branch", "") or "").strip()
+        project = ""
+        repo_name = ""
+
         if repo is not None:
             repo_assoc = str(
                 getattr(repo, "qualified_name", "") or getattr(repo, "name", "") or ""
@@ -189,6 +243,16 @@ class PipelineConverter:
             repo_url = str(getattr(repo, "url", "") or "")
             if not branch and getattr(repo, "default_branch", None):
                 branch = str(repo.default_branch)
+            project = str(getattr(repo, "project", "") or "").strip()
+            repo_name = str(getattr(repo, "name", "") or "").strip()
+
+        if not project:
+            project = str(getattr(pipeline, "project", "") or "").strip()
+
+        if not project and "/" in repo_name:
+            project, repo_name = _parse_repo_assoc_project_repo(repo_name)
+        elif not project and not repo_name and repo_assoc:
+            project, repo_name = _parse_repo_assoc_project_repo(repo_assoc)
 
         file_path = str(getattr(pipeline, "file_path", "") or "").strip()
         shared_components = _format_delimited_string(
@@ -215,6 +279,8 @@ class PipelineConverter:
             last_build=last_build,
             last_status=last_status,
             migration_status=valid_status,
+            project=project,
+            repository=repo_name,
         )
 
     def to_pipeline_records(
@@ -294,6 +360,11 @@ class TeamConverter:
         origin_role = str(getattr(permission, "origin_role", "") or "").strip()
         valid_status = validate_migration_status(initial_status)
 
+        project = str(getattr(permission, "project", "") or "").strip()
+        repository = str(getattr(permission, "repository", "") or "").strip()
+        if not project and not repository:
+            project, repository = _parse_scope_project_repo(clean_target)
+
         return TeamRecord(
             team_name=clean_name,
             team_slug=clean_slug,
@@ -302,6 +373,8 @@ class TeamConverter:
             normalized_role=norm_role,
             origin_role=origin_role,
             migration_status=valid_status,
+            project=project,
+            repository=repository,
         )
 
     def to_team_records(
@@ -395,6 +468,11 @@ class PolicyConverter:
 
         valid_status = validate_migration_status(initial_status)
 
+        project = str(getattr(policy, "project", "") or "").strip()
+        repository = str(getattr(policy, "repository", "") or "").strip()
+        if not project and not repository:
+            project, repository = _parse_scope_project_repo(clean_scope)
+
         return PolicyRecord(
             policy_scope=clean_scope,
             target_ref_pattern=clean_target,
@@ -403,6 +481,8 @@ class PolicyConverter:
             bypass_team_slugs=formatted_bypasses,
             origin_raw_policy=formatted_origin,
             migration_status=valid_status,
+            project=project,
+            repository=repository,
         )
 
     def to_policy_records(

@@ -143,3 +143,59 @@ def test_given_none_collection_when_converting_then_raises_value_error() -> None
     converter = PolicyConverter()
     with pytest.raises(ValueError, match="Policies collection cannot be None"):
         converter.to_policy_records(None)  # type: ignore[arg-type]
+
+
+def test_given_policy_with_explicit_project_and_repo_when_converting_then_populates_fields() -> (
+    None
+):
+    """Verify explicit project and repository fields map correctly to PolicyRecord."""
+    converter = PolicyConverter()
+    policy = BranchPolicy(
+        policy_scope="repo:CORE/payments",
+        target_ref_pattern="refs/heads/main",
+        normalized_rule_type=NormalizedRuleType.REQUIRE_PULL_REQUEST,
+        project="CORE",
+        repository="payments",
+    )
+
+    record = converter.to_policy_record(policy)
+
+    assert record.project == "CORE"
+    assert record.repository == "payments"
+
+
+def test_given_policy_with_scoped_string_when_converting_then_falls_back_to_parsing() -> (
+    None
+):
+    """Verify fallback parsing of project and repository from policy_scope string."""
+    converter = PolicyConverter()
+
+    # Repo scope
+    p1 = BranchPolicy(
+        policy_scope="repo:fintech/ledger",
+        target_ref_pattern="refs/heads/main",
+        normalized_rule_type=NormalizedRuleType.BLOCK_FORCE_PUSH,
+    )
+    r1 = converter.to_policy_record(p1)
+    assert r1.project == "fintech"
+    assert r1.repository == "ledger"
+
+    # Project scope
+    p2 = BranchPolicy(
+        policy_scope="project:fintech",
+        target_ref_pattern="refs/heads/main",
+        normalized_rule_type=NormalizedRuleType.BLOCK_FORCE_PUSH,
+    )
+    r2 = converter.to_policy_record(p2)
+    assert r2.project == "fintech"
+    assert r2.repository == ""
+
+    # Global scope
+    p3 = BranchPolicy(
+        policy_scope="global",
+        target_ref_pattern="refs/heads/main",
+        normalized_rule_type=NormalizedRuleType.BLOCK_FORCE_PUSH,
+    )
+    r3 = converter.to_policy_record(p3)
+    assert r3.project == ""
+    assert r3.repository == ""
