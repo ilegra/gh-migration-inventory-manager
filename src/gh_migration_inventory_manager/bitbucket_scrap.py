@@ -541,10 +541,8 @@ class BitbucketPolicyScraper(PolicyScraper):
         if project_key is not None and not project_key.strip():
             raise ValueError("Project key cannot be empty.")
 
-        self.project_key = (
-            project_key.strip() if project_key and project_key.strip() else None
-        )
-        self.repo_slug = repo_slug.strip() if repo_slug and repo_slug.strip() else None
+        self.project_key = project_key.strip() if project_key else None
+        self.repo_slug = repo_slug.strip() or None if repo_slug else None
         self.client = client
         self.default_branch = default_branch.strip() if default_branch else "main"
         self.page_size = page_size if page_size > 0 else 100
@@ -593,6 +591,14 @@ class BitbucketPolicyScraper(PolicyScraper):
         policies: list[BranchPolicy] = []
         for item in restrictions:
             rule_type_raw = str(item.get("type", "")).strip().lower()
+            if rule_type_raw not in (
+                "pull-request-only",
+                "fast-forward-only",
+                "read-only",
+                "no-deletes",
+            ):
+                continue
+
             matcher = item.get("matcher", {}) or {}
             matcher_id = matcher.get("id") or matcher.get("displayId") or "*"
             raw_type = matcher.get("type")
@@ -655,10 +661,16 @@ class BitbucketPolicyScraper(PolicyScraper):
         if not pr_settings:
             return policies
 
+        min_count = self._extract_enabled_count(pr_settings.get("requiredApprovers"))
+        build_count = self._extract_enabled_count(
+            pr_settings.get("requiredSuccessfulBuilds")
+        )
+        if min_count is None and build_count is None:
+            return policies
+
         raw_pr_origin = json.dumps(pr_settings, sort_keys=True)
         default_ref = self._canonicalize_ref(self.default_branch)
 
-        min_count = self._extract_enabled_count(pr_settings.get("requiredApprovers"))
         if min_count is not None:
             all_tasks = bool(pr_settings.get("requiredAllTasksComplete", False))
             all_approvers = bool(pr_settings.get("requiredAllApprovers", False))
@@ -677,9 +689,6 @@ class BitbucketPolicyScraper(PolicyScraper):
                 )
             )
 
-        build_count = self._extract_enabled_count(
-            pr_settings.get("requiredSuccessfulBuilds")
-        )
         if build_count is not None:
             policies.append(
                 BranchPolicy(
@@ -695,6 +704,28 @@ class BitbucketPolicyScraper(PolicyScraper):
                 )
             )
         return policies
+
+    def _collect_target_policies(
+        self, project_key: str, repo_slug: str | None, scope: str
+    ) -> list[BranchPolicy]:
+        """Fetch and parse restrictions and PR settings for a project or repo scope."""
+        collected: list[BranchPolicy] = []
+        if self.client is None:
+            return collected
+
+        try:
+            restrictions = self.client.get_branch_restrictions(project_key, repo_slug)
+            collected.extend(self._parse_restrictions(restrictions, scope))
+        except ScraperError:
+            pass
+
+        try:
+            pr_settings = self.client.get_pull_request_settings(project_key, repo_slug)
+            collected.extend(self._parse_pr_settings(pr_settings, scope))
+        except ScraperError:
+            pass
+
+        return collected
 
     def scrape(self) -> list[BranchPolicy]:
         """Discover and return canonical branch policies from Bitbucket."""
@@ -727,18 +758,11 @@ class BitbucketPolicyScraper(PolicyScraper):
             if not proj_key:
                 continue
 
-            proj_scope = f"project:{proj_key}"
-            try:
-                proj_restrictions = self.client.get_branch_restrictions(proj_key)
-                policies.extend(self._parse_restrictions(proj_restrictions, proj_scope))
-            except ScraperError:
-                pass
-
-            try:
-                proj_pr_settings = self.client.get_pull_request_settings(proj_key)
-                policies.extend(self._parse_pr_settings(proj_pr_settings, proj_scope))
-            except ScraperError:
-                pass
+            if not self.repo_slug:
+                proj_scope = f"project:{proj_key}"
+                policies.extend(
+                    self._collect_target_policies(proj_key, None, proj_scope)
+                )
 
             if self.repo_slug:
                 repos = [{"slug": self.repo_slug}]
@@ -754,25 +778,9 @@ class BitbucketPolicyScraper(PolicyScraper):
                     continue
 
                 repo_scope = f"repo:{slug}"
-                try:
-                    repo_restrictions = self.client.get_branch_restrictions(
-                        proj_key, slug
-                    )
-                    policies.extend(
-                        self._parse_restrictions(repo_restrictions, repo_scope)
-                    )
-                except ScraperError:
-                    pass
-
-                try:
-                    repo_pr_settings = self.client.get_pull_request_settings(
-                        proj_key, slug
-                    )
-                    policies.extend(
-                        self._parse_pr_settings(repo_pr_settings, repo_scope)
-                    )
-                except ScraperError:
-                    pass
+                policies.extend(
+                    self._collect_target_policies(proj_key, slug, repo_scope)
+                )
 
         return policies
 
@@ -788,6 +796,25 @@ def _resolve_auth(args: Any) -> Authenticator | None:
     if token:
         return TokenAuthenticator(token=token)
     return None
+
+
+def _build_bitbucket_client(args: Any) -> tuple[BitbucketClient, str]:
+    """Construct BitbucketClient and extract normalized base_url from CLI arguments."""
+    auth = _resolve_auth(args)
+    raw_url = getattr(args, "base_url", None) or getattr(args, "url", None) or ""
+    base_url = str(raw_url).strip()
+    timeout = float(getattr(args, "timeout", 15.0) or 15.0)
+    retries = int(getattr(args, "retries", 3) or 3)
+    backoff_factor = float(getattr(args, "backoff_factor", 0.5) or 0.5)
+
+    client = BitbucketClient(
+        base_url=base_url,
+        auth=auth,
+        timeout=timeout,
+        retries=retries,
+        backoff_factor=backoff_factor,
+    )
+    return client, base_url
 
 
 class BitbucketPoliciesScraperProvider(ScraperProvider):
@@ -880,21 +907,7 @@ class BitbucketPoliciesScraperProvider(ScraperProvider):
 
     def create_scraper(self, args: Any) -> BitbucketPolicyScraper:
         """Build BitbucketPolicyScraper from parsed CLI arguments."""
-        auth = _resolve_auth(args)
-        raw_url = getattr(args, "base_url", None) or getattr(args, "url", None) or ""
-        base_url = str(raw_url).strip()
-        timeout = float(getattr(args, "timeout", 15.0) or 15.0)
-        retries = int(getattr(args, "retries", 3) or 3)
-        backoff_factor = float(getattr(args, "backoff_factor", 0.5) or 0.5)
-
-        client = BitbucketClient(
-            base_url=base_url,
-            auth=auth,
-            timeout=timeout,
-            retries=retries,
-            backoff_factor=backoff_factor,
-        )
-
+        client, _ = _build_bitbucket_client(args)
         return BitbucketPolicyScraper(
             project_key=getattr(args, "project_key", None),
             repo_slug=getattr(args, "repo_slug", None),
@@ -1199,22 +1212,7 @@ class BitbucketScraperProvider(ScraperProvider):
 
     def create_scraper(self, args: Any) -> BitbucketRepositoryScraper:
         """Build BitbucketRepositoryScraper from parsed CLI arguments."""
-        auth = _resolve_auth(args)
-
-        raw_url = getattr(args, "base_url", None) or getattr(args, "url", None) or ""
-        base_url = str(raw_url).strip()
-        timeout = float(getattr(args, "timeout", 15.0) or 15.0)
-        retries = int(getattr(args, "retries", 3) or 3)
-        backoff_factor = float(getattr(args, "backoff_factor", 0.5) or 0.5)
-
-        client = BitbucketClient(
-            base_url=base_url,
-            auth=auth,
-            timeout=timeout,
-            retries=retries,
-            backoff_factor=backoff_factor,
-        )
-
+        client, base_url = _build_bitbucket_client(args)
         return BitbucketRepositoryScraper(
             base_url=base_url,
             project_key=getattr(args, "project_key", None),
@@ -1513,22 +1511,7 @@ class BitbucketTeamsScraperProvider(ScraperProvider):
 
     def create_scraper(self, args: Any) -> BitbucketTeamScraper:
         """Build BitbucketTeamScraper from parsed CLI arguments."""
-        auth = _resolve_auth(args)
-
-        raw_url = getattr(args, "base_url", None) or getattr(args, "url", None) or ""
-        base_url = str(raw_url).strip()
-        timeout = float(getattr(args, "timeout", 15.0) or 15.0)
-        retries = int(getattr(args, "retries", 3) or 3)
-        backoff_factor = float(getattr(args, "backoff_factor", 0.5) or 0.5)
-
-        client = BitbucketClient(
-            base_url=base_url,
-            auth=auth,
-            timeout=timeout,
-            retries=retries,
-            backoff_factor=backoff_factor,
-        )
-
+        client, base_url = _build_bitbucket_client(args)
         include_repo = getattr(args, "include_repo_level", True)
         if include_repo is None:
             include_repo = True

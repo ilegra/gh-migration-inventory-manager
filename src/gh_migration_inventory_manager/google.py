@@ -529,6 +529,7 @@ class Spreadsheet:
         self.id = id
         self.sheet_name = sheet_name
         self.credentials = credentials
+        self._ensured_sheets: set[str] = set()
 
         if service is not None:
             self._service = service
@@ -608,6 +609,9 @@ class Spreadsheet:
     ) -> None:
         """Ensure the target sheet tab exists, creating it with headers if missing."""
         target = sheet_name or self.sheet_name
+        if target in getattr(self, "_ensured_sheets", set()):
+            return
+
         hdrs = headers
         if hdrs is None:
             clean_target = (target or "").strip().lower()
@@ -635,46 +639,42 @@ class Spreadsheet:
                 for s in meta.get("sheets", [])
                 if s.get("properties", {}).get("title")
             ]
-            if target not in existing_sheets:
+            is_new = target not in existing_sheets
+            if is_new:
                 req = {"addSheet": {"properties": {"title": target}}}
                 self._service.spreadsheets().batchUpdate(
                     spreadsheetId=clean_id,
                     body={"requests": [req]},
                 ).execute()
 
-                if hdrs:
-                    end_col = chr(ord("A") + len(hdrs) - 1)
-                    header_range = f"{target}!A1:{end_col}1"
+            if hdrs:
+                end_col = chr(ord("A") + len(hdrs) - 1)
+                header_range = f"{target}!A1:{end_col}1"
+                should_write = is_new
+                if not should_write:
+                    resp = (
+                        self._service.spreadsheets()
+                        .values()
+                        .get(spreadsheetId=clean_id, range=header_range)
+                        .execute()
+                    )
+                    values = resp.get("values", []) if isinstance(resp, dict) else None
+                    if values is not None:
+                        first_row = (
+                            values[0] if values and isinstance(values[0], list) else []
+                        )
+                        should_write = not any(str(cell).strip() for cell in first_row)
+
+                if should_write:
                     self._service.spreadsheets().values().update(
                         spreadsheetId=clean_id,
                         range=header_range,
                         valueInputOption="USER_ENTERED",
                         body={"values": [hdrs]},
                     ).execute()
-            elif hdrs:
-                end_col = chr(ord("A") + len(hdrs) - 1)
-                header_range = f"{target}!A1:{end_col}1"
-                resp = (
-                    self._service.spreadsheets()
-                    .values()
-                    .get(spreadsheetId=clean_id, range=header_range)
-                    .execute()
-                )
-                values = resp.get("values", []) if isinstance(resp, dict) else None
-                if values is not None:
-                    is_empty = not values or not any(
-                        str(cell).strip()
-                        for cell in (
-                            values[0] if isinstance(values, list) and values else []
-                        )
-                    )
-                    if is_empty:
-                        self._service.spreadsheets().values().update(
-                            spreadsheetId=clean_id,
-                            range=header_range,
-                            valueInputOption="USER_ENTERED",
-                            body={"values": [hdrs]},
-                        ).execute()
+
+            if hasattr(self, "_ensured_sheets"):
+                self._ensured_sheets.add(target)
         except Exception as err:
             raise SpreadsheetError(f"Error ensuring sheet '{target}': {err}") from err
 
