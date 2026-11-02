@@ -21,10 +21,10 @@ gh-migration-inventory = "gh_migration_inventory_manager.cli:main"
 packages = [{ include = "gh_migration_inventory_manager", from = "src" }]
 
 [tool.poetry.group.dev.dependencies]
-pytest = "^9.1.1"
+pytest = "^9.2.0"
 pytest-cov = "^7.1.0"
-ruff = "^0.17.2"
-mypy = "^2.4.0"
+ruff = "^0.17.3"
+mypy = "^2.4.1"
 bandit = "^1.7.10"
 pre-commit = "^4.0.0"
 
