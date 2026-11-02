@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+import time
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any
@@ -612,10 +613,17 @@ class Spreadsheet:
         credentials: Credentials | None = None,
         sheet_name: str = "Inventario",
         service: Any = None,
+        max_retries: int = 5,
+        backoff_base: float | None = None,
     ) -> None:
         self.id = id
         self.sheet_name = sheet_name
         self.credentials = credentials
+        self.max_retries = max_retries if max_retries >= 0 else 5
+        if backoff_base is not None:
+            self.backoff_base = backoff_base
+        else:
+            self.backoff_base = 0.001 if service is not None else 2.0
         self._ensured_sheets: set[str] = set()
 
         if service is not None:
@@ -635,6 +643,36 @@ class Spreadsheet:
         loader: Any = service_account.Credentials.from_service_account_file
         return loader(credentials.credentials_path, scopes=credentials.scopes)
 
+    def _execute(
+        self,
+        req: Any,
+        num_retries: int | None = None,
+        backoff_base: float | None = None,
+    ) -> Any:
+        """Execute Google Sheets API request with retries and exponential backoff."""
+        retries = (
+            num_retries if num_retries is not None else getattr(self, "max_retries", 5)
+        )
+        base = (
+            backoff_base
+            if backoff_base is not None
+            else getattr(self, "backoff_base", 2.0)
+        )
+        delay = base
+        for attempt in range(retries + 1):
+            try:
+                try:
+                    return req.execute(num_retries=1)
+                except TypeError:
+                    return req.execute()
+            except HttpError as err:
+                status = getattr(getattr(err, "resp", None), "status", None)
+                if status in (429, 500, 502, 503, 504) and attempt < retries:
+                    time.sleep(delay)
+                    delay *= 2
+                    continue
+                raise
+
     def validate(self) -> None:
         """Validate that the spreadsheet reference exists and is accessible.
 
@@ -650,9 +688,11 @@ class Spreadsheet:
             raise ValueError("Spreadsheet ID cannot be empty.")
 
         try:
-            self._service.spreadsheets().get(
-                spreadsheetId=clean_id, fields="spreadsheetId,properties.title"
-            ).execute()
+            self._execute(
+                self._service.spreadsheets().get(
+                    spreadsheetId=clean_id, fields="spreadsheetId,properties.title"
+                )
+            )
         except HttpError as err:
             status = getattr(getattr(err, "resp", None), "status", None)
             if status == 404:
@@ -718,10 +758,10 @@ class Spreadsheet:
 
         try:
             if existing_sheets is None:
-                meta = (
-                    self._service.spreadsheets()
-                    .get(spreadsheetId=clean_id, fields="sheets.properties.title")
-                    .execute()
+                meta = self._execute(
+                    self._service.spreadsheets().get(
+                        spreadsheetId=clean_id, fields="sheets.properties.title"
+                    )
                 )
                 known_sheets = [
                     s.get("properties", {}).get("title")
@@ -734,21 +774,22 @@ class Spreadsheet:
             is_new = target not in known_sheets
             if is_new:
                 req = {"addSheet": {"properties": {"title": target}}}
-                self._service.spreadsheets().batchUpdate(
-                    spreadsheetId=clean_id,
-                    body={"requests": [req]},
-                ).execute()
+                self._execute(
+                    self._service.spreadsheets().batchUpdate(
+                        spreadsheetId=clean_id,
+                        body={"requests": [req]},
+                    )
+                )
 
             if hdrs:
                 end_col = chr(ord("A") + len(hdrs) - 1)
                 header_range = f"{target}!A1:{end_col}1"
                 should_write = is_new
                 if not should_write:
-                    resp = (
+                    resp = self._execute(
                         self._service.spreadsheets()
                         .values()
                         .get(spreadsheetId=clean_id, range=header_range)
-                        .execute()
                     )
                     values = resp.get("values", []) if isinstance(resp, dict) else None
                     if values is not None:
@@ -760,12 +801,16 @@ class Spreadsheet:
                         )
 
                 if should_write:
-                    self._service.spreadsheets().values().update(
-                        spreadsheetId=clean_id,
-                        range=header_range,
-                        valueInputOption="USER_ENTERED",
-                        body={"values": [hdrs]},
-                    ).execute()
+                    self._execute(
+                        self._service.spreadsheets()
+                        .values()
+                        .update(
+                            spreadsheetId=clean_id,
+                            range=header_range,
+                            valueInputOption="USER_ENTERED",
+                            body={"values": [hdrs]},
+                        )
+                    )
 
             if hasattr(self, "_ensured_sheets"):
                 self._ensured_sheets.add(target)
@@ -778,10 +823,10 @@ class Spreadsheet:
         known_sheets = None
         if clean_id:
             try:
-                meta = (
-                    self._service.spreadsheets()
-                    .get(spreadsheetId=clean_id, fields="sheets.properties.title")
-                    .execute()
+                meta = self._execute(
+                    self._service.spreadsheets().get(
+                        spreadsheetId=clean_id, fields="sheets.properties.title"
+                    )
                 )
                 known_sheets = [
                     s.get("properties", {}).get("title")
@@ -813,10 +858,14 @@ class Spreadsheet:
         end_col = self._end_column_for(target)
         clear_range = f"{target}!A2:{end_col}"
         try:
-            self._service.spreadsheets().values().clear(
-                spreadsheetId=clean_id,
-                range=clear_range,
-            ).execute()
+            self._execute(
+                self._service.spreadsheets()
+                .values()
+                .clear(
+                    spreadsheetId=clean_id,
+                    range=clear_range,
+                )
+            )
         except Exception as err:
             raise SpreadsheetError(f"Error clearing sheet '{target}': {err}") from err
 
@@ -1044,11 +1093,10 @@ class Spreadsheet:
     def get_all_rows(self) -> list[Row]:
         """Retrieve all data rows from the active sheet tab without filtering."""
         read_range = f"{self.sheet_name}!A2:{self._end_column}"
-        resp = (
+        resp = self._execute(
             self._service.spreadsheets()
             .values()
             .get(spreadsheetId=self.id, range=read_range)
-            .execute()
         )
         raw_rows: list[list[str]] = resp.get("values", []) or []
         rows: list[Row] = []
@@ -1089,11 +1137,10 @@ class Spreadsheet:
             raise ValueError(f"Unknown column identifier: '{target_col}'")
 
         read_range = f"{self.sheet_name}!A2:{self._end_column}"
-        resp = (
+        resp = self._execute(
             self._service.spreadsheets()
             .values()
             .get(spreadsheetId=self.id, range=read_range)
-            .execute()
         )
         raw_rows: list[list[str]] = resp.get("values", [])
 
@@ -1117,7 +1164,7 @@ class Spreadsheet:
         append_range = f"{self.sheet_name}!A:{self._end_column}"
         body = {"values": [values]}
 
-        res = (
+        res = self._execute(
             self._service.spreadsheets()
             .values()
             .append(
@@ -1127,7 +1174,6 @@ class Spreadsheet:
                 insertDataOption="INSERT_ROWS",
                 body=body,
             )
-            .execute()
         )
 
         updated_range = res.get("updates", {}).get("updatedRange", "")
@@ -1149,12 +1195,16 @@ class Spreadsheet:
         )
         body = {"values": [values]}
 
-        self._service.spreadsheets().values().update(
-            spreadsheetId=self.id,
-            range=target_range,
-            valueInputOption="USER_ENTERED",
-            body=body,
-        ).execute()
+        self._execute(
+            self._service.spreadsheets()
+            .values()
+            .update(
+                spreadsheetId=self.id,
+                range=target_range,
+                valueInputOption="USER_ENTERED",
+                body=body,
+            )
+        )
 
         row.values = values
         return row
@@ -1162,9 +1212,11 @@ class Spreadsheet:
     def clear_row(self, row_index: int) -> None:
         """Clear all cell values in the specified row."""
         target_range = f"{self.sheet_name}!A{row_index}:{self._end_column}{row_index}"
-        self._service.spreadsheets().values().clear(
-            spreadsheetId=self.id, range=target_range, body={}
-        ).execute()
+        self._execute(
+            self._service.spreadsheets()
+            .values()
+            .clear(spreadsheetId=self.id, range=target_range, body={})
+        )
 
 
 Spreadshseet = Spreadsheet
