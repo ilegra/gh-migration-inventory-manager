@@ -585,9 +585,35 @@ class BitbucketPolicyScraper(PolicyScraper):
         return sorted(set(slugs))
 
     def _parse_restrictions(
-        self, restrictions: list[dict[str, Any]], scope: str
+        self,
+        restrictions: list[dict[str, Any]],
+        scope: str,
+        project: str = "",
+        repository: str = "",
     ) -> list[BranchPolicy]:
         """Convert Bitbucket branch restrictions to canonical BranchPolicy instances."""
+        from gh_migration_inventory_manager.converter import _parse_scope_project_repo
+
+        clean_scope = str(scope or "").strip()
+        proj = str(project or "").strip()
+        repo = str(repository or "").strip()
+
+        if not proj and not repo:
+            if not clean_scope or clean_scope.lower() == "global":
+                clean_scope = "global"
+                proj, repo = "", ""
+            else:
+                proj, repo = _parse_scope_project_repo(clean_scope)
+        elif not clean_scope:
+            if proj and repo:
+                clean_scope = f"repo:{proj}/{repo}"
+            elif proj:
+                clean_scope = f"project:{proj}"
+            elif repo:
+                clean_scope = f"repo:{repo}"
+            else:
+                clean_scope = "global"
+
         policies: list[BranchPolicy] = []
         for item in restrictions:
             rule_type_raw = str(item.get("type", "")).strip().lower()
@@ -613,9 +639,11 @@ class BitbucketPolicyScraper(PolicyScraper):
             if rule_type_raw == "pull-request-only":
                 policies.append(
                     BranchPolicy(
-                        policy_scope=scope,
+                        policy_scope=clean_scope,
                         target_ref_pattern=target_ref,
                         normalized_rule_type=NormalizedRuleType.REQUIRE_PULL_REQUEST,
+                        project=proj,
+                        repository=repo,
                         rule_parameters={"enforce_pr": True},
                         bypass_team_slugs=bypass_slugs,
                         origin_raw_policy=raw_origin,
@@ -630,9 +658,11 @@ class BitbucketPolicyScraper(PolicyScraper):
                 )
                 policies.append(
                     BranchPolicy(
-                        policy_scope=scope,
+                        policy_scope=clean_scope,
                         target_ref_pattern=target_ref,
                         normalized_rule_type=NormalizedRuleType.BLOCK_FORCE_PUSH,
+                        project=proj,
+                        repository=repo,
                         rule_parameters=params,
                         bypass_team_slugs=bypass_slugs,
                         origin_raw_policy=raw_origin,
@@ -642,9 +672,11 @@ class BitbucketPolicyScraper(PolicyScraper):
             elif rule_type_raw == "no-deletes":
                 policies.append(
                     BranchPolicy(
-                        policy_scope=scope,
+                        policy_scope=clean_scope,
                         target_ref_pattern=target_ref,
                         normalized_rule_type=NormalizedRuleType.PREVENT_BRANCH_DELETION,
+                        project=proj,
+                        repository=repo,
                         rule_parameters={"prevent_deletion": True},
                         bypass_team_slugs=bypass_slugs,
                         origin_raw_policy=raw_origin,
@@ -654,9 +686,35 @@ class BitbucketPolicyScraper(PolicyScraper):
         return policies
 
     def _parse_pr_settings(
-        self, pr_settings: dict[str, Any], scope: str
+        self,
+        pr_settings: dict[str, Any],
+        scope: str,
+        project: str = "",
+        repository: str = "",
     ) -> list[BranchPolicy]:
         """Convert Bitbucket PR settings to canonical BranchPolicy instances."""
+        from gh_migration_inventory_manager.converter import _parse_scope_project_repo
+
+        clean_scope = str(scope or "").strip()
+        proj = str(project or "").strip()
+        repo = str(repository or "").strip()
+
+        if not proj and not repo:
+            if not clean_scope or clean_scope.lower() == "global":
+                clean_scope = "global"
+                proj, repo = "", ""
+            else:
+                proj, repo = _parse_scope_project_repo(clean_scope)
+        elif not clean_scope:
+            if proj and repo:
+                clean_scope = f"repo:{proj}/{repo}"
+            elif proj:
+                clean_scope = f"project:{proj}"
+            elif repo:
+                clean_scope = f"repo:{repo}"
+            else:
+                clean_scope = "global"
+
         policies: list[BranchPolicy] = []
         if not pr_settings:
             return policies
@@ -676,9 +734,11 @@ class BitbucketPolicyScraper(PolicyScraper):
             all_approvers = bool(pr_settings.get("requiredAllApprovers", False))
             policies.append(
                 BranchPolicy(
-                    policy_scope=scope,
+                    policy_scope=clean_scope,
                     target_ref_pattern=default_ref,
                     normalized_rule_type=NormalizedRuleType.REQUIRE_PULL_REQUEST,
+                    project=proj,
+                    repository=repo,
                     rule_parameters={
                         "min_approvals": min_count,
                         "require_all_tasks_complete": all_tasks,
@@ -692,9 +752,11 @@ class BitbucketPolicyScraper(PolicyScraper):
         if build_count is not None:
             policies.append(
                 BranchPolicy(
-                    policy_scope=scope,
+                    policy_scope=clean_scope,
                     target_ref_pattern=default_ref,
                     normalized_rule_type=NormalizedRuleType.REQUIRE_STATUS_CHECKS,
+                    project=proj,
+                    repository=repo,
                     rule_parameters={
                         "min_successful_builds": build_count,
                         "strict": True,
@@ -706,22 +768,67 @@ class BitbucketPolicyScraper(PolicyScraper):
         return policies
 
     def _collect_target_policies(
-        self, project_key: str, repo_slug: str | None, scope: str
+        self,
+        project_key: str | None,
+        repo_slug: str | None,
+        scope: str | None = None,
+        project: str | None = None,
+        repository: str | None = None,
     ) -> list[BranchPolicy]:
         """Fetch and parse restrictions and PR settings for a project or repo scope."""
         collected: list[BranchPolicy] = []
         if self.client is None:
             return collected
 
+        proj_clean = str(
+            project if project is not None else (project_key or "")
+        ).strip()
+        repo_clean = str(
+            repository if repository is not None else (repo_slug or "")
+        ).strip()
+
+        if scope is None or not str(scope).strip():
+            if proj_clean and repo_clean:
+                effective_scope = f"repo:{proj_clean}/{repo_clean}"
+            elif proj_clean:
+                effective_scope = f"project:{proj_clean}"
+            elif repo_clean:
+                effective_scope = f"repo:{repo_clean}"
+            else:
+                effective_scope = "global"
+        else:
+            effective_scope = str(scope).strip()
+
+        if not proj_clean:
+            return collected
+
         try:
-            restrictions = self.client.get_branch_restrictions(project_key, repo_slug)
-            collected.extend(self._parse_restrictions(restrictions, scope))
+            restrictions = self.client.get_branch_restrictions(
+                proj_clean, repo_clean or None
+            )
+            collected.extend(
+                self._parse_restrictions(
+                    restrictions,
+                    effective_scope,
+                    project=proj_clean,
+                    repository=repo_clean,
+                )
+            )
         except ScraperError:
             pass
 
         try:
-            pr_settings = self.client.get_pull_request_settings(project_key, repo_slug)
-            collected.extend(self._parse_pr_settings(pr_settings, scope))
+            pr_settings = self.client.get_pull_request_settings(
+                proj_clean, repo_clean or None
+            )
+            collected.extend(
+                self._parse_pr_settings(
+                    pr_settings,
+                    effective_scope,
+                    project=proj_clean,
+                    repository=repo_clean,
+                )
+            )
         except ScraperError:
             pass
 
@@ -736,19 +843,35 @@ class BitbucketPolicyScraper(PolicyScraper):
 
         if self.project_key:
             scope = (
-                f"repo:{self.repo_slug}"
+                f"repo:{self.project_key}/{self.repo_slug}"
                 if self.repo_slug
                 else f"project:{self.project_key}"
             )
+            project = self.project_key
+            repository = self.repo_slug or ""
             restrictions = self.client.get_branch_restrictions(
                 self.project_key, self.repo_slug
             )
-            policies.extend(self._parse_restrictions(restrictions, scope))
+            policies.extend(
+                self._parse_restrictions(
+                    restrictions,
+                    scope,
+                    project=project,
+                    repository=repository,
+                )
+            )
 
             pr_settings = self.client.get_pull_request_settings(
                 self.project_key, self.repo_slug
             )
-            policies.extend(self._parse_pr_settings(pr_settings, scope))
+            policies.extend(
+                self._parse_pr_settings(
+                    pr_settings,
+                    scope,
+                    project=project,
+                    repository=repository,
+                )
+            )
             return policies
 
         # Full estate traversal across all projects and repositories
@@ -761,7 +884,13 @@ class BitbucketPolicyScraper(PolicyScraper):
             if not self.repo_slug:
                 proj_scope = f"project:{proj_key}"
                 policies.extend(
-                    self._collect_target_policies(proj_key, None, proj_scope)
+                    self._collect_target_policies(
+                        proj_key,
+                        None,
+                        proj_scope,
+                        project=proj_key,
+                        repository="",
+                    )
                 )
 
             if self.repo_slug:
@@ -777,9 +906,15 @@ class BitbucketPolicyScraper(PolicyScraper):
                 if not slug:
                     continue
 
-                repo_scope = f"repo:{slug}"
+                repo_scope = f"repo:{proj_key}/{slug}"
                 policies.extend(
-                    self._collect_target_policies(proj_key, slug, repo_scope)
+                    self._collect_target_policies(
+                        proj_key,
+                        slug,
+                        repo_scope,
+                        project=proj_key,
+                        repository=slug,
+                    )
                 )
 
         return policies
@@ -1359,6 +1494,8 @@ class BitbucketTeamScraper(TeamScraper):
             target_repo_or_project=target,
             normalized_role=norm_role,
             origin_role=origin_role_str,
+            project=proj_key,
+            repository=repo_slug or "",
             metadata=metadata,
         )
 

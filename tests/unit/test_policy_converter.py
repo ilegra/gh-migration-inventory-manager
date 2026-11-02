@@ -199,3 +199,24 @@ def test_given_policy_with_scoped_string_when_converting_then_falls_back_to_pars
     r3 = converter.to_policy_record(p3)
     assert r3.project == ""
     assert r3.repository == ""
+
+
+def test_given_orphan_policy_with_no_project_and_no_repo_when_converting_then_maps_to_empty_fields_and_global_scope() -> (
+    None
+):
+    """Verify orphan policy with explicit empty project/repository and global scope maps correctly."""
+    converter = PolicyConverter()
+    orphan_policy = BranchPolicy(
+        policy_scope="global",
+        target_ref_pattern="refs/heads/main",
+        normalized_rule_type=NormalizedRuleType.REQUIRE_STATUS_CHECKS,
+        project="",
+        repository="",
+        rule_parameters={"min_successful_builds": 1},
+    )
+    record = converter.to_policy_record(orphan_policy)
+
+    assert record.policy_scope == "global"
+    assert record.project == ""
+    assert record.repository == ""
+    assert record.normalized_rule_type == "RequireStatusChecks"

@@ -379,3 +379,145 @@ def test_given_spreadsheet_http_403_when_validating_then_raises_inventory_access
                 normalized_rule_type="BlockForcePush",
             )
         )
+
+
+def test_given_existing_legacy_repo_scope_row_when_registering_policy_with_canonical_scope_then_matches_and_updates_row() -> (
+    None
+):
+    """Verify PolicyInventory._find_row falls back to legacy repo:<slug> and updates row."""
+    sheet = MagicMock(spec=Spreadsheet)
+    sheet.id = "test-id"
+    sheet.sheet_name = "Policies"
+
+    # Simulated legacy row with un-namespaced scope 'repo:payment-service'
+    legacy_row = Row(
+        row_index=5,
+        data={
+            "policy_scope": "repo:payment-service",
+            "target_ref_pattern": "refs/heads/main",
+            "normalized_rule_type": "RequirePullRequest",
+            "migration_status": MigrationStatus.ACTIVE_IN_BOTH,
+            "project": "",
+            "repository": "payment-service",
+            "rule_parameters": "{}",
+            "bypass_team_slugs": "",
+            "origin_raw_policy": "",
+        },
+    )
+
+    def mock_find_by(col: str, val: str) -> list[Row]:
+        if col == "policy_scope" and val == "repo:PAY/payment-service":
+            return []  # Not found under new namespaced key
+        if col == "policy_scope" and val == "repo:payment-service":
+            return [legacy_row]  # Found under legacy key
+        return []
+
+    sheet.find_by.side_effect = mock_find_by
+    sheet.update_row.side_effect = lambda row: row
+
+    inventory = PolicyInventory(spreadsheet=sheet, spreadsheet_id="test-id")
+
+    # Registering policy using new canonical scope 'repo:PAY/payment-service'
+    new_record = PolicyRecord(
+        policy_scope="repo:PAY/payment-service",
+        target_ref_pattern="refs/heads/main",
+        normalized_rule_type="RequirePullRequest",
+        project="PAY",
+        repository="payment-service",
+        rule_parameters='{"enforce_pr": true}',
+    )
+
+    saved = inventory.register_record(new_record)
+
+    # Verifies legacy row was updated (not added as a duplicate row)
+    assert sheet.add.call_count == 0
+    sheet.update_row.assert_called_once()
+    assert saved.policy_scope == "repo:PAY/payment-service"
+    assert saved.project == "PAY"
+    assert saved.repository == "payment-service"
+    # Migration status should be preserved from legacy row
+    assert saved.migration_status == MigrationStatus.ACTIVE_IN_BOTH
+
+
+def test_given_orphan_policies_when_querying_by_project_then_excludes_orphan_policies() -> (
+    None
+):
+    """Verify get_policies_for_project strictly excludes orphan/global policies."""
+    sheet = MagicMock(spec=Spreadsheet)
+    sheet.id = "test-id"
+    sheet.sheet_name = "Policies"
+    sheet.get_all_rows.return_value = [
+        Row(
+            row_index=2,
+            data={
+                "policy_scope": "project:CORE",
+                "target_ref_pattern": "refs/heads/main",
+                "normalized_rule_type": "RequirePullRequest",
+                "project": "CORE",
+                "repository": "",
+            },
+        ),
+        Row(
+            row_index=3,
+            data={
+                "policy_scope": "global",
+                "target_ref_pattern": "refs/heads/*",
+                "normalized_rule_type": "PreventBranchDeletion",
+                "project": "",
+                "repository": "",
+            },
+        ),
+    ]
+
+    inventory = PolicyInventory(spreadsheet=sheet, spreadsheet_id="test-id")
+    policies = inventory.get_policies_for_project("CORE")
+
+    assert len(policies) == 1
+    assert policies[0].policy_scope == "project:CORE"
+    assert policies[0].project == "CORE"
+
+
+def test_given_orphan_policies_when_querying_repository_without_inheritance_then_excludes_orphan_policies() -> (
+    None
+):
+    """Verify get_policies_for_repository excludes orphan policies when include_inherited=False."""
+    sheet = MagicMock(spec=Spreadsheet)
+    sheet.id = "test-id"
+    sheet.sheet_name = "Policies"
+    sheet.get_all_rows.return_value = [
+        Row(
+            row_index=2,
+            data={
+                "policy_scope": "repo:CORE/payments",
+                "target_ref_pattern": "refs/heads/main",
+                "normalized_rule_type": "RequirePullRequest",
+                "project": "CORE",
+                "repository": "payments",
+            },
+        ),
+        Row(
+            row_index=3,
+            data={
+                "policy_scope": "global",
+                "target_ref_pattern": "refs/heads/*",
+                "normalized_rule_type": "PreventBranchDeletion",
+                "project": "",
+                "repository": "",
+            },
+        ),
+    ]
+
+    inventory = PolicyInventory(spreadsheet=sheet, spreadsheet_id="test-id")
+
+    # Without inheritance: only direct repo policies
+    direct_policies = inventory.get_policies_for_repository(
+        "CORE", "payments", include_inherited=False
+    )
+    assert len(direct_policies) == 1
+    assert direct_policies[0].policy_scope == "repo:CORE/payments"
+
+    # With inheritance: includes global/orphan policy
+    inherited_policies = inventory.get_policies_for_repository(
+        "CORE", "payments", include_inherited=True
+    )
+    assert len(inherited_policies) == 2

@@ -653,3 +653,37 @@ def test_given_http_401_unauthorized_when_validating_then_raises_spreadsheet_acc
 
     with pytest.raises(SpreadsheetAccessError, match="Access denied to spreadsheet"):
         mock_spreadsheet.validate()
+
+
+def test_given_http_429_transient_error_when_executing_request_then_retries_with_backoff_and_succeeds(
+    mock_spreadsheet: Spreadsheet,
+) -> None:
+    """Verify _execute retries transient HTTP 429 rate limit errors with backoff."""
+    mock_req = MagicMock()
+    resp_429 = MagicMock()
+    resp_429.status = 429
+    err_429 = HttpError(resp_429, b"Rate limit exceeded")
+
+    mock_req.execute.side_effect = [err_429, {"success": True}]
+
+    result = mock_spreadsheet._execute(mock_req, num_retries=2, backoff_base=0.001)
+
+    assert result == {"success": True}
+    assert mock_req.execute.call_count == 2
+
+
+def test_given_persistent_http_429_when_executing_request_then_exhausts_retries_and_raises(
+    mock_spreadsheet: Spreadsheet,
+) -> None:
+    """Verify _execute exhausts all retry attempts on persistent 429 and raises HttpError."""
+    mock_req = MagicMock()
+    resp_429 = MagicMock()
+    resp_429.status = 429
+    err_429 = HttpError(resp_429, b"Rate limit exceeded")
+
+    mock_req.execute.side_effect = err_429
+
+    with pytest.raises(HttpError):
+        mock_spreadsheet._execute(mock_req, num_retries=2, backoff_base=0.001)
+
+    assert mock_req.execute.call_count == 3
