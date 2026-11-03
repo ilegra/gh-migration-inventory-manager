@@ -61,14 +61,17 @@ flowchart TD
 - **Form**: Command-Line Interface (`gh-migration-inventory scrape <platform>`).
 - **Role**:
   - **Repositories (`scrape svn`, `scrape bitbucket`)**: Discovers repositories, inspects structures, detects technology stacks (Java, Python, TypeScript/Node, C#/.NET Core, Bash, Terraform), extracts last commit dates, and seeds the `Inventario` tab.
-  - **Workflows (`scrape jenkins`)**: Traverses Jenkins controllers, classifies pipeline archetypes, maps SCM URLs, checks build staleness, and seeds the `Workflows` tab.
-  - **Team Topology (`scrape svn-teams`, `scrape bitbucket-teams`)**: Parses SVN `authz` or Bitbucket project/repo group permissions, normalizes roles into GitHub equivalents, tallies member counts without PII sprawl, and seeds the `Topology` tab.
-  - **Branch Policies (`scrape bitbucket-policies`)**: Discovers push restrictions and PR merge checks (approvals, builds, comment resolution), and seeds the `Policies` tab.
+  - **Workflows (`scrape jenkins`)**: Traverses Jenkins controllers, classifies pipeline archetypes, maps SCM URLs and SCMSource attributes to extract discrete project and repository relationships, checks build staleness, and seeds the `Workflows` tab.
+  - **Team Topology (`scrape svn-teams`, `scrape bitbucket-teams`)**: Parses SVN `authz` or Bitbucket project/repo group permissions, resolves distinct project and repository scopes, normalizes roles into GitHub equivalents, tallies member counts without PII sprawl, and seeds the `Topology` tab.
+  - **Branch Policies (`scrape bitbucket-policies`)**: Discovers push restrictions and PR merge checks (approvals, builds, comment resolution), formats canonical `repo:{project}/{repo}` scopes and distinct project/repository fields, and seeds the `Policies` tab.
 - **Idempotency**: Discovery operations are non-destructive—newly discovered items are inserted, while existing records strictly preserve their migration status and historical timestamps.
 
-### 2. Updating the Inventory (Lifecycle Tracking via Embedded Library)
+### 2. Updating and Querying the Inventory (Lifecycle Tracking & Relational Graph)
 - **Form**: Python library (`gh_migration_inventory_manager`) embedded directly into migration pipelines, GitHub Actions workflows, Jenkins jobs, or orchestration scripts.
-- **Role**: Programmatically advances statuses as migration milestones complete (`waitting` → `active_in_both` → `migrated`) via [`Inventory`](src/gh_migration_inventory_manager/inventory.py), [`PipelineInventory`](src/gh_migration_inventory_manager/inventory.py), [`PolicyInventory`](src/gh_migration_inventory_manager/inventory.py), and [`TeamInventory`](src/gh_migration_inventory_manager/inventory.py). It automatically manages timestamps (`Data de Migração (GitHub)`, `Data de Desativação (Origem)`) and calculates the cohort month (`Mês de Migração`).
+- **Role**:
+  - Programmatically advances statuses as migration milestones complete (`waitting` → `active_in_both` → `migrated`) via [`Inventory`](src/gh_migration_inventory_manager/inventory.py), [`PipelineInventory`](src/gh_migration_inventory_manager/inventory.py), [`PolicyInventory`](src/gh_migration_inventory_manager/inventory.py), and [`TeamInventory`](src/gh_migration_inventory_manager/inventory.py). Automatically manages timestamps (`Data de Migração (GitHub)`, `Data de Desativação (Origem)`) and calculates the cohort month (`Mês de Migração`).
+  - Provides rich collection and relational query APIs across all inventory dimensions (`get_all_*`, `get_*_for_project`, `get_*_for_repository`).
+  - Synthesizes cross-tab dependencies into unified repository and project profiles via [`InventoryGraph`](src/gh_migration_inventory_manager/inventory.py).
 
 ---
 
@@ -98,19 +101,21 @@ You have two flexible options to set up the spreadsheet:
    https://docs.google.com/spreadsheets/d/<SPREADSHEET_ID>/edit
    ```
 
-#### Option B: Automatic Provisioning on a New or Existing Sheet
-`gh-migration-inventory-manager` includes **automatic tab and header provisioning**:
+#### Option B: Automatic Provisioning and Schema Upgrades on a New or Existing Sheet
+`gh-migration-inventory-manager` includes **automatic tab and header provisioning with transparent schema upgrades**:
 1. Create a blank Google Spreadsheet (or use an existing team spreadsheet).
 2. Share the spreadsheet with your GCP Service Account email and grant the **Editor** role.
 3. Simply execute any scraper command with `--spreadsheet-id <ID>`. The tool will automatically create missing worksheets (`Inventario`, `Workflows`, `Topology`, or `Policies`) and initialize the exact header columns if they do not exist.
+4. **Transparent Header Upgrades**: If your spreadsheet was created with earlier schema versions (e.g., 12-column `Workflows` or 7-column `Topology`/`Policies`), the engine automatically detects missing headers and upgrades row 1 in-place (adding `Projeto` and `Repositório`) without altering or overwriting your existing migration records.
+5. **Rate-Limit Resilience**: The Google Sheets client is hardened with exponential backoff and jitter, gracefully handling HTTP `429` (Quota / Rate Limit Exceeded) and `5xx` transient server errors during high-volume synchronizations.
 
 ---
 
 ## Spreadsheet Structure & Schemas
 
-The spreadsheet serves as the single source of truth across four structured tabs:
+The spreadsheet serves as the single source of truth across four structured relational tabs:
 
-### 1. `Inventario` (Repositories & Stacks)
+### 1. `Inventario` (Repositories & Stacks — 8 Columns)
 Populated by `scrape svn` and `scrape bitbucket`:
 - `Projeto`: Project or workspace grouping key.
 - `Nome do Repositório`: Repository slug or component identifier.
@@ -121,12 +126,12 @@ Populated by `scrape svn` and `scrape bitbucket`:
 - `Status da Migração`: Current lifecycle state (`Aguardando Migração`, `Migrando (Ativos em Ambas)`, `Migrados (Somente GitHub)`, `Ignorado`).
 - `Mês de Migração`: Cohort month string (e.g., `Novembro/2026`).
 
-### 2. `Workflows` (CI/CD Pipelines)
+### 2. `Workflows` (CI/CD Pipelines — 14 Columns)
 Populated by `scrape jenkins`:
 - `ID do Workflow`: Full job path/identifier (e.g., `services/payment/payment-service-build`).
 - `Plataforma`: CI/CD platform (`jenkins`, `gitlab`, `azure_devops`, `github_actions`).
 - `Tipo de Pipeline`: Classification (`declarative`, `scripted`, `multibranch`, `freestyle`, `matrix`).
-- `Repositório Associado`: Linked SCM repository name or identifier (`org/repo`).
+- `Repositório Associado`: Formatted repository association (`<project>/<repo>` or `<repo>`).
 - `URL do Repositório`: Git or SVN clone/remote URL for the repository.
 - `Caminho do Workflow`: Path to workflow file in repository (e.g., `Jenkinsfile`).
 - `Componentes Compartilhados`: Referenced shared libraries, templates, or reusable workflows.
@@ -134,27 +139,33 @@ Populated by `scrape jenkins`:
 - `Branch Padrão`: Target or default branch configured for the job (e.g., `main`).
 - `Último Build`: Formatted date/timestamp of the most recent build execution.
 - `Status do Último Build`: Outcome of the most recent build (`SUCCESS`, `FAILURE`, `UNSTABLE`).
-- `Status da Migração`: Current lifecycle state (`Aguardando Migração`, etc.).
+- `Status da Migração`: Current lifecycle state (`Aguardando Migração`, `Migrando (Ativos em Ambas)`, etc.).
+- `Projeto`: Normalized project key, organization, or workspace grouping extracted from SCM URLs, SCMSource, or inline pipeline steps.
+- `Repositório`: Distinct repository slug or component identifier linked to the pipeline (empty for standalone/utility jobs without SCM associations).
 
-### 3. `Topology` (Team Permissions & RBAC)
+### 3. `Topology` (Team Permissions & RBAC — 9 Columns)
 Populated by `scrape svn-teams` and `scrape bitbucket-teams`:
 - `Nome do Time`: Original team or group identifier from source.
 - `Slug do Time`: GitHub-compatible lowercase hyphenated slug (e.g., `core-devs`).
 - `Contagem de Membros`: Total active member count (aggregated to eliminate PII sprawl).
-- `Repositório / Projeto`: Target repository path or project scope (`*` for global).
+- `Repositório / Projeto`: Raw target repository path or project scope (`*` for global).
 - `Papel Normalizado (GitHub)`: Normalized GitHub role (`Admin`, `Maintain`, `Write`, `Triage`, `Read`).
 - `Papel de Origem`: Raw platform role or permission string (e.g., `PROJECT_ADMIN`, `rw`).
 - `Status da Migração`: Current lifecycle state.
+- `Projeto`: Extracted origin project key, workspace, or top-level SVN repository/directory name.
+- `Repositório`: Specific repository slug (or sub-directory in SVN) for repository-scoped permissions (empty for project-wide or global permissions).
 
-### 4. `Policies` (Branch Governance & Merge Checks)
+### 4. `Policies` (Branch Governance & Merge Checks — 9 Columns)
 Populated by `scrape bitbucket-policies`:
-- `Escopo da Política`: Scope level (`project:<KEY>` or `repo:<KEY>/<SLUG>`).
+- `Escopo da Política`: Canonical scope identifier: `project:<KEY>` for project-wide governance or canonical `repo:<KEY>/<SLUG>` for repository-specific rules (with backwards-compatible fallback support for legacy un-namespaced `repo:<SLUG>` or `global`).
 - `Padrão de Ref / Branch`: Target branch pattern (e.g., `refs/heads/main`, `release/*`).
 - `Tipo de Regra (GitHub)`: Normalized rule archetype (`pull_request`, `deletion`, `non_fast_forward`, `read_only`).
 - `Parâmetros da Regra`: JSON or formatted rule parameters (e.g., `{"min_approvals": 2, "require_builds": true}`).
 - `Slugs de Times de Bypass`: Comma-separated list of GitHub team slugs exempted from restrictions.
 - `Política de Origem (Raw)`: Raw Bitbucket restriction or merge check payload.
 - `Status da Migração`: Current lifecycle state.
+- `Projeto`: Origin project key or workspace slug.
+- `Repositório`: Target repository slug for repository-scoped policies (empty for project-level policies).
 
 ### 5. `Analytics`
 Consolidated executive dashboard with real-time charts:
@@ -184,7 +195,7 @@ poetry run gh-migration-inventory scrape svn \
 ```
 
 #### B. SVN Team Topology (`scrape svn-teams`)
-Parses SVN `authz` access files from a local file or remote WebDAV URL and normalizes permissions into the `Topology` tab.
+Parses SVN `authz` access files from a local file or remote WebDAV URL. It automatically parses repository paths and directory scopes (e.g. `[repo:/path]` or `[/path]`) into distinct `project` and `repository` fields, normalizes permissions to GitHub equivalents, and synchronizes into the `Topology` tab.
 ```bash
 # Using a local authz file:
 poetry run gh-migration-inventory scrape svn-teams \
@@ -206,7 +217,11 @@ poetry run gh-migration-inventory scrape svn-teams \
 ### 2. Jenkins CI/CD
 
 #### Jenkins Pipelines (`scrape jenkins`)
-Recursively traverses Jenkins folders, classifies pipeline archetypes, associates SCM repositories, and flags stale jobs in the `Workflows` tab.
+Recursively traverses Jenkins folders, classifies pipeline archetypes, checks build staleness, and seeds the `Workflows` tab. It features **multi-layer SCM resolution** to correlate pipelines with repositories:
+- **SCM URL Resolution**: Extracts repository and project slugs from Git/SVN URLs (Bitbucket Server HTTP/browse/SSH, GitHub, GitLab nested subgroups, SVN multi-project layouts).
+- **SCMSource Introspection**: Inspects Multibranch Pipelines and Organization Folders for `projectKey`, `repositorySlug`, `repoOwner`, and `repository` properties.
+- **Inline Script Fallback**: Analyzes scripted and declarative pipeline definitions for embedded `git` and `checkout` steps.
+- **Standalone Job Classification**: Classifies utility, trigger, or system jobs without SCM linkages with `repository=None` and empty project.
 ```bash
 poetry run gh-migration-inventory scrape jenkins \
   --url https://jenkins.internal.company.com \
@@ -248,7 +263,7 @@ poetry run gh-migration-inventory scrape bitbucket \
 ```
 
 #### B. Bitbucket Branch Policies & Governance (`scrape bitbucket-policies`)
-Discovers branch restrictions (no deletion, fast-forward only, read-only) and pull request merge checks (required minimum approvals, successful build checks, unresolved comments) into the `Policies` tab.
+Discovers branch restrictions (no deletion, fast-forward only, read-only) and pull request merge checks (required minimum approvals, successful build checks, unresolved comments) into the `Policies` tab. Emits canonical `repo:{project_key}/{repo_slug}` scopes and distinct `project` and `repository` fields (or `project:{project_key}` for project-level policies).
 ```bash
 poetry run gh-migration-inventory scrape bitbucket-policies \
   --url https://bitbucket.corp.local \
@@ -261,7 +276,7 @@ poetry run gh-migration-inventory scrape bitbucket-policies \
 *(Leave `--repo-slug` omitted to scrape project-level branch restrictions).*
 
 #### C. Bitbucket Teams & Access Permissions (`scrape bitbucket-teams`)
-Discovers project-level and repository-level group permissions, normalizes them into GitHub roles (`Admin`, `Write`, `Read`), and extracts aggregate group member counts without PII sprawl into the `Topology` tab.
+Discovers project-level and repository-level group permissions, normalizes them into GitHub roles (`Admin`, `Write`, `Read`), populates distinct `project` and `repository` fields, and extracts aggregate group member counts without PII sprawl into the `Topology` tab.
 ```bash
 poetry run gh-migration-inventory scrape bitbucket-teams \
   --url https://bitbucket.corp.local \
@@ -343,9 +358,9 @@ gh-migration-inventory scrape <platform> [OPTIONS]
 
 ---
 
-## Updating the Inventory (Embedded Python Library)
+## Updating and Querying the Inventory (Embedded Python Library)
 
-Embed [`gh_migration_inventory_manager`](src/gh_migration_inventory_manager) into migration pipelines, GitHub Actions workflows, or orchestration scripts to programmatically transition items across lifecycle states.
+Embed [`gh_migration_inventory_manager`](src/gh_migration_inventory_manager) into migration pipelines, GitHub Actions workflows, or orchestration scripts to programmatically transition items across lifecycle states, perform relational queries, and synthesize unified migration graphs.
 
 ### Migration Status Lifecycle & Automated Timestamps
 
@@ -356,17 +371,60 @@ Embed [`gh_migration_inventory_manager`](src/gh_migration_inventory_manager) int
 | `MigrationStatus.MIGRATED` (`"migrated"`) | `Migrados (Somente GitHub)` | Sets `Data de Desativação (Origem)` to current UTC date. Also sets migration date if missing. |
 | `MigrationStatus.SKIPPED` (`"skipped"`) | `Ignorado` | Clears migration timestamps. |
 
+### Data Structures & Models Reference
+
+The library provides structured dataclasses representing discrete records in each sheet:
+
+| Model / Dataclass | Target Tab | Key Fields & Relational Attributes |
+| :--- | :--- | :--- |
+| [`InventoryRecord`](src/gh_migration_inventory_manager/inventory.py) | `Inventario` | `name`, `project`, `stack`, `last_commit`, `gh_migration`, `origin_deactivation`, `migration_status`, `migration_month` |
+| [`PipelineRecord`](src/gh_migration_inventory_manager/inventory.py) | `Workflows` | `workflow_id`, `platform`, `pipeline_type`, `repository_association`, `repository_url`, `file_path`, `shared_components`, `execution_environment`, `branch`, `last_build`, `last_status`, `migration_status`, `project`, `repository` |
+| [`TeamRecord`](src/gh_migration_inventory_manager/inventory.py) | `Topology` | `team_name`, `team_slug`, `member_count`, `target_repo_or_project`, `normalized_role`, `origin_role`, `migration_status`, `project`, `repository` |
+| [`PolicyRecord`](src/gh_migration_inventory_manager/inventory.py) | `Policies` | `policy_scope`, `target_ref_pattern`, `normalized_rule_type`, `rule_parameters`, `bypass_team_slugs`, `origin_raw_policy`, `migration_status`, `project`, `repository` |
+
+#### Relational Synthesis Profiles
+- [`CorrelatedRepositoryProfile`](src/gh_migration_inventory_manager/inventory.py): Aggregated view for a single repository (`project_slug`, `repo_slug`), containing its `repository` record, `pipelines`, `teams`, and `effective_policies` (which automatically consolidates repository-specific, project-inherited, and global rules).
+- [`CorrelatedProjectProfile`](src/gh_migration_inventory_manager/inventory.py): Aggregated view for an entire project (`project_slug`), containing all project `repositories`, `project_policies`, `pipelines`, and `teams`.
+- [`InventoryGraph`](src/gh_migration_inventory_manager/inventory.py): In-memory relational synthesis engine that connects records across all four tabs. Can be instantiated with zero I/O via `InventoryGraph.from_records(...)` or concurrently from live sheets via `InventoryGraph.from_inventories(...)`.
+
+### Collection & Relational Query APIs
+
+Each inventory manager supports high-level query methods to inspect records without manual spreadsheet lookups:
+
+- **[`Inventory`](src/gh_migration_inventory_manager/inventory.py)**:
+  - `get_repository(name: str) -> InventoryRecord | None`
+  - `get_all_repositories() -> list[InventoryRecord]`
+  - `get_repositories_for_project(project_slug: str) -> list[InventoryRecord]`
+- **[`PipelineInventory`](src/gh_migration_inventory_manager/inventory.py)**:
+  - `get_pipeline(workflow_id: str) -> PipelineRecord | None`
+  - `get_all_pipelines() -> list[PipelineRecord]`
+  - `get_pipelines_for_project(project_slug: str) -> list[PipelineRecord]`
+  - `get_pipelines_for_repository(repo_slug: str, project_slug: str | None = None) -> list[PipelineRecord]`
+- **[`TeamInventory`](src/gh_migration_inventory_manager/inventory.py)**:
+  - `get_team_permission(team_slug: str, target_repo_or_project: str, normalized_role: str | None = None) -> TeamRecord | None`
+  - `get_all_teams() -> list[TeamRecord]`
+  - `get_teams_for_project(project_slug: str) -> list[TeamRecord]`
+  - `get_teams_for_repository(repo_slug: str, project_slug: str | None = None, include_inherited: bool = True) -> list[TeamRecord]`
+- **[`PolicyInventory`](src/gh_migration_inventory_manager/inventory.py)**:
+  - `get_policy(policy_scope: str, target_ref_pattern: str, normalized_rule_type: str) -> PolicyRecord | None`
+  - `get_all_policies() -> list[PolicyRecord]`
+  - `get_policies_for_project(project_slug: str) -> list[PolicyRecord]`
+  - `get_policies_for_repository(repo_slug: str, project_slug: str | None = None, include_inherited: bool = True) -> list[PolicyRecord]`
+- **[`Spreadsheet`](src/gh_migration_inventory_manager/google.py)**:
+  - `ensure_all_tabs() -> None`: Provisions missing tabs and upgrades existing row 1 headers across all four canonical sheets (`Inventario`, `Workflows`, `Topology`, `Policies`).
+
 ### Python Library Usage Example
 
 ```python
 from gh_migration_inventory_manager import (
     Credentials,
     Inventory,
+    InventoryGraph,
+    MigrationStatus,
     PipelineInventory,
     PolicyInventory,
-    TeamInventory,
-    MigrationStatus,
     Spreadsheet,
+    TeamInventory,
 )
 
 # 1. Initialize credentials and spreadsheet client
@@ -376,6 +434,9 @@ spreadsheet = Spreadsheet(
     credentials=credentials,
     sheet_name="Inventario",
 )
+
+# Optional: ensure all worksheets exist and headers are up to date
+spreadsheet.ensure_all_tabs()
 
 # 2. Advance a repository's migration lifecycle
 inventory = Inventory(spreadsheet=spreadsheet)
@@ -406,6 +467,38 @@ pipeline_inv.update_progress(
     workflow_id="services/payment/payment-service-build",
     status=MigrationStatus.MIGRATED,
 )
+
+# 4. Query relationships across inventory managers
+core_repos = inventory.get_repositories_for_project("CORE")
+payment_pipelines = pipeline_inv.get_pipelines_for_repository(
+    repo_slug="payment-service", project_slug="CORE"
+)
+print(f"Found {len(payment_pipelines)} pipeline(s) for CORE/payment-service")
+
+# 5. Build an InventoryGraph for cross-tab relational correlation
+team_inv = TeamInventory(
+    spreadsheet_id="1Z0PAjv8KK6WBrS2356gtR3VE0ulD1-8LM4DPQiG-Nkk",
+    credentials_path="gcp-key.json",
+)
+policy_inv = PolicyInventory(
+    spreadsheet_id="1Z0PAjv8KK6WBrS2356gtR3VE0ulD1-8LM4DPQiG-Nkk",
+    credentials_path="gcp-key.json",
+)
+
+# Concurrently loads all 4 sheets into memory
+graph = InventoryGraph.from_inventories(
+    inventory=inventory,
+    pipeline_inventory=pipeline_inv,
+    policy_inventory=policy_inv,
+    team_inventory=team_inv,
+)
+
+# Get unified correlated profile for a specific repository
+profile = graph.get_repository_profile(project_slug="CORE", repo_slug="payment-service")
+print(f"Correlated Repository: {profile.repo_slug}")
+print(f"Linked Pipelines: {len(profile.pipelines)}")
+print(f"Effective Policies (repo + project + global): {len(profile.effective_policies)}")
+print(f"Associated Teams: {len(profile.teams)}")
 ```
 
 > [!NOTE]
@@ -418,11 +511,11 @@ pipeline_inv.update_progress(
 | Platform | Scraper Identifier | Target Sheet | Discovery Capabilities |
 | :--- | :--- | :--- | :--- |
 | **Subversion (SVN)** | `svn` | `Inventario` | Layout auto-detection (`standard`, `multi_project`, `flat`, `collection`), stack detection (Java, Python, TypeScript, C#, Bash, Terraform), commit timestamps. |
-| **Subversion (SVN)** | `svn-teams` | `Topology` | `authz` file parsing (local or WebDAV), directory path scopes, group membership counts, GitHub role normalization. |
-| **Jenkins CI/CD** | `jenkins` | `Workflows` | Recursive folder traversal, job classification (Declarative, Scripted, Multibranch, Freestyle), SCM linkages, build staleness filtering. |
+| **Subversion (SVN)** | `svn-teams` | `Topology` | `authz` file parsing (local or WebDAV), extracts discrete `project` and `repository` fields, group membership counts, GitHub role normalization. |
+| **Jenkins CI/CD** | `jenkins` | `Workflows` | Recursive folder traversal, job classification (Declarative, Scripted, Multibranch, Freestyle), multi-layer SCM resolution (URL parsing, `SCMSource`, inline scripts) extracting distinct `project` and `repository`, build staleness filtering. |
 | **Bitbucket** | `bitbucket` | `Inventario` | Cloud & DC support, clone URL resolution, default branch detection, manifest stack analysis, commit timestamps. |
-| **Bitbucket** | `bitbucket-policies`| `Policies` | Branch restrictions (prevent deletion, fast-forward only, read-only) and PR merge checks (approvals, builds, comment resolution). |
-| **Bitbucket** | `bitbucket-teams` | `Topology` | Project & repository group permissions, role normalization (`Admin`, `Write`, `Read`), member count aggregation. |
+| **Bitbucket** | `bitbucket-policies`| `Policies` | Branch restrictions (prevent deletion, fast-forward only, read-only) and PR merge checks, canonical `repo:{project}/{repo}` scopes, distinct `project` and `repository` fields. |
+| **Bitbucket** | `bitbucket-teams` | `Topology` | Project & repository group permissions, extracts distinct `project` and `repository` fields, role normalization (`Admin`, `Write`, `Read`), member count aggregation. |
 
 ---
 
