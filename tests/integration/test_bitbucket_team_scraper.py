@@ -35,6 +35,12 @@ def test_given_live_bitbucket_server_when_scraping_then_discovers_team_permissio
 
     permissions = scraper.scrape()
     assert isinstance(permissions, list)
+    for perm in permissions:
+        assert perm.project == bitbucket_server["project_key"]
+        if perm.target_repo_or_project.startswith("repo:"):
+            assert perm.repository == bitbucket_server["repo_slug"]
+        elif perm.target_repo_or_project.startswith("project:"):
+            assert perm.repository == ""
 
 
 def test_given_live_bitbucket_server_when_unauthorized_token_used_then_raises_scraper_authentication_error(
@@ -89,3 +95,8 @@ def test_given_discovered_teams_when_syncing_inventory_then_registers_in_topolog
     assert len(synced) == len(records)
     for record in synced:
         assert record.migration_status == MigrationStatus.WAITTING
+        assert record.project == bitbucket_server["project_key"]
+        if record.target_repo_or_project.startswith("repo:"):
+            assert record.repository == bitbucket_server["repo_slug"]
+        elif record.target_repo_or_project.startswith("project:"):
+            assert record.repository == ""

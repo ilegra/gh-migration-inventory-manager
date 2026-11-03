@@ -120,6 +120,50 @@ def test_given_permission_with_explicit_project_and_repo_when_converting_then_po
     assert record.repository == "app"
 
 
+def test_given_project_level_permission_when_converting_then_preserves_project_and_empty_repository() -> (
+    None
+):
+    """Verify project-scoped permission preserves project and leaves repository empty."""
+    converter = TeamConverter()
+    permission = TeamPermission(
+        team_name="Tech Leads",
+        member_count=2,
+        target_repo_or_project="project:CORE",
+        normalized_role=NormalizedRole.ADMIN,
+        origin_role="PROJECT_ADMIN",
+        project="CORE",
+        repository="",
+    )
+
+    record = converter.to_team_record(permission)
+
+    assert record.project == "CORE"
+    assert record.repository == ""
+    assert record.target_repo_or_project == "project:CORE"
+
+
+def test_given_global_permission_without_project_or_repo_when_converting_then_preserves_empty_fields() -> (
+    None
+):
+    """Verify global permission leaves both project and repository empty without crashing."""
+    converter = TeamConverter()
+    permission = TeamPermission(
+        team_name="All Users",
+        member_count=0,
+        target_repo_or_project="global",
+        normalized_role=NormalizedRole.READ,
+        origin_role="r",
+        project="",
+        repository="",
+    )
+
+    record = converter.to_team_record(permission)
+
+    assert record.project == ""
+    assert record.repository == ""
+    assert record.target_repo_or_project == "global"
+
+
 def test_given_permission_with_composite_target_when_converting_then_falls_back_to_parsing() -> (
     None
 ):
