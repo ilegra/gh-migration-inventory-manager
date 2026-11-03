@@ -84,6 +84,8 @@ def test_given_valid_project_and_repo_permissions_when_scraping_then_returns_can
     assert p_admin.target_repo_or_project == "project:PAY"
     assert p_admin.normalized_role == NormalizedRole.ADMIN
     assert p_admin.origin_role == "PROJECT_ADMIN"
+    assert p_admin.project == "PAY"
+    assert p_admin.repository == ""
     assert p_admin.metadata["project_key"] == "PAY"
 
     # 2. Project Write
@@ -93,6 +95,8 @@ def test_given_valid_project_and_repo_permissions_when_scraping_then_returns_can
     assert p_write.target_repo_or_project == "project:PAY"
     assert p_write.normalized_role == NormalizedRole.WRITE
     assert p_write.origin_role == "PROJECT_WRITE"
+    assert p_write.project == "PAY"
+    assert p_write.repository == ""
 
     # 3. Repo Read
     r_read = next(p for p in permissions if p.team_name == "qa-engineers")
@@ -101,6 +105,8 @@ def test_given_valid_project_and_repo_permissions_when_scraping_then_returns_can
     assert r_read.target_repo_or_project == "repo:PAY/payment-gateway"
     assert r_read.normalized_role == NormalizedRole.READ
     assert r_read.origin_role == "REPO_READ"
+    assert r_read.project == "PAY"
+    assert r_read.repository == "payment-gateway"
     assert r_read.metadata["repo_slug"] == "payment-gateway"
 
 
@@ -123,6 +129,8 @@ def test_given_include_repo_level_false_when_scraping_then_extracts_only_project
 
     assert len(permissions) == 1
     assert permissions[0].target_repo_or_project == "project:CORE"
+    assert permissions[0].project == "CORE"
+    assert permissions[0].repository == ""
     mock_client.get_repositories.assert_not_called()
     mock_client.get_repository_group_permissions.assert_not_called()
 
@@ -199,6 +207,8 @@ def test_given_specific_repo_slug_when_scraping_then_extracts_only_specified_rep
 
     assert len(permissions) == 1
     assert permissions[0].target_repo_or_project == "repo:PAY/custom-service"
+    assert permissions[0].project == "PAY"
+    assert permissions[0].repository == "custom-service"
     mock_client.get_repositories.assert_not_called()
     mock_client.get_repository_group_permissions.assert_called_once_with(
         "PAY", "custom-service", limit=100
@@ -712,3 +722,51 @@ def test_given_token_auth_when_creating_scraper_then_configures_token_authentica
     client = scraper.client
     assert isinstance(client, BitbucketClient)
     assert isinstance(client.auth, TokenAuthenticator)
+
+
+def test_given_scraped_teams_when_converting_then_team_records_retain_project_and_repository() -> (
+    None
+):
+    """Test end-to-end conversion from BitbucketTeamScraper to TeamRecord preserves project and repo."""
+    from gh_migration_inventory_manager.converter import TeamConverter
+
+    mock_client = MagicMock(spec=BitbucketTransport)
+    mock_client.get_project_group_permissions.return_value = [
+        {"group": "dev-leads", "permission": "PROJECT_ADMIN"}
+    ]
+    mock_client.get_repositories.return_value = [{"slug": "payment-api"}]
+    mock_client.get_repository_group_permissions.return_value = [
+        {"group": "devs", "permission": "REPO_WRITE"}
+    ]
+    mock_client.get_group_member_count.return_value = 5
+
+    scraper = BitbucketTeamScraper(project_key="PAY", client=mock_client)
+    permissions = scraper.scrape()
+
+    converter = TeamConverter()
+    records = converter.to_team_records(permissions)
+
+    assert len(records) == 2
+    proj_rec = next(r for r in records if r.team_name == "dev-leads")
+    assert proj_rec.project == "PAY"
+    assert proj_rec.repository == ""
+    assert proj_rec.target_repo_or_project == "project:PAY"
+
+    repo_rec = next(r for r in records if r.team_name == "devs")
+    assert repo_rec.project == "PAY"
+    assert repo_rec.repository == "payment-api"
+    assert repo_rec.target_repo_or_project == "repo:PAY/payment-api"
+
+
+def test_given_orphan_permission_without_project_when_building_then_emits_empty_project_and_repo() -> (
+    None
+):
+    """Test permission constructed with empty project context leaves project and repository empty."""
+    scraper = BitbucketTeamScraper()
+    entry = {"group": "global-admins", "permission": "PROJECT_ADMIN"}
+    perm = scraper._build_permission(entry, "global", "")
+
+    assert perm.project == ""
+    assert perm.repository == ""
+    assert perm.target_repo_or_project == "global"
+    assert perm.team_slug == "global-admins"

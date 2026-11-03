@@ -48,6 +48,8 @@ def test_given_standard_authz_text_when_parsing_then_extracts_all_teams_and_role
         admin_perm.target_repo_or_project == "[/]"
         or admin_perm.target_repo_or_project == "/"
     )
+    assert admin_perm.project == ""
+    assert admin_perm.repository == ""
 
     # 2. [/] * = r -> Read (all-users)
     root_wildcard = next(
@@ -61,6 +63,8 @@ def test_given_standard_authz_text_when_parsing_then_extracts_all_teams_and_role
     assert root_wildcard.member_count == 0
     assert root_wildcard.team_slug == "all-users"
     assert root_wildcard.normalized_role == NormalizedRole.READ
+    assert root_wildcard.project == ""
+    assert root_wildcard.repository == ""
 
     # 3. [/standard-app/trunk] @core-devs = rw -> Write
     core_devs = next(p for p in perms if p.team_name == "core-devs")
@@ -68,6 +72,8 @@ def test_given_standard_authz_text_when_parsing_then_extracts_all_teams_and_role
     assert core_devs.team_slug == "core-devs"
     assert core_devs.normalized_role == NormalizedRole.WRITE
     assert "/standard-app/trunk" in core_devs.target_repo_or_project
+    assert core_devs.project == "standard-app"
+    assert core_devs.repository == "trunk"
 
     # 4. [/standard-app/tags] @leads = rw -> Maintain
     tags_leads = next(
@@ -78,6 +84,8 @@ def test_given_standard_authz_text_when_parsing_then_extracts_all_teams_and_role
     assert tags_leads.member_count == 2
     assert tags_leads.normalized_role == NormalizedRole.MAINTAIN
     assert tags_leads.origin_role == "rw"
+    assert tags_leads.project == "standard-app"
+    assert tags_leads.repository == "tags"
 
 
 def test_given_repo_prefixed_path_when_parsing_then_preserves_target_and_normalizes_role() -> (
@@ -99,6 +107,8 @@ def test_given_repo_prefixed_path_when_parsing_then_preserves_target_and_normali
     assert perms[0].member_count == 2
     assert perms[0].normalized_role == NormalizedRole.WRITE
     assert perms[0].target_repo_or_project == "myrepo:/projects/service-a/trunk"
+    assert perms[0].project == "projects"
+    assert perms[0].repository == "service-a"
 
 
 def test_given_individual_user_rules_when_parsing_then_ignores_individual_pii() -> None:
@@ -197,3 +207,22 @@ def test_given_malformed_lines_when_parsing_then_continues_gracefully() -> None:
 
     assert len(perms) == 1
     assert perms[0].team_name == "devs"
+
+
+def test_given_repo_root_rule_when_parsing_then_extracts_project_as_repo_name_and_empty_repository() -> (
+    None
+):
+    """Verify repo root like [myrepo:/] populates project with repo name and empty repository."""
+    content = """
+    [groups]
+    devs = user1
+
+    [myrepo:/]
+    @devs = rw
+    """
+    parser = SvnAuthzParser()
+    perms = parser.parse(content)
+
+    assert len(perms) == 1
+    assert perms[0].project == "myrepo"
+    assert perms[0].repository == ""

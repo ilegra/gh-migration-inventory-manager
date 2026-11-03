@@ -49,11 +49,10 @@ def test_given_spreadsheet_template_when_ensuring_all_tabs_then_all_tabs_and_col
     service = live_spreadsheet._service
 
     # 1. Tab: Inventario (8 columns, A:H)
-    res_inv = (
+    res_inv = live_spreadsheet._execute(
         service.spreadsheets()
         .values()
         .get(spreadsheetId=_SPREADSHEET_ID, range="Inventario!A1:H1")
-        .execute()
     )
     inv_headers = res_inv.get("values", [[]])[0]
     assert len(inv_headers) >= 8
@@ -61,11 +60,10 @@ def test_given_spreadsheet_template_when_ensuring_all_tabs_then_all_tabs_and_col
     assert inv_headers[1] == INVENTORY_HEADERS[1]  # Nome do Repositório
 
     # 2. Tab: Workflows (14 columns, A:N)
-    res_wf = (
+    res_wf = live_spreadsheet._execute(
         service.spreadsheets()
         .values()
         .get(spreadsheetId=_SPREADSHEET_ID, range="Workflows!A1:N1")
-        .execute()
     )
     wf_headers = res_wf.get("values", [[]])[0]
     assert len(wf_headers) == 14
@@ -74,11 +72,10 @@ def test_given_spreadsheet_template_when_ensuring_all_tabs_then_all_tabs_and_col
     assert wf_headers[13] == "Repositório"
 
     # 3. Tab: Topology (9 columns, A:I)
-    res_topo = (
+    res_topo = live_spreadsheet._execute(
         service.spreadsheets()
         .values()
         .get(spreadsheetId=_SPREADSHEET_ID, range="Topology!A1:I1")
-        .execute()
     )
     topo_headers = res_topo.get("values", [[]])[0]
     assert len(topo_headers) == 9
@@ -87,11 +84,10 @@ def test_given_spreadsheet_template_when_ensuring_all_tabs_then_all_tabs_and_col
     assert topo_headers[8] == "Repositório"
 
     # 4. Tab: Policies (9 columns, A:I)
-    res_pol = (
+    res_pol = live_spreadsheet._execute(
         service.spreadsheets()
         .values()
         .get(spreadsheetId=_SPREADSHEET_ID, range="Policies!A1:I1")
-        .execute()
     )
     pol_headers = res_pol.get("values", [[]])[0]
     assert len(pol_headers) == 9
@@ -128,14 +124,13 @@ def test_given_inventario_tab_when_writing_record_then_google_api_verifies_cells
         created_row_index = found_rows[0].row_index
 
         # Direct Google API assertion on physical cells
-        res = (
+        res = live_spreadsheet._execute(
             service.spreadsheets()
             .values()
             .get(
                 spreadsheetId=_SPREADSHEET_ID,
                 range=f"Inventario!A{created_row_index}:H{created_row_index}",
             )
-            .execute()
         )
         row_cells = res.get("values", [[]])[0]
         assert len(row_cells) >= 2
@@ -187,14 +182,13 @@ def test_given_workflows_tab_when_writing_pipeline_then_google_api_verifies_four
         created_row_index = found_rows[0].row_index
 
         # Direct Google API assertion on physical cells
-        res = (
+        res = live_spreadsheet._execute(
             service.spreadsheets()
             .values()
             .get(
                 spreadsheetId=_SPREADSHEET_ID,
                 range=f"Workflows!A{created_row_index}:N{created_row_index}",
             )
-            .execute()
         )
         row_cells = res.get("values", [[]])[0]
         assert len(row_cells) == 14
@@ -252,14 +246,13 @@ def test_given_topology_tab_when_writing_team_then_google_api_verifies_nine_colu
         created_row_index = found_rows[0].row_index
 
         # Direct Google API assertion on physical cells
-        res = (
+        res = live_spreadsheet._execute(
             service.spreadsheets()
             .values()
             .get(
                 spreadsheetId=_SPREADSHEET_ID,
                 range=f"Topology!A{created_row_index}:I{created_row_index}",
             )
-            .execute()
         )
         row_cells = res.get("values", [[]])[0]
         assert len(row_cells) == 9
@@ -278,6 +271,82 @@ def test_given_topology_tab_when_writing_team_then_google_api_verifies_nine_colu
         assert any(t.team_slug == canary_slug for t in by_proj)
         by_repo = team_inv.get_teams_for_repository(canary_proj, canary_repo)
         assert any(t.team_slug == canary_slug for t in by_repo)
+    finally:
+        if created_row_index is not None:
+            topo_sheet.clear_row(created_row_index)
+
+
+def test_given_topology_tab_when_writing_project_level_team_then_google_api_verifies_project_and_empty_repository(
+    live_spreadsheet: Spreadsheet,
+) -> None:
+    """Validate writing a project-level team to 'Topology' tab and assert cell 7 (project) and empty cell 8 (repository)."""
+    service = live_spreadsheet._service
+    topo_sheet = Spreadsheet(
+        id=_SPREADSHEET_ID,
+        credentials=live_spreadsheet.credentials,
+        sheet_name="Topology",
+    )
+    team_inv = TeamInventory(spreadsheet=topo_sheet)
+
+    canary_slug = f"test-proj-team-{uuid.uuid4().hex[:8]}"
+    canary_proj = f"proj-topo-{uuid.uuid4().hex[:6]}"
+    created_row_index: int | None = None
+
+    try:
+        record = TeamRecord(
+            team_name="Project Admins Squad",
+            team_slug=canary_slug,
+            member_count=4,
+            target_repo_or_project=f"project:{canary_proj}",
+            normalized_role="Admin",
+            origin_role="PROJECT_ADMIN",
+            migration_status=MigrationStatus.WAITTING,
+            project=canary_proj,
+            repository="",
+        )
+        saved = team_inv.register_record(record)
+        assert saved.team_slug == canary_slug
+        assert saved.project == canary_proj
+        assert saved.repository == ""
+
+        found_rows = topo_sheet.find_by("team_slug", canary_slug)
+        assert len(found_rows) == 1
+        created_row_index = found_rows[0].row_index
+
+        # Direct Google API assertion on physical cells
+        res = live_spreadsheet._execute(
+            service.spreadsheets()
+            .values()
+            .get(
+                spreadsheetId=_SPREADSHEET_ID,
+                range=f"Topology!A{created_row_index}:I{created_row_index}",
+            )
+        )
+        row_cells = res.get("values", [[]])[0]
+        # Ensure at least 8 elements (Google Sheets truncates empty trailing cells if last is empty)
+        assert len(row_cells) >= 8
+        assert row_cells[0] == "Project Admins Squad"
+        assert row_cells[1] == canary_slug
+        assert row_cells[2] == "4"
+        assert row_cells[3] == f"project:{canary_proj}"
+        assert row_cells[4] == "Admin"
+        assert row_cells[5] == "PROJECT_ADMIN"
+        assert row_cells[6] == "Aguardando Migração"
+        assert row_cells[7] == canary_proj
+        repo_val = row_cells[8] if len(row_cells) > 8 else ""
+        assert repo_val == ""
+
+        # Verify query API
+        by_proj = team_inv.get_teams_for_project(canary_proj)
+        assert any(t.team_slug == canary_slug for t in by_proj)
+        by_repo_inherited = team_inv.get_teams_for_repository(
+            canary_proj, "any-child-repo", include_inherited=True
+        )
+        assert any(t.team_slug == canary_slug for t in by_repo_inherited)
+        by_repo_strict = team_inv.get_teams_for_repository(
+            canary_proj, "any-child-repo", include_inherited=False
+        )
+        assert not any(t.team_slug == canary_slug for t in by_repo_strict)
     finally:
         if created_row_index is not None:
             topo_sheet.clear_row(created_row_index)
@@ -321,14 +390,13 @@ def test_given_policies_tab_when_writing_policy_then_google_api_verifies_nine_co
         created_row_index = found_rows[0].row_index
 
         # Direct Google API assertion on physical cells
-        res = (
+        res = live_spreadsheet._execute(
             service.spreadsheets()
             .values()
             .get(
                 spreadsheetId=_SPREADSHEET_ID,
                 range=f"Policies!A{created_row_index}:I{created_row_index}",
             )
-            .execute()
         )
         row_cells = res.get("values", [[]])[0]
         assert len(row_cells) == 9
@@ -369,11 +437,10 @@ def test_given_all_tabs_when_querying_get_all_rows_then_data_matches_direct_goog
         )
         rows_from_client = tab_sheet.get_all_rows()
 
-        res = (
+        res = live_spreadsheet._execute(
             service.spreadsheets()
             .values()
             .get(spreadsheetId=_SPREADSHEET_ID, range=f"{tab_name}!A2:{col_end}")
-            .execute()
         )
         raw_rows = res.get("values", [])
 

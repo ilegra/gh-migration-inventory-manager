@@ -297,3 +297,71 @@ def test_given_pipeline_with_composite_repo_association_when_converting_then_fal
 
     assert record.project == "fintech"
     assert record.repository == "core-payment"
+
+
+def test_given_pipeline_with_project_and_repository_when_converting_then_formats_canonical_association() -> (
+    None
+):
+    """Test pipeline with project and repository formats canonical project/repo association."""
+    converter = PipelineConverter()
+    pipeline = Pipeline(
+        name="job-canonical",
+        platform="jenkins",
+        full_path="services/job-canonical",
+        url="http://jenkins/job/job-canonical",
+        project="core",
+        repository=Repository(
+            name="auth-service",
+            project="core",
+            url="https://github.com/core/auth-service.git",
+        ),
+    )
+
+    record = converter.to_pipeline_record(pipeline)
+
+    assert record.project == "core"
+    assert record.repository == "auth-service"
+    assert record.repository_association == "core/auth-service"
+
+
+def test_given_pipeline_with_repository_only_when_converting_then_uses_repository_as_association() -> (
+    None
+):
+    """Test pipeline with repository name only uses repository without project prefix."""
+    converter = PipelineConverter()
+    pipeline = Pipeline(
+        name="job-standalone-repo",
+        platform="jenkins",
+        full_path="job-standalone-repo",
+        url="http://jenkins/job/job-standalone-repo",
+        repository=Repository(
+            name="legacy-tool",
+            url="http://git.local/legacy-tool.git",
+        ),
+    )
+
+    record = converter.to_pipeline_record(pipeline)
+
+    assert record.project == ""
+    assert record.repository == "legacy-tool"
+    assert record.repository_association == "legacy-tool"
+
+
+def test_given_standalone_pipeline_when_converting_then_produces_empty_project_repository_and_association() -> (
+    None
+):
+    """Test pipeline with no repository produces empty project, repository, and association."""
+    converter = PipelineConverter()
+    pipeline = Pipeline(
+        name="nightly-backup",
+        platform="jenkins",
+        full_path="ops/nightly-backup",
+        url="http://jenkins/job/ops/job/nightly-backup",
+        repository=None,
+    )
+
+    record = converter.to_pipeline_record(pipeline)
+
+    assert record.project == ""
+    assert record.repository == ""
+    assert record.repository_association == ""

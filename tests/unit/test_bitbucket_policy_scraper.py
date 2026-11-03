@@ -82,23 +82,34 @@ def test_given_valid_restrictions_payload_when_scraping_then_returns_normalized_
 
     # 1. pull-request-only
     pr_policy = policies[0]
-    assert pr_policy.policy_scope == "repo:payment-gateway"
+    assert pr_policy.policy_scope == "repo:PAY/payment-gateway"
+    assert pr_policy.project == "PAY"
+    assert pr_policy.repository == "payment-gateway"
     assert pr_policy.target_ref_pattern == "refs/heads/master"
     assert pr_policy.normalized_rule_type == NormalizedRuleType.REQUIRE_PULL_REQUEST
     assert pr_policy.bypass_team_slugs == ["platform-admins", "release-leads"]
 
     # 2. fast-forward-only
     ff_policy = policies[1]
+    assert ff_policy.policy_scope == "repo:PAY/payment-gateway"
+    assert ff_policy.project == "PAY"
+    assert ff_policy.repository == "payment-gateway"
     assert ff_policy.target_ref_pattern == "refs/heads/release/*"
     assert ff_policy.normalized_rule_type == NormalizedRuleType.BLOCK_FORCE_PUSH
     assert ff_policy.bypass_team_slugs == ["release-leads"]
 
     # 3. no-deletes
     nd_policy = policies[2]
+    assert nd_policy.policy_scope == "repo:PAY/payment-gateway"
+    assert nd_policy.project == "PAY"
+    assert nd_policy.repository == "payment-gateway"
     assert nd_policy.normalized_rule_type == NormalizedRuleType.PREVENT_BRANCH_DELETION
 
     # 4. read-only on tag
     ro_policy = policies[3]
+    assert ro_policy.policy_scope == "repo:PAY/payment-gateway"
+    assert ro_policy.project == "PAY"
+    assert ro_policy.repository == "payment-gateway"
     assert ro_policy.target_ref_pattern == "refs/tags/v1.0.0"
     assert ro_policy.normalized_rule_type == NormalizedRuleType.BLOCK_FORCE_PUSH
 
@@ -132,6 +143,9 @@ def test_given_pr_settings_with_approvals_and_builds_when_scraping_then_generate
         for p in policies
         if p.normalized_rule_type == NormalizedRuleType.REQUIRE_PULL_REQUEST
     )
+    assert pr_policy.policy_scope == "repo:CORE/auth-service"
+    assert pr_policy.project == "CORE"
+    assert pr_policy.repository == "auth-service"
     assert pr_policy.target_ref_pattern == "refs/heads/main"
     assert pr_policy.rule_parameters == {
         "min_approvals": 2,
@@ -145,6 +159,9 @@ def test_given_pr_settings_with_approvals_and_builds_when_scraping_then_generate
         for p in policies
         if p.normalized_rule_type == NormalizedRuleType.REQUIRE_STATUS_CHECKS
     )
+    assert build_policy.policy_scope == "repo:CORE/auth-service"
+    assert build_policy.project == "CORE"
+    assert build_policy.repository == "auth-service"
     assert build_policy.target_ref_pattern == "refs/heads/main"
     assert build_policy.rule_parameters == {"min_successful_builds": 1, "strict": True}
 
@@ -173,6 +190,8 @@ def test_given_project_level_scraping_without_repo_when_scraping_then_sets_proje
 
     assert len(policies) == 1
     assert policies[0].policy_scope == "project:INFRA"
+    assert policies[0].project == "INFRA"
+    assert policies[0].repository == ""
 
 
 def test_given_group_bypass_objects_when_scraping_then_extracts_name_and_applies_slugify() -> (
@@ -197,6 +216,9 @@ def test_given_group_bypass_objects_when_scraping_then_extracts_name_and_applies
     )
     policies = scraper.scrape()
 
+    assert policies[0].policy_scope == "repo:CORE/app"
+    assert policies[0].project == "CORE"
+    assert policies[0].repository == "app"
     assert policies[0].bypass_team_slugs == ["core-devs-squad", "release-managers"]
 
 
@@ -422,8 +444,21 @@ def test_given_omitted_project_key_when_scraping_then_traverses_all_projects_and
     scopes = [p.policy_scope for p in policies]
     assert "project:CORE" in scopes
     assert "project:PAY" in scopes
-    assert "repo:auth-service" in scopes
-    assert "repo:checkout-api" in scopes
+    assert "repo:CORE/auth-service" in scopes
+    assert "repo:PAY/checkout-api" in scopes
+
+    # Check distinct project and repository assignments
+    core_proj = next(p for p in policies if p.policy_scope == "project:CORE")
+    assert core_proj.project == "CORE"
+    assert core_proj.repository == ""
+
+    core_repo = next(p for p in policies if p.policy_scope == "repo:CORE/auth-service")
+    assert core_repo.project == "CORE"
+    assert core_repo.repository == "auth-service"
+
+    pay_repo = next(p for p in policies if p.policy_scope == "repo:PAY/checkout-api")
+    assert pay_repo.project == "PAY"
+    assert pay_repo.repository == "checkout-api"
 
     # Check mock client interactions
     mock_client.get_projects.assert_called_once_with(limit=100)
@@ -471,3 +506,126 @@ def test_given_policies_provider_when_project_provided_then_parses_project_key()
     scraper = provider.create_scraper(args)
     assert scraper.project_key == "FIN"
     assert scraper.page_size == 50
+
+
+def test_given_orphan_policy_without_project_or_repo_when_parsing_restrictions_then_emits_empty_project_and_repo_and_global_scope() -> (
+    None
+):
+    """Verify restrictions parsed with no project or repo context normalize to global orphan policy."""
+    scraper = BitbucketPolicyScraper(project_key="CORE")
+    raw_restrictions = [
+        {
+            "id": 99,
+            "type": "no-deletes",
+            "matcher": {"id": "main"},
+            "groups": [],
+        }
+    ]
+
+    # Empty scope, no project, no repo -> defaults to global orphan policy
+    policies = scraper._parse_restrictions(
+        raw_restrictions, scope="", project="", repository=""
+    )
+    assert len(policies) == 1
+    assert policies[0].policy_scope == "global"
+    assert policies[0].project == ""
+    assert policies[0].repository == ""
+    assert (
+        policies[0].normalized_rule_type == NormalizedRuleType.PREVENT_BRANCH_DELETION
+    )
+
+
+def test_given_orphan_pr_settings_without_project_or_repo_when_parsing_pr_settings_then_emits_empty_project_and_repo_and_global_scope() -> (
+    None
+):
+    """Verify PR settings parsed with no project or repo context normalize to global orphan policy."""
+    scraper = BitbucketPolicyScraper(project_key="CORE")
+    pr_settings = {
+        "requiredApprovers": {"enabled": True, "count": 2},
+    }
+
+    policies = scraper._parse_pr_settings(
+        pr_settings, scope="global", project="", repository=""
+    )
+    assert len(policies) == 1
+    assert policies[0].policy_scope == "global"
+    assert policies[0].project == ""
+    assert policies[0].repository == ""
+    assert policies[0].normalized_rule_type == NormalizedRuleType.REQUIRE_PULL_REQUEST
+
+
+def test_given_global_scope_when_collecting_target_policies_then_emits_empty_project_and_repo_and_global_scope() -> (
+    None
+):
+    """Verify _collect_target_policies handles global/orphan scope when project is omitted."""
+    scraper = BitbucketPolicyScraper(project_key=None, client=MagicMock())
+    policies = scraper._collect_target_policies(
+        project_key=None,
+        repo_slug=None,
+        scope="global",
+        project="",
+        repository="",
+    )
+    # When project_key is empty, REST client cannot query Bitbucket project endpoints, returning empty list safely
+    assert policies == []
+
+
+def test_given_explicit_project_and_repo_when_parsing_restrictions_then_populates_distinct_fields() -> (
+    None
+):
+    """Verify explicit project and repository parameters are assigned directly to BranchPolicy."""
+    scraper = BitbucketPolicyScraper(project_key="MYPROJ")
+    raw_restrictions = [
+        {
+            "id": 1,
+            "type": "pull-request-only",
+            "matcher": {"id": "main"},
+            "groups": ["devs"],
+        }
+    ]
+    policies = scraper._parse_restrictions(
+        raw_restrictions,
+        scope="repo:MYPROJ/my-repo",
+        project="MYPROJ",
+        repository="my-repo",
+    )
+    assert len(policies) == 1
+    assert policies[0].policy_scope == "repo:MYPROJ/my-repo"
+    assert policies[0].project == "MYPROJ"
+    assert policies[0].repository == "my-repo"
+
+
+def test_given_scraped_policies_when_converting_then_policy_records_retain_project_repository_and_canonical_scope() -> (
+    None
+):
+    """Verify end-to-end integration between BitbucketPolicyScraper and PolicyConverter."""
+    from gh_migration_inventory_manager.converter import PolicyConverter
+
+    mock_client = MagicMock(spec=BitbucketTransport)
+    mock_client.get_branch_restrictions.return_value = [
+        {
+            "id": 1,
+            "type": "no-deletes",
+            "matcher": {"id": "main"},
+            "groups": [],
+        }
+    ]
+    mock_client.get_pull_request_settings.return_value = {}
+
+    scraper = BitbucketPolicyScraper(
+        project_key="FINANCE",
+        repo_slug="ledger-service",
+        client=mock_client,
+    )
+    policies = scraper.scrape()
+    assert len(policies) == 1
+    assert policies[0].policy_scope == "repo:FINANCE/ledger-service"
+    assert policies[0].project == "FINANCE"
+    assert policies[0].repository == "ledger-service"
+
+    converter = PolicyConverter()
+    records = converter.to_policy_records(policies)
+    assert len(records) == 1
+    assert records[0].policy_scope == "repo:FINANCE/ledger-service"
+    assert records[0].project == "FINANCE"
+    assert records[0].repository == "ledger-service"

@@ -230,16 +230,12 @@ class PipelineConverter:
         pipe_type_str = getattr(pipe_type, "value", str(pipe_type)) if pipe_type else ""
 
         repo = getattr(pipeline, "repository", None)
-        repo_assoc = ""
         repo_url = ""
         branch = str(getattr(pipeline, "branch", "") or "").strip()
         project = ""
         repo_name = ""
 
         if repo is not None:
-            repo_assoc = str(
-                getattr(repo, "qualified_name", "") or getattr(repo, "name", "") or ""
-            )
             repo_url = str(getattr(repo, "url", "") or "")
             if not branch and getattr(repo, "default_branch", None):
                 branch = str(repo.default_branch)
@@ -251,8 +247,8 @@ class PipelineConverter:
 
         if not project and "/" in repo_name:
             project, repo_name = _parse_repo_assoc_project_repo(repo_name)
-        elif not project and not repo_name and repo_assoc:
-            project, repo_name = _parse_repo_assoc_project_repo(repo_assoc)
+
+        repo_assoc = f"{project}/{repo_name}" if project and repo_name else repo_name
 
         file_path = str(getattr(pipeline, "file_path", "") or "").strip()
         shared_components = _format_delimited_string(

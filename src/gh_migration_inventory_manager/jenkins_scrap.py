@@ -191,7 +191,7 @@ _TREE_QUERY = (
     "actions[causes[shortDescription,_class]],"
     "property[_class,branchConfigs[name],libraries[name,defaultVersion]],"
     "definition[_class,script,scriptPath,scm[_class,userRemoteConfigs[url],branches[name],locations[remote]]],"
-    "sources[source[_class,remote,credentialsId]]]"
+    "sources[source[_class,remote,repoOwner,repository,projectKey,repositorySlug,credentialsId]]]"
 )
 
 _LIBRARY_ANNOTATION_PATTERN = re.compile(
@@ -202,6 +202,49 @@ _AGENT_LABEL_PATTERN = re.compile(
     r"agent\s*\{[^}]*?label\s*['\"]([^'\"]+)['\"]", re.DOTALL | re.IGNORECASE
 )
 _NODE_CALL_PATTERN = re.compile(r"\bnode\s*\(\s*['\"]([^'\"]+)['\"]\s*\)")
+
+_INLINE_GIT_STEP_PATTERN = re.compile(
+    r"""\bgit\s*(?:\(\s*)?(?:url:\s*)?['"]([^'"]+)['"]""", re.IGNORECASE
+)
+_INLINE_USER_REMOTE_CONFIGS_PATTERN = re.compile(
+    r"""userRemoteConfigs:\s*\[\[.*?url:\s*['"]([^'"]+)['"]""",
+    re.DOTALL | re.IGNORECASE,
+)
+_INLINE_LOCATIONS_PATTERN = re.compile(
+    r"""locations:\s*\[\[.*?remote:\s*['"]([^'"]+)['"]""",
+    re.DOTALL | re.IGNORECASE,
+)
+_INLINE_BRANCH_PATTERN = re.compile(
+    r"""\bbranch(?:es)?:\s*(?:\[\[.*?name:\s*)?['"]([^'"]+)['"]""",
+    re.DOTALL | re.IGNORECASE,
+)
+
+_SCP_URL_PATTERN = re.compile(r"^(?:[\w\.\-]+@)?([^:/]+):(.+)$")
+_BITBUCKET_PROJ_URL_PATTERN = re.compile(
+    r"(?:^|/)projects/([^/]+)/repos/([^/]+?)(?:\.git)?(?:/browse)?(?:/.*)?$",
+    re.IGNORECASE,
+)
+_BITBUCKET_SCM_URL_PATTERN = re.compile(
+    r"(?:^|/)scm/([^/]+)/([^/]+?)(?:\.git)?/?$",
+    re.IGNORECASE,
+)
+_SVN_PATH_STRIP_PATTERN = re.compile(
+    r"/(?:trunk|branches(?:/[^/]+)?|tags(?:/[^/]+)?)/?$"
+)
+_SVN_BRANCH_TAG_PATTERN = re.compile(r"/(?:branches|tags)/([^/]+)")
+_NON_SCP_SCHEMES = ("http://", "https://", "ssh://", "svn://", "file://")
+
+
+def _clean_branch_spec(spec: str) -> str:
+    """Strip git branch specification prefixes."""
+    clean = spec.strip()
+    return clean.removeprefix("*/").removeprefix("refs/heads/").strip()
+
+
+def _extract_svn_branch(url: str) -> str:
+    """Extract branch or tag name from Subversion URL, defaulting to trunk."""
+    match = _SVN_BRANCH_TAG_PATTERN.search(url)
+    return match.group(1) if match else "trunk"
 
 
 class JenkinsPipelineScraper(PipelineScraper):
@@ -249,6 +292,87 @@ class JenkinsPipelineScraper(PipelineScraper):
             return PipelineType.MATRIX
         return PipelineType.UNKNOWN
 
+    @staticmethod
+    def parse_scm_url(url: str) -> tuple[str | None, str]:
+        """Extract canonical project and repository slug from remote SCM URL.
+
+        Handles:
+        - Bitbucket Server HTTP: /scm/<project>/<repo>.git
+        - Bitbucket Server Web: /projects/<project>/repos/<repo>(/browse)?
+        - Bitbucket Server SSH: ssh://git@<host>[:port]/<project>/<repo>.git
+        - SCP-style SSH: git@<host>:<project>/<repo>.git
+        - Bitbucket Cloud / GitHub: https://<host>/<org>/<repo>.git
+        - GitLab: https://gitlab.com/<group>/<subgroup>/<repo>.git
+        - Subversion (SVN): <base>/<project>/<repo>/trunk
+                            <base>/<repo>/trunk
+        - Generic Fallback: >= 2 segments -> (second-to-last, last)
+                            1 segment -> (None, last)
+        """
+        clean_url = str(url or "").strip()
+        if not clean_url:
+            return None, ""
+
+        if not clean_url.startswith(_NON_SCP_SCHEMES):
+            scp_match = _SCP_URL_PATTERN.match(clean_url)
+            if scp_match:
+                host = scp_match.group(1).lower()
+                path = scp_match.group(2).strip("/")
+            else:
+                parsed = urllib.parse.urlsplit(clean_url)
+                path = parsed.path.strip("/")
+                host = (parsed.hostname or "").lower()
+        else:
+            parsed = urllib.parse.urlsplit(clean_url)
+            path = parsed.path.strip("/")
+            host = (parsed.hostname or "").lower()
+
+        path_lower = path.lower()
+        if "projects/" in path_lower:
+            bb_proj_match = _BITBUCKET_PROJ_URL_PATTERN.search(path)
+            if bb_proj_match:
+                return (
+                    bb_proj_match.group(1),
+                    bb_proj_match.group(2).removesuffix(".git"),
+                )
+
+        if "scm/" in path_lower:
+            bb_scm_match = _BITBUCKET_SCM_URL_PATTERN.search(path)
+            if bb_scm_match:
+                return (
+                    bb_scm_match.group(1),
+                    bb_scm_match.group(2).removesuffix(".git"),
+                )
+
+        svn_detected = (
+            clean_url.startswith("svn://")
+            or "/trunk" in path
+            or "/branches/" in path
+            or "/tags/" in path
+        )
+        if svn_detected:
+            path = _SVN_PATH_STRIP_PATTERN.sub("", "/" + path).strip("/")
+            for prefix in ("svn/", "repos/"):
+                if path.startswith(prefix) and len(path) > len(prefix):
+                    path = path.removeprefix(prefix)
+                    break
+
+        segments = [s for s in path.split("/") if s]
+        if not segments:
+            return None, ""
+
+        repo_slug = segments[-1].removesuffix(".git")
+        if len(segments) == 1:
+            return None, repo_slug
+
+        if "gitlab" in host:
+            project_slug = "/".join(segments[:-1])
+            return project_slug, repo_slug
+
+        project_slug = segments[-2]
+        return project_slug, repo_slug
+
+    _parse_scm_url = parse_scm_url
+
     def _extract_repository(
         self, definition: dict[str, Any], sources: list[dict[str, Any]]
     ) -> tuple[Repository | None, str | None, str | None]:
@@ -265,12 +389,12 @@ class JenkinsPipelineScraper(PipelineScraper):
                 branch = None
                 if branches and isinstance(branches, list):
                     branch_spec = branches[0].get("name", "")
-                    branch = branch_spec.replace("*/", "").replace("refs/heads/", "")
+                    branch = _clean_branch_spec(branch_spec) or None
 
-                repo_name = clean_url.rstrip("/").split("/")[-1].removesuffix(".git")
-
+                project, repo_name = self.parse_scm_url(clean_url)
                 repo = Repository(
                     name=repo_name,
+                    project=project,
                     url=clean_url,
                     default_branch=branch,
                 )
@@ -281,25 +405,82 @@ class JenkinsPipelineScraper(PipelineScraper):
             remote = loc.get("remote")
             if remote:
                 clean_remote = str(remote).strip()
-                repo_name = clean_remote.rstrip("/").split("/")[-1]
+                project, repo_name = self.parse_scm_url(clean_remote)
+                branch = _extract_svn_branch(clean_remote)
+
                 repo = Repository(
                     name=repo_name,
+                    project=project,
                     url=clean_remote,
-                    default_branch="trunk",
+                    default_branch=branch,
                 )
-                return repo, file_path, "trunk"
+                return repo, file_path, branch
 
         for src_entry in sources:
             source = src_entry.get("source") or {}
             remote = source.get("remote")
-            if remote:
-                clean_remote = str(remote).strip()
-                repo_name = clean_remote.rstrip("/").split("/")[-1].removesuffix(".git")
+            clean_remote = str(remote).strip() if remote else ""
+
+            raw_proj = source.get("projectKey") or source.get("repoOwner")
+            project = str(raw_proj).strip() if raw_proj else None
+            raw_repo = source.get("repositorySlug") or source.get("repository")
+            repo_name = str(raw_repo or "").strip()
+
+            if clean_remote and (not project or not repo_name):
+                parsed_proj, parsed_repo = self.parse_scm_url(clean_remote)
+                if not project:
+                    project = parsed_proj
+                if not repo_name:
+                    repo_name = parsed_repo
+
+            if repo_name:
                 repo = Repository(
                     name=repo_name,
+                    project=project,
                     url=clean_remote,
+                    default_branch=None,
                 )
                 return repo, file_path, None
+
+        script = str(definition.get("script") or "")
+        if script:
+            matched_url: str | None = None
+            script_branch: str | None = None
+
+            git_step_match = _INLINE_GIT_STEP_PATTERN.search(script)
+            if git_step_match:
+                matched_url = git_step_match.group(1).strip()
+            else:
+                remote_configs_match = _INLINE_USER_REMOTE_CONFIGS_PATTERN.search(
+                    script
+                )
+                if remote_configs_match:
+                    matched_url = remote_configs_match.group(1).strip()
+                else:
+                    locations_match = _INLINE_LOCATIONS_PATTERN.search(script)
+                    if locations_match:
+                        matched_url = locations_match.group(1).strip()
+                        script_branch = _extract_svn_branch(matched_url)
+
+            if matched_url:
+                branch_match = _INLINE_BRANCH_PATTERN.search(script)
+                if branch_match:
+                    clean_branch = _clean_branch_spec(branch_match.group(1))
+                    if clean_branch:
+                        script_branch = clean_branch
+                elif not script_branch and (
+                    "branches/" in matched_url or "tags/" in matched_url
+                ):
+                    script_branch = _extract_svn_branch(matched_url)
+
+                project, repo_name = self.parse_scm_url(matched_url)
+                repo = Repository(
+                    name=repo_name,
+                    project=project,
+                    url=matched_url,
+                    default_branch=script_branch,
+                )
+                return repo, file_path, script_branch
 
         return None, file_path, None
 
@@ -481,6 +662,12 @@ class JenkinsPipelineScraper(PipelineScraper):
                     is_stale = True
                     disabled = True
 
+            project = (
+                str(getattr(repository, "project", "") or "").strip()
+                if repository is not None
+                else ""
+            )
+
             pipe = Pipeline(
                 name=name,
                 platform="jenkins",
@@ -488,6 +675,7 @@ class JenkinsPipelineScraper(PipelineScraper):
                 url=url,
                 pipeline_type=pipeline_type,
                 repository=repository,
+                project=project,
                 file_path=file_path,
                 branch=branch,
                 triggers=triggers,

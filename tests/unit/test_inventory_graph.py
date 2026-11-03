@@ -296,6 +296,46 @@ def test_given_graph_with_global_policies_when_finding_global_policies_then_retu
     assert globals_found[0].policy_scope == "global"
 
 
+def test_given_orphan_policies_without_project_or_repo_when_finding_global_policies_then_returns_orphan_policies() -> (
+    None
+):
+    """Verify find_global_policies catches orphan policies with empty project and repo regardless of scope string."""
+    orphan_policy_1 = PolicyRecord(
+        policy_scope="global",
+        target_ref_pattern="refs/heads/*",
+        normalized_rule_type="PreventBranchDeletion",
+        project="",
+        repository="",
+    )
+    orphan_policy_2 = PolicyRecord(
+        policy_scope="",
+        target_ref_pattern="refs/heads/main",
+        normalized_rule_type="RequirePullRequest",
+        project="",
+        repository="",
+    )
+    bound_policy = PolicyRecord(
+        policy_scope="repo:CORE/payments",
+        target_ref_pattern="refs/heads/main",
+        normalized_rule_type="BlockForcePush",
+        project="CORE",
+        repository="payments",
+    )
+
+    graph = InventoryGraph.from_records(
+        repositories=[],
+        pipelines=[],
+        teams=[],
+        policies=[orphan_policy_1, orphan_policy_2, bound_policy],
+    )
+
+    orphans = graph.find_global_policies()
+    assert len(orphans) == 2
+    assert orphan_policy_1 in orphans
+    assert orphan_policy_2 in orphans
+    assert bound_policy not in orphans
+
+
 def test_given_graph_with_standalone_pipelines_when_finding_standalone_workflows_then_filters_workflows_with_no_repo(
     sample_pipelines: list[PipelineRecord],
 ) -> None:

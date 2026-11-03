@@ -739,6 +739,39 @@ class SvnAuthzParser:
             )
             norm_path_lower = norm_path.lower()
 
+            # Parse project and repository from SVN authz path
+            project = ""
+            repository = ""
+            if ":" in clean_path:
+                repo_part, path_part = clean_path.split(":", 1)
+                clean_subpath = path_part.strip().strip("/")
+                if not clean_subpath:
+                    # e.g. [myrepo:/] -> repo-level permission
+                    project = repo_part.strip()
+                    repository = ""
+                else:
+                    subparts = [
+                        p.strip() for p in clean_subpath.split("/") if p.strip()
+                    ]
+                    if len(subparts) >= 2:
+                        project = subparts[0]
+                        repository = subparts[1]
+                    elif len(subparts) == 1:
+                        project = repo_part.strip()
+                        repository = subparts[0]
+            else:
+                stripped_norm = norm_path.strip().strip("/")
+                if stripped_norm:
+                    subparts = [
+                        p.strip() for p in stripped_norm.split("/") if p.strip()
+                    ]
+                    if len(subparts) >= 2:
+                        project = subparts[0]
+                        repository = subparts[1]
+                    elif len(subparts) == 1:
+                        project = ""
+                        repository = subparts[0]
+
             if access == "r":
                 norm_role = NormalizedRole.READ
             elif "w" in access:
@@ -758,6 +791,8 @@ class SvnAuthzParser:
                 normalized_role=norm_role,
                 origin_role=access_str,
                 team_slug=team_slug,
+                project=project,
+                repository=repository,
             )
             permissions.append(perm)
 
