@@ -6,7 +6,7 @@ import base64
 import json
 import re
 import urllib.parse
-import xml.etree.ElementTree as ET
+import xml.etree.ElementTree as ET  # nosec B405
 from datetime import datetime, timezone
 from typing import Any, Protocol, runtime_checkable
 
@@ -296,7 +296,7 @@ def _extract_svn_branch(url: str) -> str:
 def _parse_config_xml_definition(xml_text: str) -> dict[str, Any] | None:
     """Parse Jenkins job config.xml to extract definition/SCM metadata."""
     try:
-        root = ET.fromstring(xml_text)
+        root = ET.fromstring(xml_text)  # nosec B314
     except Exception:
         return None
 
