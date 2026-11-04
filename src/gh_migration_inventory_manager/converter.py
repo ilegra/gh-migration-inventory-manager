@@ -248,6 +248,12 @@ class PipelineConverter:
         if not project and "/" in repo_name:
             project, repo_name = _parse_repo_assoc_project_repo(repo_name)
 
+        if not project and "/" in clean_id:
+            parts = clean_id.strip("/").split("/", 1)
+            project = parts[0].strip()
+            if not repo_name:
+                repo_name = parts[1].strip()
+
         repo_assoc = f"{project}/{repo_name}" if project and repo_name else repo_name
 
         file_path = str(getattr(pipeline, "file_path", "") or "").strip()

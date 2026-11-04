@@ -6,6 +6,7 @@ import uuid
 
 import pytest
 
+from gh_migration_inventory_manager.converter import PipelineConverter
 from gh_migration_inventory_manager.google import (
     INVENTORY_HEADERS,
     POLICIES_HEADERS,
@@ -24,6 +25,7 @@ from gh_migration_inventory_manager.inventory import (
     TeamInventory,
     TeamRecord,
 )
+from gh_migration_inventory_manager.scrap import Pipeline, PipelineType, Repository
 
 _SPREADSHEET_ID = "1Z0PAjv8KK6WBrS2356gtR3VE0ulD1-8LM4DPQiG-Nkk"
 
@@ -447,3 +449,79 @@ def test_given_all_tabs_when_querying_get_all_rows_then_data_matches_direct_goog
         # Non-empty rows count must match
         non_empty_raw = [r for r in raw_rows if any(cell.strip() for cell in r if cell)]
         assert len(rows_from_client) == len(non_empty_raw)
+
+
+def test_given_pipeline_with_inferred_folder_and_config_scm_when_registering_in_workflows_tab_then_google_api_verifies_all_columns_populated(
+    live_spreadsheet: Spreadsheet,
+) -> None:
+    """Validate that Jenkins pipeline records with inferred folder metadata and SCM linkage
+    persist accurately into the 'Workflows' tab with non-blank columns D, E, F, M, N."""
+    service = live_spreadsheet._service
+    wf_sheet = Spreadsheet(
+        id=_SPREADSHEET_ID,
+        credentials=live_spreadsheet.credentials,
+        sheet_name="Workflows",
+    )
+    pipe_inv = PipelineInventory(spreadsheet=wf_sheet)
+
+    canary_proj = "CORE"
+    canary_repo = f"legacy-banking-monolith-{uuid.uuid4().hex[:8]}"
+    canary_wf = f"{canary_proj}/{canary_repo}"
+    created_row_index: int | None = None
+
+    try:
+        # Simulate pipeline converted via folder-based heuristic and config.xml fallback
+        pipeline = Pipeline(
+            name=canary_repo,
+            platform="jenkins",
+            full_path=canary_wf,
+            url=f"http://jenkins:8080/job/{canary_proj}/job/{canary_repo}/",
+            pipeline_type=PipelineType.DECLARATIVE,
+            repository=Repository(
+                name=canary_repo,
+                project=canary_proj,
+                url=f"http://svn/svn/{canary_repo}/trunk",
+                default_branch="trunk",
+            ),
+            project=canary_proj,
+            file_path="Jenkinsfile",
+            branch="trunk",
+        )
+        converter = PipelineConverter()
+        record = converter.to_pipeline_record(pipeline)
+
+        saved = pipe_inv.register_record(record)
+        assert saved.workflow_id == canary_wf
+
+        found_rows = wf_sheet.find_by("workflow_id", canary_wf)
+        assert len(found_rows) == 1
+        created_row_index = found_rows[0].row_index
+
+        # Direct Google API assertion on physical cell values A through N
+        res = live_spreadsheet._execute(
+            service.spreadsheets()
+            .values()
+            .get(
+                spreadsheetId=_SPREADSHEET_ID,
+                range=f"Workflows!A{created_row_index}:N{created_row_index}",
+            )
+        )
+        row_cells = res.get("values", [[]])[0]
+        assert len(row_cells) == 14
+
+        # Validate non-blank status for the 5 target columns
+        assert row_cells[0] == canary_wf  # Col A: ID do Workflow
+        assert row_cells[1] == "jenkins"  # Col B: Plataforma
+        assert row_cells[2] == "declarative"  # Col C: Tipo de Pipeline
+        assert (
+            row_cells[3] == f"{canary_proj}/{canary_repo}"
+        )  # Col D: Repositório Associado
+        assert (
+            row_cells[4] == f"http://svn/svn/{canary_repo}/trunk"
+        )  # Col E: URL do Repositório
+        assert row_cells[5] == "Jenkinsfile"  # Col F: Caminho do Workflow
+        assert row_cells[12] == canary_proj  # Col M: Projeto
+        assert row_cells[13] == canary_repo  # Col N: Repositório
+    finally:
+        if created_row_index is not None:
+            wf_sheet.clear_row(created_row_index)

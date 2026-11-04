@@ -347,16 +347,36 @@ def test_given_pipeline_with_repository_only_when_converting_then_uses_repositor
     assert record.repository_association == "legacy-tool"
 
 
-def test_given_standalone_pipeline_when_converting_then_produces_empty_project_repository_and_association() -> (
+def test_given_standalone_pipeline_when_converting_then_infers_project_and_repo_from_path() -> (
     None
 ):
-    """Test pipeline with no repository produces empty project, repository, and association."""
+    """Test pipeline with no repository infers project and repository from full_path folder hierarchy."""
     converter = PipelineConverter()
     pipeline = Pipeline(
         name="nightly-backup",
         platform="jenkins",
         full_path="ops/nightly-backup",
         url="http://jenkins/job/ops/job/nightly-backup",
+        repository=None,
+    )
+
+    record = converter.to_pipeline_record(pipeline)
+
+    assert record.project == "ops"
+    assert record.repository == "nightly-backup"
+    assert record.repository_association == "ops/nightly-backup"
+
+
+def test_given_standalone_pipeline_without_folder_when_converting_then_produces_empty_project_and_repo() -> (
+    None
+):
+    """Test standalone pipeline without folder produces empty project and repo."""
+    converter = PipelineConverter()
+    pipeline = Pipeline(
+        name="nightly-backup",
+        platform="jenkins",
+        full_path="nightly-backup",
+        url="http://jenkins/job/nightly-backup",
         repository=None,
     )
 

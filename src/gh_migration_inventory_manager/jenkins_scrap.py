@@ -6,6 +6,7 @@ import base64
 import json
 import re
 import urllib.parse
+import xml.etree.ElementTree as ET  # nosec B405
 from datetime import datetime, timezone
 from typing import Any, Protocol, runtime_checkable
 
@@ -37,6 +38,10 @@ class JenkinsTransport(Protocol):
 
     def get_json(self, path: str, tree: str | None = None) -> dict[str, Any]:
         """Fetch JSON payload from Jenkins API."""
+        raise NotImplementedError
+
+    def get_config_xml(self, path: str) -> str | None:
+        """Fetch raw XML configuration from Jenkins job endpoint."""
         raise NotImplementedError
 
 
@@ -184,6 +189,47 @@ class JenkinsClient:
                 f"Failed to parse JSON response from Jenkins at '{endpoint}': {err}"
             ) from err
 
+    def get_config_xml(self, path: str) -> str | None:
+        """Fetch raw XML configuration from Jenkins job endpoint.
+
+        Args:
+            path: Full job URL or job path relative to base_url.
+
+        Returns:
+            The raw XML configuration string if accessible, or None on error.
+        """
+        clean_path = path.strip().strip("/")
+        if clean_path.startswith(("http://", "https://")):
+            endpoint = (
+                clean_path
+                if clean_path.endswith("/config.xml")
+                else f"{clean_path.rstrip('/')}/config.xml"
+            )
+        else:
+            if not clean_path.endswith("config.xml"):
+                clean_path = f"{clean_path}/config.xml"
+            endpoint = f"{self.base_url}/{clean_path}"
+
+        headers = self._build_auth_headers()
+        crumb = self._get_crumb()
+        if crumb:
+            headers[crumb[0]] = crumb[1]
+
+        try:
+            resp = self._http.request("GET", endpoint, headers=headers)
+        except Exception:
+            return None
+
+        if resp.status == 200:
+            try:
+                data = resp.data
+                if isinstance(data, bytes):
+                    return data.decode("utf-8", errors="replace")
+                return str(data)
+            except Exception:
+                return None
+        return None
+
 
 _TREE_QUERY = (
     "jobs[name,url,color,_class,disabled,assignedLabel[name],labelExpression,"
@@ -229,7 +275,7 @@ _BITBUCKET_SCM_URL_PATTERN = re.compile(
     re.IGNORECASE,
 )
 _SVN_PATH_STRIP_PATTERN = re.compile(
-    r"/(?:trunk|branches(?:/[^/]+)?|tags(?:/[^/]+)?)/?$"
+    r"/(?:trunk|branches(?:/[^/]+)?|tags(?:/[^/]+)?)(?:/.*)?$"
 )
 _SVN_BRANCH_TAG_PATTERN = re.compile(r"/(?:branches|tags)/([^/]+)")
 _NON_SCP_SCHEMES = ("http://", "https://", "ssh://", "svn://", "file://")
@@ -245,6 +291,73 @@ def _extract_svn_branch(url: str) -> str:
     """Extract branch or tag name from Subversion URL, defaulting to trunk."""
     match = _SVN_BRANCH_TAG_PATTERN.search(url)
     return match.group(1) if match else "trunk"
+
+
+def _parse_config_xml_definition(xml_text: str) -> dict[str, Any] | None:
+    """Parse Jenkins job config.xml to extract definition/SCM metadata."""
+    try:
+        root = ET.fromstring(xml_text)  # nosec B314
+    except Exception:
+        return None
+
+    def_elem = root.find("definition")
+    scm_elem = def_elem.find("scm") if def_elem is not None else root.find("scm")
+
+    def_class = def_elem.get("class", "") if def_elem is not None else ""
+    script_path = None
+    script = None
+
+    if def_elem is not None:
+        sp_elem = def_elem.find("scriptPath")
+        if sp_elem is not None and sp_elem.text:
+            script_path = sp_elem.text.strip()
+        sc_elem = def_elem.find("script")
+        if sc_elem is not None and sc_elem.text:
+            script = sc_elem.text
+
+    scm_data: dict[str, Any] = {}
+    if scm_elem is not None:
+        scm_class = scm_elem.get("class", "")
+        urls: list[dict[str, str]] = []
+        for u in scm_elem.findall(".//userRemoteConfigs//url"):
+            if u.text and u.text.strip():
+                urls.append({"url": u.text.strip()})
+        if not urls:
+            for u in scm_elem.findall(".//url"):
+                if u.text and u.text.strip():
+                    urls.append({"url": u.text.strip()})
+
+        branches: list[dict[str, str]] = []
+        for b in scm_elem.findall(".//branches//name"):
+            if b.text and b.text.strip():
+                branches.append({"name": b.text.strip()})
+        if not branches:
+            for b in scm_elem.findall(".//name"):
+                if b.text and b.text.strip():
+                    branches.append({"name": b.text.strip()})
+
+        locations: list[dict[str, str]] = []
+        for loc in scm_elem.findall(".//locations//remote"):
+            if loc.text and loc.text.strip():
+                locations.append({"remote": loc.text.strip()})
+        if not locations:
+            for loc in scm_elem.findall(".//remote"):
+                if loc.text and loc.text.strip():
+                    locations.append({"remote": loc.text.strip()})
+
+        scm_data = {
+            "_class": scm_class,
+            "userRemoteConfigs": urls,
+            "branches": branches,
+            "locations": locations,
+        }
+
+    return {
+        "_class": def_class,
+        "scriptPath": script_path,
+        "script": script,
+        "scm": scm_data,
+    }
 
 
 class JenkinsPipelineScraper(PipelineScraper):
@@ -585,6 +698,24 @@ class JenkinsPipelineScraper(PipelineScraper):
 
         return sorted(labels)
 
+    def _fetch_job_config_xml(
+        self, job_data: dict[str, Any], full_path: str
+    ) -> str | None:
+        """Attempt to fetch config.xml for a Jenkins job using transport client."""
+        if not hasattr(self.client, "get_config_xml"):
+            return None
+        url = str(job_data.get("url", "")).strip()
+        target = url if url else full_path
+        if not target:
+            return None
+        try:
+            xml_data = self.client.get_config_xml(target)
+            if isinstance(xml_data, str) and xml_data.strip():
+                return xml_data
+        except Exception:
+            return None
+        return None
+
     def _traverse_folder(self, folder_path: str, current_depth: int) -> list[Pipeline]:
         """Recursively query Jenkins folders and discover pipeline entities."""
         if current_depth > self.tree_depth:
@@ -633,8 +764,23 @@ class JenkinsPipelineScraper(PipelineScraper):
                 pipelines.extend(sub_pipelines)
                 continue
 
-            definition = job.get("definition") or {}
+            definition = job.get("definition")
             sources = job.get("sources") or []
+
+            if not sources and (
+                not definition
+                or (not definition.get("scm") and not definition.get("script"))
+            ):
+                config_xml = self._fetch_job_config_xml(job, full_path)
+                if config_xml:
+                    parsed_def = _parse_config_xml_definition(config_xml)
+                    if parsed_def:
+                        definition = parsed_def
+                        job["definition"] = parsed_def
+
+            if definition is None:
+                definition = {}
+
             pipeline_type = self._resolve_pipeline_type(job_class, definition)
 
             repository, file_path, branch = self._extract_repository(
@@ -667,6 +813,8 @@ class JenkinsPipelineScraper(PipelineScraper):
                 if repository is not None
                 else ""
             )
+            if not project and "/" in full_path:
+                project = full_path.split("/", 1)[0].strip()
 
             pipe = Pipeline(
                 name=name,
