@@ -1079,3 +1079,195 @@ def test_given_pipeline_without_repository_or_script_linkage_when_scraping_then_
     assert pipe.name == "docker-cleanup-task"
     assert pipe.repository is None
     assert pipe.project == ""
+
+
+def test_given_workflow_job_without_definition_when_config_xml_has_git_scm_then_resolves_repository_and_script_path() -> (
+    None
+):
+    """Test workflow job with definition=None fetches config.xml and extracts Git repository and Jenkinsfile."""
+    mock_transport = MagicMock(spec=JenkinsTransport)
+    mock_transport.base_url = "http://jenkins:8080"
+    mock_transport.get_json.return_value = {
+        "jobs": [
+            {
+                "name": "payment-pipeline",
+                "url": "http://jenkins:8080/job/FINANCE/job/payment-pipeline/",
+                "_class": "org.jenkinsci.plugins.workflow.job.WorkflowJob",
+                "definition": None,
+            }
+        ]
+    }
+    mock_transport.get_config_xml.return_value = """<?xml version='1.1' encoding='UTF-8'?>
+<flow-definition>
+  <definition class="org.jenkinsci.plugins.workflow.cps.CpsScmFlowDefinition">
+    <scm class="hudson.plugins.git.GitSCM">
+      <userRemoteConfigs>
+        <hudson.plugins.git.UserRemoteConfig>
+          <url>https://github.com/finance/payment-service.git</url>
+        </hudson.plugins.git.UserRemoteConfig>
+      </userRemoteConfigs>
+      <branches>
+        <hudson.plugins.git.BranchSpec>
+          <name>*/release/v1</name>
+        </hudson.plugins.git.BranchSpec>
+      </branches>
+    </scm>
+    <scriptPath>pipelines/Jenkinsfile</scriptPath>
+  </definition>
+</flow-definition>
+"""
+
+    scraper = JenkinsPipelineScraper(client=mock_transport)
+    pipelines = scraper.scrape()
+
+    assert len(pipelines) == 1
+    pipe = pipelines[0]
+    assert pipe.name == "payment-pipeline"
+    assert pipe.full_path == "payment-pipeline"
+    assert pipe.pipeline_type == PipelineType.DECLARATIVE
+    assert pipe.file_path == "pipelines/Jenkinsfile"
+    assert pipe.branch == "release/v1"
+    assert pipe.repository is not None
+    assert pipe.repository.name == "payment-service"
+    assert pipe.repository.project == "finance"
+    assert pipe.repository.url == "https://github.com/finance/payment-service.git"
+
+
+def test_given_workflow_job_without_definition_when_config_xml_has_svn_scm_then_resolves_svn_repository() -> (
+    None
+):
+    """Test workflow job with definition=None fetches config.xml and extracts SVN repository and branch."""
+    mock_transport = MagicMock(spec=JenkinsTransport)
+    mock_transport.base_url = "http://jenkins:8080"
+    mock_transport.get_json.return_value = {
+        "jobs": [
+            {
+                "name": "billing-monolith",
+                "url": "http://jenkins:8080/job/CORE/job/billing-monolith/",
+                "_class": "org.jenkinsci.plugins.workflow.job.WorkflowJob",
+                "definition": None,
+            }
+        ]
+    }
+    mock_transport.get_config_xml.return_value = """<?xml version='1.1' encoding='UTF-8'?>
+<flow-definition>
+  <definition class="org.jenkinsci.plugins.workflow.cps.CpsScmFlowDefinition">
+    <scm class="hudson.scm.SubversionSCM">
+      <locations>
+        <hudson.scm.SubversionSCM_-ModuleLocation>
+          <remote>http://svn/svn/billing-monolith/trunk</remote>
+        </hudson.scm.SubversionSCM_-ModuleLocation>
+      </locations>
+    </scm>
+    <scriptPath>Jenkinsfile</scriptPath>
+  </definition>
+</flow-definition>
+"""
+
+    scraper = JenkinsPipelineScraper(client=mock_transport)
+    pipelines = scraper.scrape()
+
+    assert len(pipelines) == 1
+    pipe = pipelines[0]
+    assert pipe.name == "billing-monolith"
+    assert pipe.pipeline_type == PipelineType.DECLARATIVE
+    assert pipe.file_path == "Jenkinsfile"
+    assert pipe.branch == "trunk"
+    assert pipe.repository is not None
+    assert pipe.repository.name == "billing-monolith"
+    assert pipe.repository.url == "http://svn/svn/billing-monolith/trunk"
+
+
+def test_given_workflow_job_without_definition_when_config_xml_returns_403_then_gracefully_continues() -> (
+    None
+):
+    """Test workflow job with definition=None gracefully continues when config.xml returns None (403 forbidden)."""
+    mock_transport = MagicMock(spec=JenkinsTransport)
+    mock_transport.base_url = "http://jenkins:8080"
+    mock_transport.get_json.return_value = {
+        "jobs": [
+            {
+                "name": "restricted-job",
+                "url": "http://jenkins:8080/job/restricted-job/",
+                "_class": "org.jenkinsci.plugins.workflow.job.WorkflowJob",
+                "definition": None,
+            }
+        ]
+    }
+    mock_transport.get_config_xml.return_value = None
+
+    scraper = JenkinsPipelineScraper(client=mock_transport)
+    pipelines = scraper.scrape()
+
+    assert len(pipelines) == 1
+    pipe = pipelines[0]
+    assert pipe.name == "restricted-job"
+    assert pipe.repository is None
+    assert pipe.file_path is None
+
+
+def test_given_workflow_job_without_definition_when_config_xml_has_malformed_xml_then_gracefully_continues() -> (
+    None
+):
+    """Test workflow job gracefully handles malformed/corrupted config.xml without crashing."""
+    mock_transport = MagicMock(spec=JenkinsTransport)
+    mock_transport.base_url = "http://jenkins:8080"
+    mock_transport.get_json.return_value = {
+        "jobs": [
+            {
+                "name": "malformed-job",
+                "url": "http://jenkins:8080/job/malformed-job/",
+                "_class": "org.jenkinsci.plugins.workflow.job.WorkflowJob",
+                "definition": None,
+            }
+        ]
+    }
+    mock_transport.get_config_xml.return_value = "<<<not valid xml>>>"
+
+    scraper = JenkinsPipelineScraper(client=mock_transport)
+    pipelines = scraper.scrape()
+
+    assert len(pipelines) == 1
+    pipe = pipelines[0]
+    assert pipe.name == "malformed-job"
+    assert pipe.repository is None
+
+
+def test_given_svn_url_with_trunk_subpath_when_parsing_scm_url_then_preserves_repo_slug() -> (
+    None
+):
+    """Test SVN URL with subdirectory after /trunk preserves repository slug."""
+    proj, repo = JenkinsPipelineScraper.parse_scm_url(
+        "http://svn.example.com/svn/FINANCE/billing-api/trunk/server/src"
+    )
+    assert proj == "FINANCE"
+    assert repo == "billing-api"
+
+
+def test_given_jenkins_client_when_fetching_config_xml_with_http_200_then_returns_decoded_xml_string() -> (
+    None
+):
+    """Test JenkinsClient.get_config_xml with HTTP 200 returns XML payload string."""
+    mock_pool = MagicMock(spec=urllib3.PoolManager)
+    mock_pool.request.return_value = _make_http_response(
+        200, "<flow-definition><actions/></flow-definition>"
+    )
+
+    client = JenkinsClient("http://jenkins:8080", pool_manager=mock_pool)
+    xml_data = client.get_config_xml("job/my-service/config.xml")
+
+    assert xml_data is not None
+    assert "<flow-definition>" in xml_data
+
+
+def test_given_jenkins_client_when_fetching_config_xml_with_http_404_then_returns_none() -> (
+    None
+):
+    """Test JenkinsClient.get_config_xml with HTTP 404 returns None."""
+    mock_pool = MagicMock(spec=urllib3.PoolManager)
+    mock_pool.request.return_value = _make_http_response(404, "Not Found")
+
+    client = JenkinsClient("http://jenkins:8080", pool_manager=mock_pool)
+    xml_data = client.get_config_xml("job/missing-service/config.xml")
+
+    assert xml_data is None
