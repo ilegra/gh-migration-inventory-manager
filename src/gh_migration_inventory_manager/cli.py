@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import logging
 import sys
 from typing import Any
 
@@ -278,6 +279,12 @@ def run_cli(
 
 def main(argv: list[str] | None = None) -> int:
     """Main CLI entry point."""
+    if not logging.root.handlers:
+        logging.basicConfig(
+            level=logging.INFO,
+            format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+        )
+
     parser = build_parser()
     args_list = argv if argv is not None else sys.argv[1:]
 

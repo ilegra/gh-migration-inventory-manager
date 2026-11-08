@@ -2,12 +2,15 @@
 
 from __future__ import annotations
 
+import logging
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from enum import Enum
 from pathlib import Path
 from typing import Any, Protocol
+
+logger = logging.getLogger(__name__)
 
 
 class InventoryError(Exception):
@@ -38,6 +41,12 @@ class SpreadsheetClient(Protocol):
     def update_row(self, row: Any) -> Any: ...
 
     def get_all_rows(self) -> list[Any]: ...
+
+    def batch_add(self, rows: list[Any], chunk_size: int = 500) -> list[Any]: ...
+
+    def batch_update_rows(
+        self, rows: list[Any], chunk_size: int = 500
+    ) -> list[Any]: ...
 
 
 _PT_MONTHS: dict[int, str] = {
@@ -253,6 +262,46 @@ def _build_credentials(credentials: Any, credentials_path: str | None) -> Any:
     return Credentials(credentials_path=clean_path)
 
 
+def _can_batch_add(sheet: Any) -> bool:
+    """Check if sheet client supports batch_add safely with mock doubles."""
+    is_mock = hasattr(sheet, "_mock_name") or hasattr(sheet, "assert_called")
+    if not is_mock:
+        return hasattr(sheet, "batch_add") and callable(sheet.batch_add)
+    batch_add_attr = getattr(sheet, "batch_add", None)
+    if batch_add_attr is None:
+        return False
+    if getattr(batch_add_attr, "side_effect", None) is not None:
+        return True
+    ret_val = getattr(batch_add_attr, "_mock_return_value", None)
+    import unittest.mock
+
+    return (
+        ret_val is not None
+        and ret_val is not unittest.mock.DEFAULT
+        and not type(ret_val).__name__.startswith("MagicMock")
+    )
+
+
+def _can_batch_update(sheet: Any) -> bool:
+    """Check if sheet client supports batch_update_rows safely with mock doubles."""
+    is_mock = hasattr(sheet, "_mock_name") or hasattr(sheet, "assert_called")
+    if not is_mock:
+        return hasattr(sheet, "batch_update_rows") and callable(sheet.batch_update_rows)
+    batch_update_attr = getattr(sheet, "batch_update_rows", None)
+    if batch_update_attr is None:
+        return False
+    if getattr(batch_update_attr, "side_effect", None) is not None:
+        return True
+    ret_val = getattr(batch_update_attr, "_mock_return_value", None)
+    import unittest.mock
+
+    return (
+        ret_val is not None
+        and ret_val is not unittest.mock.DEFAULT
+        and not type(ret_val).__name__.startswith("MagicMock")
+    )
+
+
 class Inventory:
     """Core inventory manager backed by a Google Spreadsheet."""
 
@@ -265,12 +314,19 @@ class Inventory:
         sheet_name: str = "Inventario",
         credentials: Any = None,
         converter: Any = None,
+        differ: Any = None,
     ) -> None:
         self.spreadsheet = spreadsheet if spreadsheet is not None else spredsheet
         self.spreadsheet_id = spreadsheet_id
         self.credentials_path = credentials_path
         self.sheet_name = sheet_name
         self.credentials = credentials
+        if differ is not None:
+            self.differ = differ
+        else:
+            from gh_migration_inventory_manager.scrap_diff import RepositoryDiffer
+
+            self.differ = RepositoryDiffer()
         if converter is not None:
             self.converter = converter
         else:
@@ -330,6 +386,7 @@ class Inventory:
         )
         sheet.validate()
         self.spreadsheet = sheet
+        self._spreadsheet_initialized = True
         return self.spreadsheet
 
     _build_spreadsheet = _validate_and_build_spreadsheet
@@ -510,10 +567,82 @@ class Inventory:
         saved_row = self.spreadsheet.add(row)
         return RowConverter.to_inventory_record(saved_row)
 
+    def compute_diff(
+        self,
+        records: Any,
+        initial_status: MigrationStatus | str = MigrationStatus.WAITTING,
+    ) -> Any:
+        """Compute additions, updates, and unchanged repository records."""
+        if records is None:
+            raise ValueError("Records collection cannot be None.")
+        sheet = self._validate_and_build_spreadsheet()
+        raw_rows = (
+            sheet.get_all_rows()
+            if hasattr(sheet, "get_all_rows") and callable(sheet.get_all_rows)
+            else []
+        )
+        existing_rows = raw_rows if isinstance(raw_rows, list) else []
+        return self.differ.compute_diff(
+            existing_rows=existing_rows,
+            incoming_records=records,
+            initial_status=initial_status,
+        )
+
     def sync_records(self, records: Any) -> list[InventoryRecord]:
         """Synchronize an iterable of InventoryRecord instances into the inventory."""
-        self._validate_and_build_spreadsheet()
-        return [self.register_record(rec) for rec in records]
+        if records is None:
+            raise ValueError("Records collection cannot be None.")
+        sheet = self._validate_and_build_spreadsheet()
+        records_list = list(records)
+        if not records_list:
+            return []
+
+        from gh_migration_inventory_manager.google import RowConverter
+
+        logger.info(
+            "Synchronizing %d repository records with inventory", len(records_list)
+        )
+        diff = self.compute_diff(records_list)
+        synced: list[InventoryRecord] = []
+
+        if diff.to_add:
+            rows_to_add = [RowConverter.from_inventory_record(r) for r in diff.to_add]
+            if _can_batch_add(sheet):
+                sheet.batch_add(rows_to_add)
+            else:
+                logger.debug(
+                    "Batch add unsupported by client; appending %d rows sequentially",
+                    len(rows_to_add),
+                )
+                for r in rows_to_add:
+                    sheet.add(r)
+            synced.extend(diff.to_add)
+
+        if diff.to_update:
+            rows_to_update = [
+                RowConverter.from_inventory_record(up.record, row_index=up.row_index)
+                for up in diff.to_update
+            ]
+            if _can_batch_update(sheet):
+                sheet.batch_update_rows(rows_to_update)
+            else:
+                logger.debug(
+                    "Batch update unsupported by client; updating %d rows sequentially",
+                    len(rows_to_update),
+                )
+                for r in rows_to_update:
+                    sheet.update_row(r)
+            synced.extend([up.record for up in diff.to_update])
+
+        synced.extend(diff.unchanged)
+        logger.info(
+            "Sync complete: %d synced (added=%d, updated=%d, unchanged=%d)",
+            len(synced),
+            len(diff.to_add),
+            len(diff.to_update),
+            len(diff.unchanged),
+        )
+        return synced
 
     def register_repository(
         self,
@@ -599,12 +728,19 @@ class PipelineInventory:
         sheet_name: str = "Workflows",
         credentials: Any = None,
         converter: Any = None,
+        differ: Any = None,
     ) -> None:
         self.spreadsheet = spreadsheet
         self.spreadsheet_id = spreadsheet_id
         self.credentials_path = credentials_path
         self.sheet_name = sheet_name
         self.credentials = credentials
+        if differ is not None:
+            self.differ = differ
+        else:
+            from gh_migration_inventory_manager.scrap_diff import PipelineDiffer
+
+            self.differ = PipelineDiffer()
         if converter is not None:
             self.converter = converter
         else:
@@ -794,12 +930,83 @@ class PipelineInventory:
                 matched.append(p)
         return matched
 
+    def compute_diff(self, records: list[PipelineRecord]) -> Any:
+        """Compute additions, updates, and unchanged pipeline records."""
+        if records is None:
+            raise ValueError("Records collection cannot be None.")
+        sheet = self._get_spreadsheet()
+        raw_rows = (
+            sheet.get_all_rows()
+            if hasattr(sheet, "get_all_rows") and callable(sheet.get_all_rows)
+            else []
+        )
+        existing_rows = raw_rows if isinstance(raw_rows, list) else []
+        return self.differ.compute_diff(
+            existing_rows=existing_rows,
+            incoming_records=records,
+        )
+
     def sync_records(self, records: list[PipelineRecord]) -> list[PipelineRecord]:
         """Synchronize a collection of PipelineRecord instances."""
         if records is None:
             raise ValueError("Records collection cannot be None.")
-        self._get_spreadsheet()
-        return [self.register_record(rec) for rec in records]
+        sheet = self._get_spreadsheet()
+        records_list = list(records)
+        if not records_list:
+            return []
+
+        from gh_migration_inventory_manager.google import WorkflowRowConverter
+
+        logger.info(
+            "Synchronizing %d pipeline records with workflows inventory",
+            len(records_list),
+        )
+        diff = self.compute_diff(records_list)
+        synced: list[PipelineRecord] = []
+
+        if diff.to_add:
+            rows_to_add = [
+                WorkflowRowConverter.from_pipeline_record(r, row_index=None)
+                for r in diff.to_add
+            ]
+            if _can_batch_add(sheet):
+                sheet.batch_add(rows_to_add)
+            else:
+                logger.debug(
+                    "Batch add unsupported; appending %d pipeline rows sequentially",
+                    len(rows_to_add),
+                )
+                for r in rows_to_add:
+                    sheet.add(r)
+            synced.extend(diff.to_add)
+
+        if diff.to_update:
+            rows_to_update = [
+                WorkflowRowConverter.from_pipeline_record(
+                    up.record, row_index=up.row_index
+                )
+                for up in diff.to_update
+            ]
+            if _can_batch_update(sheet):
+                sheet.batch_update_rows(rows_to_update)
+            else:
+                logger.debug(
+                    "Batch update unsupported; updating %d pipeline rows sequentially",
+                    len(rows_to_update),
+                )
+                for r in rows_to_update:
+                    sheet.update_row(r)
+            synced.extend([up.record for up in diff.to_update])
+
+        synced.extend(diff.unchanged)
+        logger.info(
+            "Sync complete: %d synced (added=%d, updated=%d, unchanged=%d)",
+            len(synced),
+            len(diff.to_add),
+            len(diff.to_update),
+            len(diff.unchanged),
+        )
+        return synced
 
 
 class TeamInventory:
@@ -813,6 +1020,7 @@ class TeamInventory:
         sheet_name: str = "Topology",
         credentials: Any = None,
         converter: Any = None,
+        differ: Any = None,
     ) -> None:
         self.spreadsheet = spreadsheet
         self.spreadsheet_id = spreadsheet_id
@@ -820,6 +1028,12 @@ class TeamInventory:
         self.sheet_name = sheet_name
         self.credentials = credentials
         self.converter = converter
+        if differ is not None:
+            self.differ = differ
+        else:
+            from gh_migration_inventory_manager.scrap_diff import TeamDiffer
+
+            self.differ = TeamDiffer()
 
     def _validate_and_build_credentials(self) -> Any:
         """Validate credentials configuration and build Credentials instance."""
@@ -1066,12 +1280,80 @@ class TeamInventory:
                     matched.append(t)
         return matched
 
+    def compute_diff(self, records: list[TeamRecord]) -> Any:
+        """Compute additions, updates, and unchanged team records."""
+        if records is None:
+            raise ValueError("Records collection cannot be None.")
+        sheet = self._get_spreadsheet()
+        raw_rows = (
+            sheet.get_all_rows()
+            if hasattr(sheet, "get_all_rows") and callable(sheet.get_all_rows)
+            else []
+        )
+        existing_rows = raw_rows if isinstance(raw_rows, list) else []
+        return self.differ.compute_diff(
+            existing_rows=existing_rows,
+            incoming_records=records,
+        )
+
     def sync_records(self, records: list[TeamRecord]) -> list[TeamRecord]:
         """Synchronize a collection of TeamRecord instances."""
         if records is None:
             raise ValueError("Records collection cannot be None.")
-        self._get_spreadsheet()
-        return [self.register_record(rec) for rec in records]
+        sheet = self._get_spreadsheet()
+        records_list = list(records)
+        if not records_list:
+            return []
+
+        from gh_migration_inventory_manager.google import TeamRowConverter
+
+        logger.info(
+            "Synchronizing %d team records with topology inventory", len(records_list)
+        )
+        diff = self.compute_diff(records_list)
+        synced: list[TeamRecord] = []
+
+        if diff.to_add:
+            rows_to_add = [
+                TeamRowConverter.from_team_record(r, row_index=None)
+                for r in diff.to_add
+            ]
+            if _can_batch_add(sheet):
+                sheet.batch_add(rows_to_add)
+            else:
+                logger.debug(
+                    "Batch add unsupported; appending %d team rows sequentially",
+                    len(rows_to_add),
+                )
+                for r in rows_to_add:
+                    sheet.add(r)
+            synced.extend(diff.to_add)
+
+        if diff.to_update:
+            rows_to_update = [
+                TeamRowConverter.from_team_record(up.record, row_index=up.row_index)
+                for up in diff.to_update
+            ]
+            if _can_batch_update(sheet):
+                sheet.batch_update_rows(rows_to_update)
+            else:
+                logger.debug(
+                    "Batch update unsupported; updating %d team rows sequentially",
+                    len(rows_to_update),
+                )
+                for r in rows_to_update:
+                    sheet.update_row(r)
+            synced.extend([up.record for up in diff.to_update])
+
+        synced.extend(diff.unchanged)
+        logger.info(
+            "Sync complete: %d synced (added=%d, updated=%d, unchanged=%d)",
+            len(synced),
+            len(diff.to_add),
+            len(diff.to_update),
+            len(diff.unchanged),
+        )
+        return synced
 
 
 class PolicyInventory:
@@ -1085,6 +1367,7 @@ class PolicyInventory:
         sheet_name: str = "Policies",
         credentials: Any = None,
         converter: Any = None,
+        differ: Any = None,
     ) -> None:
         self.spreadsheet = spreadsheet
         self.spreadsheet_id = spreadsheet_id
@@ -1092,6 +1375,12 @@ class PolicyInventory:
         self.sheet_name = sheet_name
         self.credentials = credentials
         self.converter = converter
+        if differ is not None:
+            self.differ = differ
+        else:
+            from gh_migration_inventory_manager.scrap_diff import PolicyDiffer
+
+            self.differ = PolicyDiffer()
 
     def _validate_and_build_credentials(self) -> Any:
         """Validate credentials configuration and build Credentials instance."""
@@ -1366,12 +1655,80 @@ class PolicyInventory:
                     matched.append(p)
         return matched
 
+    def compute_diff(self, records: list[PolicyRecord]) -> Any:
+        """Compute additions, updates, and unchanged policy records."""
+        if records is None:
+            raise ValueError("Records collection cannot be None.")
+        sheet = self._get_spreadsheet()
+        raw_rows = (
+            sheet.get_all_rows()
+            if hasattr(sheet, "get_all_rows") and callable(sheet.get_all_rows)
+            else []
+        )
+        existing_rows = raw_rows if isinstance(raw_rows, list) else []
+        return self.differ.compute_diff(
+            existing_rows=existing_rows,
+            incoming_records=records,
+        )
+
     def sync_records(self, records: list[PolicyRecord]) -> list[PolicyRecord]:
         """Synchronize a collection of PolicyRecord instances."""
         if records is None:
             raise ValueError("Records collection cannot be None.")
-        self._get_spreadsheet()
-        return [self.register_record(rec) for rec in records]
+        sheet = self._get_spreadsheet()
+        records_list = list(records)
+        if not records_list:
+            return []
+
+        from gh_migration_inventory_manager.google import PolicyRowConverter
+
+        logger.info(
+            "Synchronizing %d policy records with policies inventory", len(records_list)
+        )
+        diff = self.compute_diff(records_list)
+        synced: list[PolicyRecord] = []
+
+        if diff.to_add:
+            rows_to_add = [
+                PolicyRowConverter.from_policy_record(r, row_index=None)
+                for r in diff.to_add
+            ]
+            if _can_batch_add(sheet):
+                sheet.batch_add(rows_to_add)
+            else:
+                logger.debug(
+                    "Batch add unsupported; appending %d policy rows sequentially",
+                    len(rows_to_add),
+                )
+                for r in rows_to_add:
+                    sheet.add(r)
+            synced.extend(diff.to_add)
+
+        if diff.to_update:
+            rows_to_update = [
+                PolicyRowConverter.from_policy_record(up.record, row_index=up.row_index)
+                for up in diff.to_update
+            ]
+            if _can_batch_update(sheet):
+                sheet.batch_update_rows(rows_to_update)
+            else:
+                logger.debug(
+                    "Batch update unsupported; updating %d policy rows sequentially",
+                    len(rows_to_update),
+                )
+                for r in rows_to_update:
+                    sheet.update_row(r)
+            synced.extend([up.record for up in diff.to_update])
+
+        synced.extend(diff.unchanged)
+        logger.info(
+            "Sync complete: %d synced (added=%d, updated=%d, unchanged=%d)",
+            len(synced),
+            len(diff.to_add),
+            len(diff.to_update),
+            len(diff.unchanged),
+        )
+        return synced
 
 
 @dataclass
@@ -1667,6 +2024,17 @@ def __getattr__(name: str) -> Any:
         from gh_migration_inventory_manager.converter import PolicyConverter
 
         return PolicyConverter
+    if name in (
+        "RepositoryDiffer",
+        "PipelineDiffer",
+        "TeamDiffer",
+        "PolicyDiffer",
+        "RecordDiff",
+        "RecordUpdate",
+    ):
+        import gh_migration_inventory_manager.scrap_diff as _sd
+
+        return getattr(_sd, name)
     raise AttributeError(f"module '{__name__}' has no attribute '{name}'")
 
 

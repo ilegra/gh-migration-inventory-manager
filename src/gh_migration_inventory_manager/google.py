@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import re
 import time
 from dataclasses import dataclass, field
@@ -29,6 +30,8 @@ from gh_migration_inventory_manager.inventory import (
     format_migration_month,
 )
 from gh_migration_inventory_manager.scrap import NormalizedRole, normalize_role
+
+logger = logging.getLogger(__name__)
 
 
 class SpreadsheetError(InventoryError):
@@ -1184,6 +1187,55 @@ class Spreadsheet:
         row.values = values
         return row
 
+    def batch_add(self, rows: list[Row], chunk_size: int = 500) -> list[Row]:
+        """Append multiple rows in chunks and update their row indices."""
+        if not rows:
+            return []
+        effective_chunk_size = chunk_size if chunk_size > 0 else 500
+        for i in range(0, len(rows), effective_chunk_size):
+            chunk = rows[i : i + effective_chunk_size]
+            matrix = [self._to_sheet_row(r) for r in chunk]
+            append_range = f"{self.sheet_name}!A:{self._end_column}"
+            body = {"values": matrix}
+            logger.info(
+                "Batch appending %d rows to '%s' tab (chunk offset %d)",
+                len(chunk),
+                self.sheet_name,
+                i,
+            )
+            res = self._execute(
+                self._service.spreadsheets()
+                .values()
+                .append(
+                    spreadsheetId=self.id,
+                    range=append_range,
+                    valueInputOption="USER_ENTERED",
+                    insertDataOption="INSERT_ROWS",
+                    body=body,
+                )
+            )
+            updated_range = (
+                res.get("updates", {}).get("updatedRange", "")
+                if isinstance(res, dict)
+                else ""
+            )
+            match = _RANGE_PATTERN.search(updated_range)
+            if match:
+                start_row = int(match.group(1))
+                logger.debug(
+                    "Batch append allocated row indices %d to %d in '%s'",
+                    start_row,
+                    start_row + len(chunk) - 1,
+                    self.sheet_name,
+                )
+                for offset, r in enumerate(chunk):
+                    r.row_index = start_row + offset
+                    r.values = matrix[offset]
+            else:
+                for offset, r in enumerate(chunk):
+                    r.values = matrix[offset]
+        return rows
+
     def update_row(self, row: Row) -> Row:
         """Update an existing row in the spreadsheet by its row_index."""
         if row.row_index is None:
@@ -1208,6 +1260,54 @@ class Spreadsheet:
 
         row.values = values
         return row
+
+    def batch_update_rows(self, rows: list[Row], chunk_size: int = 500) -> list[Row]:
+        """Update multiple existing rows across scattered ranges in chunks."""
+        if not rows:
+            return []
+        effective_chunk_size = chunk_size if chunk_size > 0 else 500
+        for i in range(0, len(rows), effective_chunk_size):
+            chunk = rows[i : i + effective_chunk_size]
+            data: list[dict[str, Any]] = []
+            for r in chunk:
+                if r.row_index is None:
+                    raise ValueError("Cannot update row without a valid row_index.")
+                values = self._to_sheet_row(r)
+                r.values = values
+                row_idx = r.row_index
+                target_range = (
+                    f"{self.sheet_name}!A{row_idx}:{self._end_column}{row_idx}"
+                )
+                data.append(
+                    {
+                        "range": target_range,
+                        "values": [values],
+                    }
+                )
+            body = {
+                "valueInputOption": "USER_ENTERED",
+                "data": data,
+            }
+            logger.info(
+                "Batch updating %d rows in '%s' tab (chunk offset %d)",
+                len(chunk),
+                self.sheet_name,
+                i,
+            )
+            self._execute(
+                self._service.spreadsheets()
+                .values()
+                .batchUpdate(
+                    spreadsheetId=self.id,
+                    body=body,
+                )
+            )
+            logger.debug(
+                "Batch update completed for %d rows in '%s'",
+                len(chunk),
+                self.sheet_name,
+            )
+        return rows
 
     def clear_row(self, row_index: int) -> None:
         """Clear all cell values in the specified row."""
