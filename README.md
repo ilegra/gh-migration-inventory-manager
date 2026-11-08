@@ -35,16 +35,23 @@ flowchart TD
 
         JK["Jenkins Controller"] -->|"scrape jenkins"| JK_P["Pipeline Scraper"]
 
-        BB["Bitbucket (Cloud & DC)"] -->|"scrape bitbucket"| BB_R["Repo Scraper"]
+        BB["Bitbucket Server / DC"] -->|"scrape bitbucket"| BB_R["Repo Scraper"]
         BB -->|"scrape bitbucket-policies"| BB_POL["Policy Scraper"]
         BB -->|"scrape bitbucket-teams"| BB_T["Team Scraper (RBAC)"]
 
+        BBC["Bitbucket Cloud (REST 2.0)"] -->|"scrape bitbucket-cloud"| BBC_R["Repo Scraper (3-Tier)"]
+        BBC -->|"scrape bitbucket-cloud-policies"| BBC_POL["Policy Scraper (Native)"]
+        BBC -->|"scrape bitbucket-cloud-teams"| BBC_T["Team Scraper (Groups)"]
+
         SVN_R -->|"Seed / Register"| TAB_INV[("Google Sheets: Inventario")]
         BB_R -->|"Seed / Register"| TAB_INV
+        BBC_R -->|"Seed / Register"| TAB_INV
         JK_P -->|"Seed / Register"| TAB_WF[("Google Sheets: Workflows")]
         SVN_T -->|"Seed / Register"| TAB_TOP[("Google Sheets: Topology")]
         BB_T -->|"Seed / Register"| TAB_TOP
+        BBC_T -->|"Seed / Register"| TAB_TOP
         BB_POL -->|"Seed / Register"| TAB_POL[("Google Sheets: Policies")]
+        BBC_POL -->|"Seed / Register"| TAB_POL[("Google Sheets: Policies")]
     end
 
     subgraph Mode2["Mode 2: Updating the Inventory (Embedded Library)"]
@@ -236,34 +243,23 @@ poetry run gh-migration-inventory scrape jenkins \
 
 ---
 
-### 3. Bitbucket (Cloud & Data Center / Server)
+### 3. Bitbucket Server / Data Center
 
-Works with both **Bitbucket Cloud** (`https://bitbucket.org`) and **Bitbucket Server / Data Center** (`https://bitbucket.corp.local`).
+Works with on-premise **Bitbucket Server / Data Center** (`https://bitbucket.corp.local`).
 
-#### A. Bitbucket Repositories (`scrape bitbucket`)
+#### A. Bitbucket Server Repositories (`scrape bitbucket`)
 Discovers repositories, clones, default branches, recent commit timestamps, and manifest technology stacks. Synchronizes into the `Inventario` tab.
 ```bash
-# Bitbucket Server / Data Center with PAT:
 poetry run gh-migration-inventory scrape bitbucket \
   --url https://bitbucket.corp.local \
   --token "$BITBUCKET_PAT" \
   --project-key "CORE" \
   --spreadsheet-id "$SPREADSHEET_ID" \
   --credentials-path "./gcp-key.json"
-
-# Bitbucket Cloud with App Password:
-poetry run gh-migration-inventory scrape bitbucket \
-  --url https://bitbucket.org \
-  --username "$BITBUCKET_USERNAME" \
-  --password "$BITBUCKET_APP_PASSWORD" \
-  --project-key "my-workspace" \
-  --include-archived \
-  --spreadsheet-id "$SPREADSHEET_ID" \
-  --credentials-path "./gcp-key.json"
 ```
 
-#### B. Bitbucket Branch Policies & Governance (`scrape bitbucket-policies`)
-Discovers branch restrictions (no deletion, fast-forward only, read-only) and pull request merge checks (required minimum approvals, successful build checks, unresolved comments) into the `Policies` tab. Emits canonical `repo:{project_key}/{repo_slug}` scopes and distinct `project` and `repository` fields (or `project:{project_key}` for project-level policies).
+#### B. Bitbucket Server Branch Policies (`scrape bitbucket-policies`)
+Discovers branch restrictions and pull request merge checks into the `Policies` tab.
 ```bash
 poetry run gh-migration-inventory scrape bitbucket-policies \
   --url https://bitbucket.corp.local \
@@ -273,15 +269,66 @@ poetry run gh-migration-inventory scrape bitbucket-policies \
   --spreadsheet-id "$SPREADSHEET_ID" \
   --credentials-path "./gcp-key.json"
 ```
-*(Leave `--repo-slug` omitted to scrape project-level branch restrictions).*
 
-#### C. Bitbucket Teams & Access Permissions (`scrape bitbucket-teams`)
-Discovers project-level and repository-level group permissions, normalizes them into GitHub roles (`Admin`, `Write`, `Read`), populates distinct `project` and `repository` fields, and extracts aggregate group member counts without PII sprawl into the `Topology` tab.
+#### C. Bitbucket Server Teams (`scrape bitbucket-teams`)
+Discovers group permissions and synchronizes into the `Topology` tab.
 ```bash
 poetry run gh-migration-inventory scrape bitbucket-teams \
   --url https://bitbucket.corp.local \
   --token "$BITBUCKET_PAT" \
   --project-key "CORE" \
+  --include-repo-level \
+  --spreadsheet-id "$SPREADSHEET_ID" \
+  --credentials-path "./gcp-key.json"
+```
+
+---
+
+### 4. Bitbucket Cloud (REST 2.0 Native)
+
+Dedicated scraping capability for **Bitbucket Cloud** (`https://bitbucket.org`) supporting full 3-tier hierarchy (`Workspace` $\rightarrow$ `Project` $\rightarrow$ `Repository`), native REST 2.0 cursor pagination, and branch governance.
+
+> [!TIP]
+> **HTTP Optimization via `--workspace` / `-w`**: Specifying `--workspace <slug>` directly from the CLI bypasses the `GET /2.0/workspaces` network round-trip, immediately targeting the workspace's resources and enabling seamless operation with Workspace Access Tokens (WAT).
+
+#### A. Bitbucket Cloud Repositories (`scrape bitbucket-cloud`)
+Discovers repositories, accurately preserves true project keys (`repo.project.key`), workspace affiliation, clone URLs, commit dates, and stacks.
+```bash
+# Using Atlassian Account email + App Password:
+poetry run gh-migration-inventory scrape bitbucket-cloud \
+  --workspace "my-corp-workspace" \
+  --username "developer@corp.com" \
+  --app-password "$BITBUCKET_APP_PASSWORD" \
+  --project "CORE" \
+  --spreadsheet-id "$SPREADSHEET_ID" \
+  --credentials-path "./gcp-key.json"
+
+# Using a Workspace Access Token (WAT) or Bearer token:
+poetry run gh-migration-inventory scrape bitbucket-cloud \
+  --workspace "my-corp-workspace" \
+  --token "$BITBUCKET_CLOUD_TOKEN" \
+  --spreadsheet-id "$SPREADSHEET_ID" \
+  --credentials-path "./gcp-key.json"
+```
+
+#### B. Bitbucket Cloud Branch Governance (`scrape bitbucket-cloud-policies`)
+Discovers branch restrictions via `/2.0/.../branch-restrictions` and maps to canonical GitHub Rulesets (`RequirePullRequest`, `RequireStatusChecks`, `PreventBranchDeletion`, `BlockForcePush`).
+```bash
+poetry run gh-migration-inventory scrape bitbucket-cloud-policies \
+  --workspace "my-corp-workspace" \
+  --token "$BITBUCKET_CLOUD_TOKEN" \
+  --project "CORE" \
+  --repo "payment-api" \
+  --spreadsheet-id "$SPREADSHEET_ID" \
+  --credentials-path "./gcp-key.json"
+```
+
+#### C. Bitbucket Cloud Team Topology (`scrape bitbucket-cloud-teams`)
+Discovers workspace-level and repository-level group permissions via `/permissions-config/groups` into the `Topology` tab.
+```bash
+poetry run gh-migration-inventory scrape bitbucket-cloud-teams \
+  --workspace "my-corp-workspace" \
+  --token "$BITBUCKET_CLOUD_TOKEN" \
   --include-repo-level \
   --spreadsheet-id "$SPREADSHEET_ID" \
   --credentials-path "./gcp-key.json"

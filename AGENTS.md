@@ -12,7 +12,7 @@ This document outlines key architectural principles and testing conventions to a
 src/gh_migration_inventory_manager/
 ├── scrap.py                # Canonical domain models (Repository, Pipeline, Stack) & protocols (Scraper, ScraperProvider)
 ├── converter.py            # Domain-to-inventory converters (RepositoryConverter, PipelineConverter)
-├── <platform>_scrap.py     # Platform discovery adapters & transport clients (svn_scrap.py, jenkins_scrap.py)
+├── <platform>_scrap.py     # Platform discovery adapters & transport clients (svn_scrap.py, jenkins_scrap.py, bitbucket_scrap.py, bitbucket_cloud_scrap.py)
 ├── inventory.py            # Migration lifecycle orchestration (Inventory, PipelineInventory)
 ├── google.py               # Inventory persistence backend (Google Sheets: Inventario & Workflows tabs)
 └── cli.py                  # Unified CLI entrypoint and platform subcommands

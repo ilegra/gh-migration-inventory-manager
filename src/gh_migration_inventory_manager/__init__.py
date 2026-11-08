@@ -4,6 +4,16 @@ Provides a clean interface to track, catalog, and update repository migration
 records backed by Google Sheets.
 """
 
+from gh_migration_inventory_manager.bitbucket_cloud_scrap import (
+    BitbucketCloudClient,
+    BitbucketCloudPoliciesScraperProvider,
+    BitbucketCloudPolicyScraper,
+    BitbucketCloudRepositoryScraper,
+    BitbucketCloudScraperProvider,
+    BitbucketCloudTeamScraper,
+    BitbucketCloudTeamsScraperProvider,
+    BitbucketCloudTransport,
+)
 from gh_migration_inventory_manager.bitbucket_scrap import (
     BitbucketClient,
     BitbucketPoliciesScraperProvider,
@@ -101,7 +111,7 @@ from gh_migration_inventory_manager.svn_scrap import (
     SvnWebDavClient,
 )
 
-__version__ = "1.2.0"
+__version__ = "1.3.0"
 
 __all__ = [
     "__version__",
@@ -109,6 +119,14 @@ __all__ = [
     "Authenticator",
     "BasicAuthenticator",
     "BitbucketClient",
+    "BitbucketCloudClient",
+    "BitbucketCloudPoliciesScraperProvider",
+    "BitbucketCloudPolicyScraper",
+    "BitbucketCloudRepositoryScraper",
+    "BitbucketCloudScraperProvider",
+    "BitbucketCloudTeamScraper",
+    "BitbucketCloudTeamsScraperProvider",
+    "BitbucketCloudTransport",
     "BitbucketPoliciesScraperProvider",
     "BitbucketPolicyScraper",
     "BitbucketRepositoryScraper",

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import argparse
 import io
 from typing import Any
 from unittest.mock import MagicMock, patch
@@ -1151,4 +1152,241 @@ def test_given_custom_sheet_name_for_bitbucket_when_running_cli_then_honors_shee
         sheet_name="CustomRepos",
         converter=mock_inv_cls.call_args[1]["converter"],
     )
+    assert result == 1
+
+
+def test_given_bitbucket_cloud_platforms_when_building_parser_then_registers_all_three_subcommands() -> (
+    None
+):
+    """Test build_parser registers bitbucket-cloud, bitbucket-cloud-policies, and bitbucket-cloud-teams."""
+    parser = build_parser()
+    subparsers_action = next(
+        action
+        for action in parser._actions
+        if isinstance(action, argparse._SubParsersAction)
+    )
+    scrape_subparser = subparsers_action.choices["scrape"]
+    platform_action = next(
+        action
+        for action in scrape_subparser._actions
+        if isinstance(action, argparse._SubParsersAction)
+    )
+    assert "bitbucket-cloud" in platform_action.choices
+    assert "bitbucket-cloud-policies" in platform_action.choices
+    assert "bitbucket-cloud-teams" in platform_action.choices
+
+
+def test_given_bitbucket_cloud_args_when_parsing_then_captures_workspace_and_options() -> (
+    None
+):
+    """Test bitbucket-cloud argument parsing handles workspace, app password, and sheet name."""
+    parser = build_parser()
+    args = parser.parse_args(
+        [
+            "scrape",
+            "bitbucket-cloud",
+            "--workspace",
+            "corp-cloud",
+            "--project",
+            "MIG",
+            "--username",
+            "dev@corp.com",
+            "--app-password",
+            "secret_pass",
+            "--spreadsheet-id",
+            "sheet-123",
+        ]
+    )
+    assert args.platform == "bitbucket-cloud"
+    assert args.workspace == "corp-cloud"
+    assert args.project_key == "MIG"
+    assert args.username == "dev@corp.com"
+    assert args.app_password == "secret_pass"
+    assert args.sheet_name == "Inventario"
+
+
+def test_given_bitbucket_cloud_policies_and_teams_when_parsing_then_sets_default_sheets() -> (
+    None
+):
+    """Test bitbucket-cloud-policies and bitbucket-cloud-teams default to Policies and Topology tabs."""
+    parser = build_parser()
+    pol_args = parser.parse_args(["scrape", "bitbucket-cloud-policies"])
+    assert pol_args.sheet_name == "Policies"
+
+    teams_args = parser.parse_args(["scrape", "bitbucket-cloud-teams"])
+    assert teams_args.sheet_name == "Topology"
+
+
+def test_given_bitbucket_cloud_args_and_mock_services_when_running_cli_then_synchronizes_repositories() -> (
+    None
+):
+    """Test running CLI with bitbucket-cloud coordinates with Inventory to sync records."""
+    from gh_migration_inventory_manager.bitbucket_cloud_scrap import (
+        BitbucketCloudRepositoryScraper,
+    )
+
+    mock_scraper = MagicMock(spec=BitbucketCloudRepositoryScraper)
+    mock_scraper.target_type = "repository"
+    mock_scraper.scrape.return_value = [
+        Repository(
+            name="cloud-api",
+            project="CORE",
+            organization="my-corp",
+            url="https://bitbucket.org/my-corp/cloud-api.git",
+            stacks=[Stack.PYTHON],
+        )
+    ]
+
+    mock_inv = MagicMock(spec=Inventory)
+    mock_inv.sync_records.return_value = [
+        InventoryRecord(name="cloud-api", project="CORE", stack="Python")
+    ]
+
+    parser = build_parser()
+    args = parser.parse_args(
+        [
+            "scrape",
+            "bitbucket-cloud",
+            "--workspace",
+            "my-corp",
+            "--spreadsheet-id",
+            "test-sheet-id",
+        ]
+    )
+
+    with patch(
+        "gh_migration_inventory_manager.bitbucket_cloud_scrap.BitbucketCloudScraperProvider.create_scraper",
+        return_value=mock_scraper,
+    ):
+        out = io.StringIO()
+        result = run_cli(
+            args,
+            inventory=mock_inv,
+            out_stream=out,
+        )
+
+    mock_inv.sync_records.assert_called_once()
+    assert result == 1
+    assert out.getvalue().strip() == "1"
+
+
+def test_given_bitbucket_cloud_policies_args_and_mock_services_when_running_cli_then_synchronizes_policies() -> (
+    None
+):
+    """Test running CLI with bitbucket-cloud-policies coordinates with PolicyInventory."""
+    from gh_migration_inventory_manager.bitbucket_cloud_scrap import (
+        BitbucketCloudPolicyScraper,
+    )
+    from gh_migration_inventory_manager.inventory import PolicyInventory, PolicyRecord
+    from gh_migration_inventory_manager.scrap import BranchPolicy, NormalizedRuleType
+
+    mock_scraper = MagicMock(spec=BitbucketCloudPolicyScraper)
+    mock_scraper.target_type = "policy"
+    mock_scraper.scrape.return_value = [
+        BranchPolicy(
+            policy_scope="repo:CORE/cloud-api",
+            target_ref_pattern="refs/heads/main",
+            normalized_rule_type=NormalizedRuleType.REQUIRE_PULL_REQUEST,
+            project="CORE",
+            repository="cloud-api",
+            platform="bitbucket-cloud",
+        )
+    ]
+
+    mock_pol_inv = MagicMock(spec=PolicyInventory)
+    mock_pol_inv.sync_records.return_value = [
+        PolicyRecord(
+            policy_scope="repo:CORE/cloud-api",
+            target_ref_pattern="refs/heads/main",
+            normalized_rule_type="RequirePullRequest",
+        )
+    ]
+
+    parser = build_parser()
+    args = parser.parse_args(
+        [
+            "scrape",
+            "bitbucket-cloud-policies",
+            "--workspace",
+            "my-corp",
+            "--spreadsheet-id",
+            "test-sheet-id",
+        ]
+    )
+
+    with patch(
+        "gh_migration_inventory_manager.bitbucket_cloud_scrap.BitbucketCloudPoliciesScraperProvider.create_scraper",
+        return_value=mock_scraper,
+    ):
+        out = io.StringIO()
+        result = run_cli(
+            args,
+            policy_inventory=mock_pol_inv,
+            out_stream=out,
+        )
+
+    mock_pol_inv.sync_records.assert_called_once()
+    assert result == 1
+
+
+def test_given_bitbucket_cloud_teams_args_and_mock_services_when_running_cli_then_synchronizes_teams() -> (
+    None
+):
+    """Test running CLI with bitbucket-cloud-teams coordinates with TeamInventory."""
+    from gh_migration_inventory_manager.bitbucket_cloud_scrap import (
+        BitbucketCloudTeamScraper,
+    )
+    from gh_migration_inventory_manager.inventory import TeamInventory, TeamRecord
+    from gh_migration_inventory_manager.scrap import NormalizedRole, TeamPermission
+
+    mock_scraper = MagicMock(spec=BitbucketCloudTeamScraper)
+    mock_scraper.target_type = "team"
+    mock_scraper.scrape.return_value = [
+        TeamPermission(
+            team_name="leads",
+            member_count=0,
+            target_repo_or_project="repo:CORE/cloud-api",
+            normalized_role=NormalizedRole.ADMIN,
+            origin_role="admin",
+            project="CORE",
+            repository="cloud-api",
+            team_slug="leads",
+        )
+    ]
+
+    mock_team_inv = MagicMock(spec=TeamInventory)
+    mock_team_inv.sync_records.return_value = [
+        TeamRecord(
+            team_name="leads",
+            team_slug="leads",
+            origin_role="admin",
+            normalized_role="Admin",
+            member_count=0,
+        )
+    ]
+
+    parser = build_parser()
+    args = parser.parse_args(
+        [
+            "scrape",
+            "bitbucket-cloud-teams",
+            "--workspace",
+            "my-corp",
+            "--spreadsheet-id",
+            "test-sheet-id",
+        ]
+    )
+
+    with patch(
+        "gh_migration_inventory_manager.bitbucket_cloud_scrap.BitbucketCloudTeamsScraperProvider.create_scraper",
+        return_value=mock_scraper,
+    ):
+        out = io.StringIO()
+        result = run_cli(
+            args,
+            team_inventory=mock_team_inv,
+            out_stream=out,
+        )
+
+    mock_team_inv.sync_records.assert_called_once()
     assert result == 1

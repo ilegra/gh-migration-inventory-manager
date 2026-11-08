@@ -7,6 +7,7 @@ import logging
 import sys
 from typing import Any
 
+import gh_migration_inventory_manager.bitbucket_cloud_scrap  # noqa: F401
 import gh_migration_inventory_manager.bitbucket_scrap  # noqa: F401
 import gh_migration_inventory_manager.jenkins_scrap  # noqa: F401
 import gh_migration_inventory_manager.svn_scrap  # noqa: F401
