@@ -447,8 +447,10 @@ record = inventory.update_progress(
     status=MigrationStatus.ACTIVE_IN_BOTH,
 )
 print(f"Repository: {record.name}")
-print(f"Status: {record.migration_status.to_sheet_label()}")  # Migrando (Ativos em Ambas)
-print(f"Migration Month: {record.migration_month}")          # Novembro/2026
+print(
+    f"Status: {record.migration_status.to_sheet_label()}"
+)  # Migrando (Ativos em Ambas)
+print(f"Migration Month: {record.migration_month}")  # Novembro/2026
 
 # Step B: Mark repository as fully migrated and origin deactivated
 completed = inventory.update_progress(
@@ -497,7 +499,9 @@ graph = InventoryGraph.from_inventories(
 profile = graph.get_repository_profile(project_slug="CORE", repo_slug="payment-service")
 print(f"Correlated Repository: {profile.repo_slug}")
 print(f"Linked Pipelines: {len(profile.pipelines)}")
-print(f"Effective Policies (repo + project + global): {len(profile.effective_policies)}")
+print(
+    f"Effective Policies (repo + project + global): {len(profile.effective_policies)}"
+)
 print(f"Associated Teams: {len(profile.teams)}")
 ```
 
