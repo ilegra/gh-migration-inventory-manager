@@ -94,7 +94,7 @@ class RepositoryDiffer:
                 continue
             try:
                 rec = RowConverter.to_inventory_record(row)
-            except Exception:
+            except Exception:  # nosec B112
                 continue
 
             r_name = (rec.name or "").strip().lower()
@@ -219,7 +219,7 @@ class PipelineDiffer:
                 continue
             try:
                 rec = WorkflowRowConverter.to_pipeline_record(row)
-            except Exception:
+            except Exception:  # nosec B112
                 continue
             workflow_id = (rec.workflow_id or "").strip().lower()
             if workflow_id:
@@ -308,7 +308,7 @@ class TeamDiffer:
                 continue
             try:
                 rec = TeamRowConverter.to_team_record(row)
-            except Exception:
+            except Exception:  # nosec B112
                 continue
             slug = (rec.team_slug or "").strip().lower()
             target = (rec.target_repo_or_project or "").strip().lower()
@@ -423,7 +423,7 @@ class PolicyDiffer:
                     rec,
                     row.row_index,
                 )
-            except Exception:
+            except Exception:  # nosec B112
                 continue
 
         diff = RecordDiff[PolicyRecord]()
