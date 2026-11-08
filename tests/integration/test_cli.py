@@ -521,3 +521,45 @@ def test_given_invalid_bitbucket_token_when_running_cli_scrape_bitbucket_then_lo
     assert exit_code == 1
     captured = capsys.readouterr()
     assert "Authentication Error" in captured.err
+
+
+def test_given_live_cloud_server_and_invalid_auth_when_running_cli_scrape_bitbucket_cloud_then_exits_code_1(
+    bitbucket_cloud_server: dict[str, Any],
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Verify CLI maps live Bitbucket Cloud authentication failure to exit code 1."""
+    exit_code = main(
+        [
+            "scrape",
+            "bitbucket-cloud",
+            "--base-url",
+            bitbucket_cloud_server["base_url"],
+            "--workspace",
+            bitbucket_cloud_server["workspace"],
+            "--token",
+            "wrong-invalid-token",
+        ]
+    )
+    assert exit_code == 1
+    captured = capsys.readouterr()
+    assert "Authentication Error" in captured.err
+
+
+def test_given_live_cloud_server_when_running_cli_scrape_bitbucket_cloud_without_sheet_then_exits_code_2(
+    bitbucket_cloud_server: dict[str, Any],
+) -> None:
+    """Verify CLI executes live Bitbucket Cloud discovery and exits 2 if sheet credentials omitted."""
+    exit_code = main(
+        [
+            "scrape",
+            "bitbucket-cloud",
+            "--base-url",
+            bitbucket_cloud_server["base_url"],
+            "--workspace",
+            bitbucket_cloud_server["workspace"],
+            "--token",
+            bitbucket_cloud_server["token"],
+        ]
+    )
+    # Exits 2 because spreadsheet credentials were omitted (run_cli returns None)
+    assert exit_code == 2

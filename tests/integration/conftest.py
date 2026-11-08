@@ -656,3 +656,240 @@ def reset_topology_sheet(gcp_credentials_path: str) -> Any:
     sheet.clear_tab()
     yield sheet
     sheet.clear_tab()
+
+
+class _BitbucketCloudMockHandler(urllib.request.BaseHandler):
+    pass
+
+
+@pytest.fixture(scope="module")
+def bitbucket_cloud_server() -> Generator[dict[str, Any], None, None]:
+    """Pytest module-scoped fixture running a lightweight Bitbucket Cloud 2.0 REST simulator."""
+    import http.server
+    import threading
+
+    request_counts: dict[str, int] = {
+        "workspaces": 0,
+        "repositories": 0,
+        "branch_restrictions": 0,
+        "permissions_groups": 0,
+    }
+
+    workspace_slug = "acme-corp"
+    project_key = "PLAT"
+    repo_slug = "core-api"
+    auth_token = "wat-bitbucket-cloud-token-2026"
+
+    class MockCloudHandler(http.server.BaseHTTPRequestHandler):
+        def log_message(self, format: str, *args: Any) -> None:
+            pass  # Suppress console logging
+
+        def do_GET(self) -> None:  # noqa: N802
+            auth = self.headers.get("Authorization", "")
+            if not auth or f"Bearer {auth_token}" not in auth and "Basic " not in auth:
+                self.send_response(401)
+                self.send_header("Content-Type", "application/json")
+                self.end_headers()
+                self.wfile.write(
+                    b'{"type": "error", "error": {"message": "Unauthorized"}}'
+                )
+                return
+
+            parsed = urllib.parse.urlparse(self.path)
+            path = parsed.path
+            query = urllib.parse.parse_qs(parsed.query)
+
+            # Route: /2.0/workspaces
+            if path in ("/2.0/workspaces", "/workspaces"):
+                request_counts["workspaces"] += 1
+                payload = {
+                    "pagelen": 10,
+                    "values": [
+                        {
+                            "slug": workspace_slug,
+                            "name": "Acme Corp",
+                            "uuid": "{ws-uuid-1}",
+                        }
+                    ],
+                }
+                self._send_json(payload)
+                return
+
+            # Route: /2.0/repositories/{workspace}
+            if path.startswith("/2.0/repositories/") or path.startswith(
+                "/repositories/"
+            ):
+                parts = [
+                    p
+                    for p in path.split("/")
+                    if p and p != "2.0" and p != "repositories"
+                ]
+                # /repositories/acme-corp
+                if len(parts) == 1:
+                    request_counts["repositories"] += 1
+                    page = int(query.get("page", ["1"])[0])
+                    if page == 1:
+                        next_url = f"http://{self.headers['Host']}/2.0/repositories/{workspace_slug}?page=2"
+                        payload = {
+                            "pagelen": 1,
+                            "next": next_url,
+                            "values": [
+                                {
+                                    "slug": repo_slug,
+                                    "name": "Core API",
+                                    "project": {
+                                        "key": project_key,
+                                        "name": "Platform Engineering",
+                                    },
+                                    "links": {
+                                        "clone": [
+                                            {
+                                                "name": "https",
+                                                "href": f"https://bitbucket.org/{workspace_slug}/{repo_slug}.git",
+                                            }
+                                        ]
+                                    },
+                                    "mainbranch": {"name": "main"},
+                                    "archived": False,
+                                }
+                            ],
+                        }
+                    else:
+                        payload = {
+                            "pagelen": 1,
+                            "values": [
+                                {
+                                    "slug": "infra-deploy",
+                                    "name": "Infra Deploy",
+                                    "project": {
+                                        "key": project_key,
+                                        "name": "Platform Engineering",
+                                    },
+                                    "links": {
+                                        "clone": [
+                                            {
+                                                "name": "https",
+                                                "href": f"https://bitbucket.org/{workspace_slug}/infra-deploy.git",
+                                            }
+                                        ]
+                                    },
+                                    "mainbranch": {"name": "master"},
+                                    "archived": False,
+                                }
+                            ],
+                        }
+                    self._send_json(payload)
+                    return
+
+                # /repositories/acme-corp/core-api
+                if len(parts) == 2:
+                    payload = {
+                        "slug": parts[1],
+                        "name": "Core API",
+                        "mainbranch": {"name": "main"},
+                    }
+                    self._send_json(payload)
+                    return
+
+                # /repositories/acme-corp/core-api/commits
+                if len(parts) == 3 and parts[2] == "commits":
+                    payload = {
+                        "values": [
+                            {"hash": "11223344", "date": "2026-11-01T12:00:00+00:00"}
+                        ]
+                    }
+                    self._send_json(payload)
+                    return
+
+                # /repositories/acme-corp/core-api/src
+                if len(parts) == 3 and parts[2] == "src":
+                    payload = {
+                        "values": [
+                            {"path": "pom.xml"},
+                            {"path": "src/main/java/App.java"},
+                        ]
+                    }
+                    self._send_json(payload)
+                    return
+
+                # /repositories/acme-corp/core-api/branch-restrictions
+                if len(parts) == 3 and parts[2] == "branch-restrictions":
+                    request_counts["branch_restrictions"] += 1
+                    payload = {
+                        "values": [
+                            {
+                                "kind": "require_approvals_to_merge",
+                                "pattern": "main",
+                                "value": 2,
+                                "groups": [{"name": "Core Maintainers"}],
+                            },
+                            {
+                                "kind": "require_passing_builds_to_merge",
+                                "pattern": "main",
+                                "value": 1,
+                            },
+                            {
+                                "kind": "delete",
+                                "pattern": "*",
+                            },
+                        ]
+                    }
+                    self._send_json(payload)
+                    return
+
+                # /repositories/acme-corp/core-api/permissions-config/groups
+                if (
+                    len(parts) == 4
+                    and parts[2] == "permissions-config"
+                    and parts[3] == "groups"
+                ):
+                    request_counts["permissions_groups"] += 1
+                    payload = {
+                        "values": [
+                            {"group": {"name": "api-leads"}, "permission": "write"}
+                        ]
+                    }
+                    self._send_json(payload)
+                    return
+
+            # Route: /2.0/workspaces/{workspace}/permissions-config/groups
+            if "permissions-config/groups" in path and "workspaces" in path:
+                request_counts["permissions_groups"] += 1
+                payload = {
+                    "values": [
+                        {"group": {"name": "admins"}, "permission": "admin"},
+                        {"group": {"name": "developers"}, "permission": "read"},
+                    ]
+                }
+                self._send_json(payload)
+                return
+
+            self.send_response(404)
+            self.end_headers()
+
+        def _send_json(self, data: Any) -> None:
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            self.wfile.write(json.dumps(data).encode("utf-8"))
+
+    server = http.server.HTTPServer(("127.0.0.1", 0), MockCloudHandler)
+    server_addr = server.server_address
+    port = server_addr[1]
+    base_url = f"http://127.0.0.1:{port}/2.0"
+
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+
+    try:
+        yield {
+            "base_url": base_url,
+            "workspace": workspace_slug,
+            "project_key": project_key,
+            "repo_slug": repo_slug,
+            "token": auth_token,
+            "request_counts": request_counts,
+        }
+    finally:
+        server.shutdown()
+        server.server_close()
