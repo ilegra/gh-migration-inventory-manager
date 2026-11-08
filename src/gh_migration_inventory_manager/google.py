@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import re
 import time
 from dataclasses import dataclass, field
@@ -29,6 +30,8 @@ from gh_migration_inventory_manager.inventory import (
     format_migration_month,
 )
 from gh_migration_inventory_manager.scrap import NormalizedRole, normalize_role
+
+logger = logging.getLogger(__name__)
 
 
 class SpreadsheetError(InventoryError):
@@ -1194,6 +1197,12 @@ class Spreadsheet:
             matrix = [self._to_sheet_row(r) for r in chunk]
             append_range = f"{self.sheet_name}!A:{self._end_column}"
             body = {"values": matrix}
+            logger.info(
+                "Batch appending %d rows to '%s' tab (chunk offset %d)",
+                len(chunk),
+                self.sheet_name,
+                i,
+            )
             res = self._execute(
                 self._service.spreadsheets()
                 .values()
@@ -1213,6 +1222,12 @@ class Spreadsheet:
             match = _RANGE_PATTERN.search(updated_range)
             if match:
                 start_row = int(match.group(1))
+                logger.debug(
+                    "Batch append allocated row indices %d to %d in '%s'",
+                    start_row,
+                    start_row + len(chunk) - 1,
+                    self.sheet_name,
+                )
                 for offset, r in enumerate(chunk):
                     r.row_index = start_row + offset
                     r.values = matrix[offset]
@@ -1273,6 +1288,12 @@ class Spreadsheet:
                 "valueInputOption": "USER_ENTERED",
                 "data": data,
             }
+            logger.info(
+                "Batch updating %d rows in '%s' tab (chunk offset %d)",
+                len(chunk),
+                self.sheet_name,
+                i,
+            )
             self._execute(
                 self._service.spreadsheets()
                 .values()
@@ -1280,6 +1301,11 @@ class Spreadsheet:
                     spreadsheetId=self.id,
                     body=body,
                 )
+            )
+            logger.debug(
+                "Batch update completed for %d rows in '%s'",
+                len(chunk),
+                self.sheet_name,
             )
         return rows
 

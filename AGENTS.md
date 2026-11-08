@@ -69,4 +69,25 @@ tests/
 - **Execution & Isolation Constraints**: Run against configured local test containers or integration environments. Avoid parallel execution when tests share state or external resources to prevent race conditions and cross-test contamination.
 - **Realistic Data Flows**: Validate end-to-end persistence, network retry behaviors, payload serialization, and live integration boundaries using representative domain data.
 
+### 5. Logging Guidelines & Standards
+
+- **Default Level**: The application-wide default logging level is `INFO`. Operational execution should provide meaningful progress and lifecycle visibility out-of-the-box without inundating stdout/stderr.
+- **Logger Initialization**: Always declare a module-level logger via standard library:
+  ```python
+  import logging
+
+  logger = logging.getLogger(__name__)
+  ```
+- **Level Standards & Criteria**:
+  - `DEBUG`: Fine-grained operational tracing and diagnostic diagnostics intended for debugging and troubleshooting.
+    - *When to use*: Detailed in-memory diff breakdowns (counts of added, updated, unchanged records per entity key), skipped malformed spreadsheet rows (with row index and reason), chunk partition sizes and ranges during batch processing, raw response status and parsed entity keys.
+  - `INFO`: Coarse-grained operational milestones and lifecycle progress markers (default visibility).
+    - *When to use*: Initiation and completion of inventory synchronization workflows, high-level summary metrics (e.g., `"Synchronized %d records (added=%d, updated=%d, unchanged=%d)"`), start and completion of batch persistence chunks to external storage (e.g., `"Batch appending %d rows to '%s' tab..."`).
+  - `ERROR`: Unrecoverable errors, unexpected operational failures, network drops, or corrupt configuration states.
+    - *When to use*: Unhandled exceptions, failed non-retriable Google Sheets API executions, authentication failures, missing/corrupted credential files, or fatal payload conversions before domain exception translation.
+- **Rules of Conduct**:
+  - **Zero Secret Leakage**: Never log credentials, bearer tokens, passwords, API keys, or private authorization headers.
+  - **Parameterized Formatting**: Use parameterized format arguments (`logger.info("Processed %d items", count)`) rather than f-strings to avoid unnecessary string interpolation overhead when log levels are inactive.
+  - **Domain Separation**: Do not pollute pure dataclasses or abstract structural protocols with logging statements. Logging belongs within service orchestrators, diff computation engines, transport adapters, and CLI dispatchers.
+
 ---

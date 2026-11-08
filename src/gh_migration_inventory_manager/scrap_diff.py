@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Iterable
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -15,6 +16,8 @@ from gh_migration_inventory_manager.inventory import (
     TeamRecord,
     validate_migration_status,
 )
+
+logger = logging.getLogger(__name__)
 
 T = TypeVar("T")
 
@@ -83,6 +86,10 @@ class RepositoryDiffer:
         if incoming_records is None:
             raise ValueError("Records collection cannot be None.")
 
+        logger.debug(
+            "Computing repository diff against %d existing rows", len(existing_rows)
+        )
+
         from gh_migration_inventory_manager.google import RowConverter
 
         # Build in-memory index of existing rows
@@ -95,6 +102,10 @@ class RepositoryDiffer:
             try:
                 rec = RowConverter.to_inventory_record(row)
             except Exception:  # nosec B112
+                logger.debug(
+                    "Skipping unparseable row at index %s",
+                    getattr(row, "row_index", None),
+                )
                 continue
 
             r_name = (rec.name or "").strip().lower()
@@ -193,6 +204,12 @@ class RepositoryDiffer:
                 self._apply_status_timestamps(new_record, valid_status)
                 diff.to_add.append(new_record)
 
+        logger.debug(
+            "Repository diff computed: to_add=%d, to_update=%d, unchanged=%d",
+            len(diff.to_add),
+            len(diff.to_update),
+            len(diff.unchanged),
+        )
         return diff
 
 
@@ -210,6 +227,10 @@ class PipelineDiffer:
         if incoming_records is None:
             raise ValueError("Records collection cannot be None.")
 
+        logger.debug(
+            "Computing pipeline diff against %d existing rows", len(existing_rows)
+        )
+
         from gh_migration_inventory_manager.google import WorkflowRowConverter
 
         exact_index: dict[str, tuple[PipelineRecord, int]] = {}
@@ -220,6 +241,10 @@ class PipelineDiffer:
             try:
                 rec = WorkflowRowConverter.to_pipeline_record(row)
             except Exception:  # nosec B112
+                logger.debug(
+                    "Skipping unparseable row at index %s",
+                    getattr(row, "row_index", None),
+                )
                 continue
             workflow_id = (rec.workflow_id or "").strip().lower()
             if workflow_id:
@@ -282,6 +307,12 @@ class PipelineDiffer:
             else:
                 diff.to_add.append(incoming)
 
+        logger.debug(
+            "Pipeline diff computed: to_add=%d, to_update=%d, unchanged=%d",
+            len(diff.to_add),
+            len(diff.to_update),
+            len(diff.unchanged),
+        )
         return diff
 
 
@@ -299,6 +330,8 @@ class TeamDiffer:
         if incoming_records is None:
             raise ValueError("Records collection cannot be None.")
 
+        logger.debug("Computing team diff against %d existing rows", len(existing_rows))
+
         from gh_migration_inventory_manager.google import TeamRowConverter
 
         exact_index: dict[tuple[str, str], tuple[TeamRecord, int]] = {}
@@ -309,6 +342,10 @@ class TeamDiffer:
             try:
                 rec = TeamRowConverter.to_team_record(row)
             except Exception:  # nosec B112
+                logger.debug(
+                    "Skipping unparseable row at index %s",
+                    getattr(row, "row_index", None),
+                )
                 continue
             slug = (rec.team_slug or "").strip().lower()
             target = (rec.target_repo_or_project or "").strip().lower()
@@ -361,6 +398,12 @@ class TeamDiffer:
             else:
                 diff.to_add.append(incoming)
 
+        logger.debug(
+            "Team diff computed: to_add=%d, to_update=%d, unchanged=%d",
+            len(diff.to_add),
+            len(diff.to_update),
+            len(diff.unchanged),
+        )
         return diff
 
 
@@ -407,6 +450,10 @@ class PolicyDiffer:
         if incoming_records is None:
             raise ValueError("Records collection cannot be None.")
 
+        logger.debug(
+            "Computing policy diff against %d existing rows", len(existing_rows)
+        )
+
         from gh_migration_inventory_manager.google import PolicyRowConverter
 
         exact_index: dict[tuple[str, str, str], tuple[PolicyRecord, int]] = {}
@@ -424,6 +471,10 @@ class PolicyDiffer:
                     row.row_index,
                 )
             except Exception:  # nosec B112
+                logger.debug(
+                    "Skipping unparseable row at index %s",
+                    getattr(row, "row_index", None),
+                )
                 continue
 
         diff = RecordDiff[PolicyRecord]()
@@ -469,4 +520,10 @@ class PolicyDiffer:
             else:
                 diff.to_add.append(incoming)
 
+        logger.debug(
+            "Policy diff computed: to_add=%d, to_update=%d, unchanged=%d",
+            len(diff.to_add),
+            len(diff.to_update),
+            len(diff.unchanged),
+        )
         return diff

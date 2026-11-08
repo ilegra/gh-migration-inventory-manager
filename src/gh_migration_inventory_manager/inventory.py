@@ -2,12 +2,15 @@
 
 from __future__ import annotations
 
+import logging
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from enum import Enum
 from pathlib import Path
 from typing import Any, Protocol
+
+logger = logging.getLogger(__name__)
 
 
 class InventoryError(Exception):
@@ -596,6 +599,9 @@ class Inventory:
 
         from gh_migration_inventory_manager.google import RowConverter
 
+        logger.info(
+            "Synchronizing %d repository records with inventory", len(records_list)
+        )
         diff = self.compute_diff(records_list)
         synced: list[InventoryRecord] = []
 
@@ -604,6 +610,10 @@ class Inventory:
             if _can_batch_add(sheet):
                 sheet.batch_add(rows_to_add)
             else:
+                logger.debug(
+                    "Batch add unsupported by client; appending %d rows sequentially",
+                    len(rows_to_add),
+                )
                 for r in rows_to_add:
                     sheet.add(r)
             synced.extend(diff.to_add)
@@ -616,11 +626,22 @@ class Inventory:
             if _can_batch_update(sheet):
                 sheet.batch_update_rows(rows_to_update)
             else:
+                logger.debug(
+                    "Batch update unsupported by client; updating %d rows sequentially",
+                    len(rows_to_update),
+                )
                 for r in rows_to_update:
                     sheet.update_row(r)
             synced.extend([up.record for up in diff.to_update])
 
         synced.extend(diff.unchanged)
+        logger.info(
+            "Sync complete: %d synced (added=%d, updated=%d, unchanged=%d)",
+            len(synced),
+            len(diff.to_add),
+            len(diff.to_update),
+            len(diff.unchanged),
+        )
         return synced
 
     def register_repository(
@@ -936,6 +957,10 @@ class PipelineInventory:
 
         from gh_migration_inventory_manager.google import WorkflowRowConverter
 
+        logger.info(
+            "Synchronizing %d pipeline records with workflows inventory",
+            len(records_list),
+        )
         diff = self.compute_diff(records_list)
         synced: list[PipelineRecord] = []
 
@@ -947,6 +972,10 @@ class PipelineInventory:
             if _can_batch_add(sheet):
                 sheet.batch_add(rows_to_add)
             else:
+                logger.debug(
+                    "Batch add unsupported; appending %d pipeline rows sequentially",
+                    len(rows_to_add),
+                )
                 for r in rows_to_add:
                     sheet.add(r)
             synced.extend(diff.to_add)
@@ -961,11 +990,22 @@ class PipelineInventory:
             if _can_batch_update(sheet):
                 sheet.batch_update_rows(rows_to_update)
             else:
+                logger.debug(
+                    "Batch update unsupported; updating %d pipeline rows sequentially",
+                    len(rows_to_update),
+                )
                 for r in rows_to_update:
                     sheet.update_row(r)
             synced.extend([up.record for up in diff.to_update])
 
         synced.extend(diff.unchanged)
+        logger.info(
+            "Sync complete: %d synced (added=%d, updated=%d, unchanged=%d)",
+            len(synced),
+            len(diff.to_add),
+            len(diff.to_update),
+            len(diff.unchanged),
+        )
         return synced
 
 
@@ -1267,6 +1307,9 @@ class TeamInventory:
 
         from gh_migration_inventory_manager.google import TeamRowConverter
 
+        logger.info(
+            "Synchronizing %d team records with topology inventory", len(records_list)
+        )
         diff = self.compute_diff(records_list)
         synced: list[TeamRecord] = []
 
@@ -1278,6 +1321,10 @@ class TeamInventory:
             if _can_batch_add(sheet):
                 sheet.batch_add(rows_to_add)
             else:
+                logger.debug(
+                    "Batch add unsupported; appending %d team rows sequentially",
+                    len(rows_to_add),
+                )
                 for r in rows_to_add:
                     sheet.add(r)
             synced.extend(diff.to_add)
@@ -1290,11 +1337,22 @@ class TeamInventory:
             if _can_batch_update(sheet):
                 sheet.batch_update_rows(rows_to_update)
             else:
+                logger.debug(
+                    "Batch update unsupported; updating %d team rows sequentially",
+                    len(rows_to_update),
+                )
                 for r in rows_to_update:
                     sheet.update_row(r)
             synced.extend([up.record for up in diff.to_update])
 
         synced.extend(diff.unchanged)
+        logger.info(
+            "Sync complete: %d synced (added=%d, updated=%d, unchanged=%d)",
+            len(synced),
+            len(diff.to_add),
+            len(diff.to_update),
+            len(diff.unchanged),
+        )
         return synced
 
 
@@ -1624,6 +1682,9 @@ class PolicyInventory:
 
         from gh_migration_inventory_manager.google import PolicyRowConverter
 
+        logger.info(
+            "Synchronizing %d policy records with policies inventory", len(records_list)
+        )
         diff = self.compute_diff(records_list)
         synced: list[PolicyRecord] = []
 
@@ -1635,6 +1696,10 @@ class PolicyInventory:
             if _can_batch_add(sheet):
                 sheet.batch_add(rows_to_add)
             else:
+                logger.debug(
+                    "Batch add unsupported; appending %d policy rows sequentially",
+                    len(rows_to_add),
+                )
                 for r in rows_to_add:
                     sheet.add(r)
             synced.extend(diff.to_add)
@@ -1647,11 +1712,22 @@ class PolicyInventory:
             if _can_batch_update(sheet):
                 sheet.batch_update_rows(rows_to_update)
             else:
+                logger.debug(
+                    "Batch update unsupported; updating %d policy rows sequentially",
+                    len(rows_to_update),
+                )
                 for r in rows_to_update:
                     sheet.update_row(r)
             synced.extend([up.record for up in diff.to_update])
 
         synced.extend(diff.unchanged)
+        logger.info(
+            "Sync complete: %d synced (added=%d, updated=%d, unchanged=%d)",
+            len(synced),
+            len(diff.to_add),
+            len(diff.to_update),
+            len(diff.unchanged),
+        )
         return synced
 
 
