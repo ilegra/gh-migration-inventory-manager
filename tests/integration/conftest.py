@@ -874,7 +874,8 @@ def bitbucket_cloud_server() -> Generator[dict[str, Any], None, None]:
             self.wfile.write(json.dumps(data).encode("utf-8"))
 
     server = http.server.HTTPServer(("127.0.0.1", 0), MockCloudHandler)
-    host, port = server.server_address
+    server_addr = server.server_address
+    port = server_addr[1]
     base_url = f"http://127.0.0.1:{port}/2.0"
 
     thread = threading.Thread(target=server.serve_forever, daemon=True)
