@@ -408,6 +408,35 @@ def _detect_stacks(file_paths: list[str]) -> list[Stack]:
     return sorted(detected) if detected else [Stack.UNKNOWN]
 
 
+_LANGUAGE_STACK_MAP: dict[str, list[Stack]] = {
+    "java": [Stack.JAVA],
+    "python": [Stack.PYTHON],
+    "typescript": [Stack.TYPESCRIPT],
+    "javascript": [Stack.TYPESCRIPT],
+    "ts": [Stack.TYPESCRIPT],
+    "js": [Stack.TYPESCRIPT],
+    "c#": [Stack.C_SHARP, Stack.DOTNET_CORE],
+    "csharp": [Stack.C_SHARP, Stack.DOTNET_CORE],
+    "c_sharp": [Stack.C_SHARP, Stack.DOTNET_CORE],
+    "c sharp": [Stack.C_SHARP, Stack.DOTNET_CORE],
+    "dotnet": [Stack.DOTNET_CORE, Stack.C_SHARP],
+    ".net": [Stack.DOTNET_CORE, Stack.C_SHARP],
+    "terraform": [Stack.TERRAFORM],
+    "hcl": [Stack.TERRAFORM],
+    "bash": [Stack.BASH],
+    "shell": [Stack.BASH],
+    "sh": [Stack.BASH],
+}
+
+
+def _detect_stacks_from_language(language: str | None) -> list[Stack]:
+    """Map primary language reported by Bitbucket Cloud to Stack enum list."""
+    if not language or not isinstance(language, str):
+        return [Stack.UNKNOWN]
+    clean_lang = language.lower().strip()
+    return _LANGUAGE_STACK_MAP.get(clean_lang, [Stack.UNKNOWN])
+
+
 def _parse_commit_timestamp(commit: dict[str, Any] | None) -> datetime | None:
     """Parse Bitbucket Cloud ISO commit timestamp into UTC datetime."""
     if not commit or not isinstance(commit, dict):
@@ -538,19 +567,23 @@ class BitbucketCloudRepositoryScraper(RepositoryScraper):
                 org = self.organization or ws
                 default_branch = self._resolve_default_branch(repo, ws, slug)
 
+                updated_str = repo.get("updated_on")
                 last_commit_dt: datetime | None = None
-                try:
-                    commit = self.client.get_last_commit(ws, slug)
-                    last_commit_dt = _parse_commit_timestamp(commit)
-                except ScraperError:
-                    last_commit_dt = None
+                if updated_str and isinstance(updated_str, str):
+                    try:
+                        last_commit_dt = datetime.fromisoformat(
+                            updated_str.strip().replace("Z", "+00:00")
+                        )
+                    except (ValueError, TypeError):
+                        last_commit_dt = None
 
-                files: list[str] = []
-                try:
-                    files = self.client.get_repository_files(ws, slug, limit=100)
-                except ScraperError:
-                    files = []
-                stacks = _detect_stacks(files)
+                lang_raw = repo.get("language")
+                lang = (
+                    str(lang_raw).lower().strip()
+                    if lang_raw and isinstance(lang_raw, str)
+                    else ""
+                )
+                stacks = _detect_stacks_from_language(lang)
 
                 repositories.append(
                     Repository(
@@ -748,8 +781,21 @@ class BitbucketCloudPolicyScraper(PolicyScraper):
                         policy = self._map_restriction_to_policy(item, ws, p_key, slug)
                         if policy:
                             policies.append(policy)
-                except ScraperError:
-                    pass
+                except ScraperAuthenticationError as auth_err:
+                    logger.warning(
+                        "Bitbucket Cloud credentials lack permission to read branch "
+                        "restrictions: %s. Skipping.",
+                        auth_err,
+                    )
+                    break
+                except ScraperError as err:
+                    if "403" in str(err) or "lack one or more" in str(err):
+                        logger.warning(
+                            "Bitbucket Cloud credentials lack permission: %s. "
+                            "Skipping.",
+                            err,
+                        )
+                        break
 
         return policies
 
@@ -846,7 +892,20 @@ class BitbucketCloudTeamScraper(TeamScraper):
                         p_key = p_obj.get("key", "") if isinstance(p_obj, dict) else ""
                         repo_targets.append({"slug": slug, "project_key": p_key})
 
+                seen_projects: set[str] = set()
+                sampled_targets: list[dict[str, str]] = []
                 for target in repo_targets:
+                    p_key = target["project_key"] or "DEFAULT"
+                    if (
+                        p_key not in seen_projects
+                        or len(sampled_targets) < len(seen_projects) * 2
+                    ):
+                        seen_projects.add(p_key)
+                        sampled_targets.append(target)
+                    if len(sampled_targets) >= 150:
+                        break
+
+                for target in sampled_targets:
                     slug = target["slug"]
                     p_key = target["project_key"]
                     try:
@@ -881,8 +940,21 @@ class BitbucketCloudTeamScraper(TeamScraper):
                                     },
                                 )
                             )
-                    except ScraperError:
-                        pass
+                    except ScraperAuthenticationError as auth_err:
+                        logger.warning(
+                            "Bitbucket Cloud credentials lack permission to read "
+                            "repository groups: %s. Skipping.",
+                            auth_err,
+                        )
+                        break
+                    except ScraperError as err:
+                        if "403" in str(err) or "lack one or more" in str(err):
+                            logger.warning(
+                                "Bitbucket Cloud credentials lack permission to "
+                                "read repository groups: %s. Skipping.",
+                                err,
+                            )
+                            break
 
         return permissions
 
