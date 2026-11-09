@@ -1273,6 +1273,20 @@ def test_given_jenkins_client_when_fetching_config_xml_with_http_404_then_return
     assert xml_data is None
 
 
+def test_given_path_with_trailing_whitespace_when_fetching_config_xml_then_preserves_trailing_spaces() -> (
+    None
+):
+    """Test get_config_xml preserves trailing whitespace on relative job paths."""
+    mock_pool = MagicMock(spec=urllib3.PoolManager)
+    mock_pool.request.return_value = _make_http_response(200, "<project/>")
+
+    client = JenkinsClient("http://jenkins:8080", pool_manager=mock_pool)
+    client.get_config_xml("job/spaced-job /")
+
+    called_url = mock_pool.request.call_args[0][1]
+    assert called_url == "http://jenkins:8080/job/spaced-job /config.xml"
+
+
 def test_given_path_with_spaces_and_special_chars_when_getting_json_then_encodes_job_path_segments() -> (
     None
 ):
@@ -1287,6 +1301,41 @@ def test_given_path_with_spaces_and_special_chars_when_getting_json_then_encodes
     assert (
         called_url
         == "http://jenkins:8080/job/Platform%20Services/job/Job%20Alpha%20%5Brelease%5D/api/json"
+    )
+
+
+def test_given_path_with_trailing_whitespace_in_segments_when_getting_json_then_preserves_encoded_spaces() -> (
+    None
+):
+    """Test get_json preserves trailing whitespace on folder and job segments, encoding to %20."""
+    mock_pool = MagicMock(spec=urllib3.PoolManager)
+    mock_pool.request.return_value = _make_http_response(200, {"jobs": []})
+
+    client = JenkinsClient("http://jenkins:8080", pool_manager=mock_pool)
+    client.get_json(
+        "Aplicacoes/nfs-data-science/nfs-data-science-collection-mex-legacy "
+    )
+
+    called_url = mock_pool.request.call_args[0][1]
+    assert called_url == (
+        "http://jenkins:8080/job/Aplicacoes/job/nfs-data-science/"
+        "job/nfs-data-science-collection-mex-legacy%20/api/json"
+    )
+
+
+def test_given_nested_folder_with_intermediate_and_trailing_whitespace_when_getting_json_then_encodes_all_segments() -> (
+    None
+):
+    """Test get_json preserves trailing whitespace on both intermediate and terminal folder segments."""
+    mock_pool = MagicMock(spec=urllib3.PoolManager)
+    mock_pool.request.return_value = _make_http_response(200, {"jobs": []})
+
+    client = JenkinsClient("http://jenkins:8080", pool_manager=mock_pool)
+    client.get_json("Platform /Team Alpha ")
+
+    called_url = mock_pool.request.call_args[0][1]
+    assert (
+        called_url == "http://jenkins:8080/job/Platform%20/job/Team%20Alpha%20/api/json"
     )
 
 
