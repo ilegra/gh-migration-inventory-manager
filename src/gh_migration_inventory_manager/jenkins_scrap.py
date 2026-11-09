@@ -138,9 +138,13 @@ class JenkinsClient:
             ScraperConnectionError: If network disconnect or timeout occurs.
             ScraperError: For other HTTP errors or malformed payloads.
         """
-        clean_path = path.strip().strip("/")
+        clean_path = path.strip("/")
         if clean_path:
-            parts = [p for p in clean_path.split("/") if p and p != "job"]
+            parts = [
+                p.strip("/")
+                for p in clean_path.split("/")
+                if p.strip("/") and p != "job"
+            ]
             clean_path = "/".join(
                 f"job/{urllib.parse.quote(urllib.parse.unquote(p))}" for p in parts
             )
@@ -206,7 +210,7 @@ class JenkinsClient:
         Returns:
             The raw XML configuration string if accessible, or None on error.
         """
-        clean_path = path.strip().strip("/")
+        clean_path = path.strip("/")
         if clean_path.startswith(("http://", "https://")):
             endpoint = (
                 clean_path
