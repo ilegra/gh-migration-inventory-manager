@@ -1271,3 +1271,124 @@ def test_given_jenkins_client_when_fetching_config_xml_with_http_404_then_return
     xml_data = client.get_config_xml("job/missing-service/config.xml")
 
     assert xml_data is None
+
+
+def test_given_path_with_spaces_and_special_chars_when_getting_json_then_encodes_job_path_segments() -> (
+    None
+):
+    """Test get_json properly URL-quotes path segments containing spaces and symbols."""
+    mock_pool = MagicMock(spec=urllib3.PoolManager)
+    mock_pool.request.return_value = _make_http_response(200, {"jobs": []})
+
+    client = JenkinsClient("http://jenkins:8080", pool_manager=mock_pool)
+    client.get_json("Platform Services/Job Alpha [release]")
+
+    called_url = mock_pool.request.call_args[0][1]
+    assert (
+        called_url
+        == "http://jenkins:8080/job/Platform%20Services/job/Job%20Alpha%20%5Brelease%5D/api/json"
+    )
+
+
+def test_given_nested_folder_path_when_getting_json_then_formats_interleaved_job_segments() -> (
+    None
+):
+    """Test get_json formats paths into Jenkins canonical job/ hierarchy and prevents duplication."""
+    mock_pool = MagicMock(spec=urllib3.PoolManager)
+    mock_pool.request.return_value = _make_http_response(200, {"jobs": []})
+
+    client = JenkinsClient("http://jenkins:8080", pool_manager=mock_pool)
+    client.get_json("job/folder1/job/folder2/subfolder3")
+
+    called_url = mock_pool.request.call_args[0][1]
+    assert (
+        called_url
+        == "http://jenkins:8080/job/folder1/job/folder2/job/subfolder3/api/json"
+    )
+
+
+def test_given_subfolder_returning_http_500_when_traversing_then_logs_warning_and_continues_other_folders(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Test subfolders failing with ScraperError are skipped without aborting remaining folders."""
+    mock_transport = MagicMock(spec=JenkinsTransport)
+    mock_transport.base_url = "http://jenkins:8080"
+
+    root_payload = {
+        "jobs": [
+            {
+                "name": "broken-folder",
+                "url": "http://jenkins:8080/job/broken-folder/",
+                "_class": "com.cloudbees.hudson.plugins.folder.Folder",
+            },
+            {
+                "name": "healthy-folder",
+                "url": "http://jenkins:8080/job/healthy-folder/",
+                "_class": "com.cloudbees.hudson.plugins.folder.Folder",
+            },
+        ]
+    }
+    healthy_folder_payload = {
+        "jobs": [
+            {
+                "name": "healthy-job",
+                "url": "http://jenkins:8080/job/healthy-folder/job/healthy-job/",
+                "_class": "org.jenkinsci.plugins.workflow.job.WorkflowJob",
+            }
+        ]
+    }
+
+    def _mock_get_json(path: str, tree: str | None = None) -> dict[str, Any]:
+        if path == "":
+            return root_payload
+        if path == "broken-folder":
+            raise ScraperError("Jenkins 500 Server Error: corrupted view")
+        if path == "healthy-folder":
+            return healthy_folder_payload
+        return {}
+
+    mock_transport.get_json.side_effect = _mock_get_json
+
+    scraper = JenkinsPipelineScraper(client=mock_transport, tree_depth=3)
+    with caplog.at_level("WARNING"):
+        pipelines = scraper.scrape()
+
+    assert len(pipelines) == 1
+    assert pipelines[0].name == "healthy-job"
+    assert "Skipping folder 'broken-folder' due to error" in caplog.text
+
+
+def test_given_root_folder_returning_http_500_when_traversing_then_raises_scraper_error() -> (
+    None
+):
+    """Test ScraperError at root level (current_depth == 1) is not swallowed."""
+    mock_transport = MagicMock(spec=JenkinsTransport)
+    mock_transport.base_url = "http://jenkins:8080"
+    mock_transport.get_json.side_effect = ScraperError("Jenkins 500 Root Failure")
+
+    scraper = JenkinsPipelineScraper(client=mock_transport, tree_depth=3)
+    with pytest.raises(ScraperError, match="Jenkins 500 Root Failure"):
+        scraper.scrape()
+
+
+def test_given_job_name_with_whitespace_when_scraping_then_preserves_exact_job_name() -> (
+    None
+):
+    """Test job names preserve leading and trailing whitespace without trimming."""
+    mock_transport = MagicMock(spec=JenkinsTransport)
+    mock_transport.base_url = "http://jenkins:8080"
+    mock_transport.get_json.return_value = {
+        "jobs": [
+            {
+                "name": "  spaced-job-name  ",
+                "url": "http://jenkins:8080/job/spaced-job-name/",
+                "_class": "hudson.model.FreeStyleProject",
+            }
+        ]
+    }
+
+    scraper = JenkinsPipelineScraper(client=mock_transport)
+    pipelines = scraper.scrape()
+
+    assert len(pipelines) == 1
+    assert pipelines[0].name == "  spaced-job-name  "

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import base64
 import json
+import logging
 import re
 import urllib.parse
 import xml.etree.ElementTree as ET  # nosec B405
@@ -28,6 +29,8 @@ from gh_migration_inventory_manager.scrap import (
     TokenAuthenticator,
     default_scraper_registry,
 )
+
+logger = logging.getLogger(__name__)
 
 
 @runtime_checkable
@@ -136,6 +139,11 @@ class JenkinsClient:
             ScraperError: For other HTTP errors or malformed payloads.
         """
         clean_path = path.strip().strip("/")
+        if clean_path:
+            parts = [p for p in clean_path.split("/") if p and p != "job"]
+            clean_path = "/".join(
+                f"job/{urllib.parse.quote(urllib.parse.unquote(p))}" for p in parts
+            )
         endpoint = (
             f"{self.base_url}/{clean_path}/api/json"
             if clean_path
@@ -731,6 +739,11 @@ class JenkinsPipelineScraper(PipelineScraper):
             except ScraperError as err:
                 if start > 0 and ("500" in str(err) or "IndexOutOfBounds" in str(err)):
                     break
+                if current_depth > 1:
+                    logger.warning(
+                        "Skipping folder '%s' due to error: %s", folder_path, err
+                    )
+                    return []
                 raise
 
             batch = payload.get("jobs", [])
@@ -749,7 +762,7 @@ class JenkinsPipelineScraper(PipelineScraper):
             if not isinstance(job, dict):
                 continue
 
-            name = str(job.get("name", "")).strip()
+            name = str(job.get("name") or "")
             job_class = str(job.get("_class", ""))
             url = str(job.get("url", "")).strip()
 
