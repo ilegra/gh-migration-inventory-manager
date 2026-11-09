@@ -865,6 +865,36 @@ def test_given_empty_url_when_parsing_scm_url_then_returns_none_project_and_empt
     assert repo == ""
 
 
+def test_given_bracketed_invalid_ipv6_url_when_parsing_scm_url_then_gracefully_extracts_project_and_repo() -> (
+    None
+):
+    """Test bracketed host URLs with invalid IPv6 syntax gracefully parse without raising ValueError."""
+    proj, repo = JenkinsPipelineScraper.parse_scm_url(
+        "http://[git-server]/project/repo.git"
+    )
+    assert proj == "project"
+    assert repo == "repo"
+
+    proj, repo = JenkinsPipelineScraper.parse_scm_url(
+        "https://[SERVER_NAME]/scm/PROJ/repo.git"
+    )
+    assert proj == "PROJ"
+    assert repo == "repo"
+
+    proj, repo = JenkinsPipelineScraper.parse_scm_url("https://[invalid-ipv6/repo.git")
+    assert proj is None
+    assert repo == "repo"
+
+
+def test_given_bracketed_single_segment_url_when_parsing_scm_url_then_returns_none_project_and_repo() -> (
+    None
+):
+    """Test bracketed URL with only single segment returns None project."""
+    proj, repo = JenkinsPipelineScraper.parse_scm_url("https://[GIT_SERVER]/repo.git")
+    assert proj is None
+    assert repo == "repo"
+
+
 def test_given_bitbucket_scm_source_with_repo_owner_when_scraping_then_extracts_project_and_repository() -> (
     None
 ):
