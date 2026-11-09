@@ -751,6 +751,8 @@ def bitbucket_cloud_server() -> Generator[dict[str, Any], None, None]:
                                     },
                                     "mainbranch": {"name": "main"},
                                     "archived": False,
+                                    "language": "java",
+                                    "updated_on": "2026-11-01T12:00:00+00:00",
                                 }
                             ],
                         }
@@ -775,6 +777,8 @@ def bitbucket_cloud_server() -> Generator[dict[str, Any], None, None]:
                                     },
                                     "mainbranch": {"name": "master"},
                                     "archived": False,
+                                    "language": "terraform",
+                                    "updated_on": "2026-11-01T12:00:00+00:00",
                                 }
                             ],
                         }

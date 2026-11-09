@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from datetime import datetime, timezone
 from unittest.mock import MagicMock
 
 import pytest
@@ -212,15 +213,17 @@ class TestBitbucketCloudRepositoryScraper:
                     ]
                 },
                 "mainbranch": {"name": "main"},
+                "updated_on": "2026-11-01T10:00:00Z",
+                "language": "java",
             }
         ]
-        mock_client.get_last_commit.return_value = {"date": "2026-11-01T10:00:00Z"}
-        mock_client.get_repository_files.return_value = ["pom.xml", "src/Main.java"]
 
         scraper = BitbucketCloudRepositoryScraper(workspace="corp", client=mock_client)
         repos = scraper.scrape()
 
         mock_client.get_workspaces.assert_not_called()
+        mock_client.get_last_commit.assert_not_called()
+        mock_client.get_repository_files.assert_not_called()
         mock_client.get_repositories.assert_called_once_with(
             workspace="corp", project_key=None, limit=100
         )
@@ -823,3 +826,151 @@ class TestBitbucketCloudCoverageAndBranching:
         )
         assert "admin-group" in bypasses
         assert "dev-team" in bypasses
+
+    def test_given_repo_payload_with_languages_when_scraping_then_extracts_canonical_stacks_without_network_calls(
+        self,
+    ) -> None:
+        mock_client = MagicMock(spec=BitbucketCloudClient)
+        mock_client.get_repositories.return_value = [
+            {
+                "slug": "py-repo",
+                "language": "python",
+                "updated_on": "2026-11-02T12:00:00Z",
+            },
+            {
+                "slug": "ts-repo",
+                "language": "typescript",
+                "updated_on": "2026-11-03T12:00:00+00:00",
+            },
+            {"slug": "cs-repo", "language": "c#", "updated_on": "2026-11-04T12:00:00Z"},
+            {
+                "slug": "tf-repo",
+                "language": "terraform",
+                "updated_on": "2026-11-05T12:00:00Z",
+            },
+            {
+                "slug": "sh-repo",
+                "language": "shell",
+                "updated_on": "2026-11-06T12:00:00Z",
+            },
+        ]
+        scraper = BitbucketCloudRepositoryScraper(workspace="ws", client=mock_client)
+        repos = scraper.scrape()
+
+        mock_client.get_last_commit.assert_not_called()
+        mock_client.get_repository_files.assert_not_called()
+        assert len(repos) == 5
+        assert repos[0].stacks == [Stack.PYTHON]
+        assert repos[0].last_commit == datetime(2026, 11, 2, 12, 0, tzinfo=timezone.utc)
+        assert repos[1].stacks == [Stack.TYPESCRIPT]
+        assert Stack.C_SHARP in repos[2].stacks
+        assert Stack.TERRAFORM in repos[3].stacks
+        assert Stack.BASH in repos[4].stacks
+
+    def test_given_repo_payload_with_invalid_or_missing_updated_on_when_scraping_then_tolerates_none_commit(
+        self,
+    ) -> None:
+        mock_client = MagicMock(spec=BitbucketCloudClient)
+        mock_client.get_repositories.return_value = [
+            {"slug": "invalid-date", "updated_on": "not-a-date"},
+            {"slug": "none-date", "updated_on": None},
+        ]
+        scraper = BitbucketCloudRepositoryScraper(workspace="ws", client=mock_client)
+        repos = scraper.scrape()
+
+        assert len(repos) == 2
+        assert repos[0].last_commit is None
+        assert repos[1].last_commit is None
+
+    def test_given_auth_error_on_branch_restrictions_when_scraping_then_logs_warning_and_skips_workspace_repos(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        mock_client = MagicMock(spec=BitbucketCloudClient)
+        mock_client.get_repositories.return_value = [
+            {"slug": "repo1", "project": {"key": "P1"}},
+            {"slug": "repo2", "project": {"key": "P1"}},
+            {"slug": "repo3", "project": {"key": "P1"}},
+        ]
+        mock_client.get_branch_restrictions.side_effect = ScraperAuthenticationError(
+            "Bitbucket Cloud authentication failed with HTTP 403"
+        )
+
+        scraper = BitbucketCloudPolicyScraper(workspace="ws", client=mock_client)
+        with caplog.at_level("WARNING"):
+            policies = scraper.scrape()
+
+        assert policies == []
+        assert mock_client.get_branch_restrictions.call_count == 1
+        assert (
+            "Bitbucket Cloud credentials lack permission to read branch restrictions"
+            in caplog.text
+        )
+
+    def test_given_scraper_error_403_on_branch_restrictions_when_scraping_then_logs_warning_and_skips_workspace_repos(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        mock_client = MagicMock(spec=BitbucketCloudClient)
+        mock_client.get_repositories.return_value = [
+            {"slug": "repo1", "project": {"key": "P1"}},
+            {"slug": "repo2", "project": {"key": "P1"}},
+        ]
+        mock_client.get_branch_restrictions.side_effect = ScraperError(
+            "Bitbucket Cloud request failed with HTTP 403: lack one or more scopes"
+        )
+
+        scraper = BitbucketCloudPolicyScraper(workspace="ws", client=mock_client)
+        with caplog.at_level("WARNING"):
+            policies = scraper.scrape()
+
+        assert policies == []
+        assert mock_client.get_branch_restrictions.call_count == 1
+        assert "Bitbucket Cloud credentials lack permission" in caplog.text
+
+    def test_given_many_repositories_when_scraping_team_permissions_then_samples_per_project_and_caps_at_150(
+        self,
+    ) -> None:
+        mock_client = MagicMock(spec=BitbucketCloudClient)
+        mock_client.get_workspace_group_permissions.return_value = []
+        # Create 100 projects with 5 repos each = 500 repos
+        fake_repos = [
+            {"slug": f"repo-{p}-{r}", "project": {"key": f"PRJ-{p}"}}
+            for p in range(100)
+            for r in range(5)
+        ]
+        mock_client.get_repositories.return_value = fake_repos
+        mock_client.get_repository_group_permissions.return_value = []
+
+        scraper = BitbucketCloudTeamScraper(
+            workspace="ws", client=mock_client, include_repo_level=True
+        )
+        scraper.scrape()
+
+        # Sampling logic should cap at 150 repository group permission queries
+        assert mock_client.get_repository_group_permissions.call_count == 150
+
+    def test_given_auth_error_on_repo_group_permissions_when_scraping_then_logs_warning_and_breaks(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        mock_client = MagicMock(spec=BitbucketCloudClient)
+        mock_client.get_workspace_group_permissions.return_value = []
+        mock_client.get_repositories.return_value = [
+            {"slug": "repo1", "project": {"key": "P1"}},
+            {"slug": "repo2", "project": {"key": "P1"}},
+            {"slug": "repo3", "project": {"key": "P1"}},
+        ]
+        mock_client.get_repository_group_permissions.side_effect = (
+            ScraperAuthenticationError("403 Forbidden")
+        )
+
+        scraper = BitbucketCloudTeamScraper(
+            workspace="ws", client=mock_client, include_repo_level=True
+        )
+        with caplog.at_level("WARNING"):
+            perms = scraper.scrape()
+
+        assert perms == []
+        assert mock_client.get_repository_group_permissions.call_count == 1
+        assert (
+            "Bitbucket Cloud credentials lack permission to read repository groups"
+            in caplog.text
+        )
