@@ -443,13 +443,33 @@ class JenkinsPipelineScraper(PipelineScraper):
                 host = scp_match.group(1).lower()
                 path = scp_match.group(2).strip("/")
             else:
+                try:
+                    parsed = urllib.parse.urlsplit(clean_url)
+                    path = parsed.path.strip("/")
+                    host = (parsed.hostname or "").lower()
+                except ValueError as exc:
+                    logger.debug(
+                        "Failed to parse SCM URL '%s' via urlsplit: %s",
+                        clean_url,
+                        exc,
+                    )
+                    raw = re.sub(r"^[a-zA-Z][a-zA-Z0-9+.-]*://[^/]*", "", clean_url)
+                    path = raw.split("?")[0].split("#")[0].strip("/")
+                    host = ""
+        else:
+            try:
                 parsed = urllib.parse.urlsplit(clean_url)
                 path = parsed.path.strip("/")
                 host = (parsed.hostname or "").lower()
-        else:
-            parsed = urllib.parse.urlsplit(clean_url)
-            path = parsed.path.strip("/")
-            host = (parsed.hostname or "").lower()
+            except ValueError as exc:
+                logger.debug(
+                    "Failed to parse SCM URL '%s' via urlsplit: %s",
+                    clean_url,
+                    exc,
+                )
+                raw = re.sub(r"^[a-zA-Z][a-zA-Z0-9+.-]*://[^/]*", "", clean_url)
+                path = raw.split("?")[0].split("#")[0].strip("/")
+                host = ""
 
         path_lower = path.lower()
         if "projects/" in path_lower:
