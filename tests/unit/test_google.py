@@ -690,7 +690,7 @@ def test_given_persistent_http_429_when_executing_request_then_exhausts_retries_
 
 
 # ============================================================================
-# In-Memory Read Cache Tests (Issue #59)
+# In-Memory Read Cache Tests
 # ============================================================================
 
 
@@ -810,7 +810,7 @@ def test_given_warm_cache_when_adding_updating_and_clearing_rows_then_writes_thr
     assert mock_values.get.call_count == 1
 
     # Clear tab -> cache becomes empty {} without needing re-read
-    sheet._ensured_sheets.add("Inventario")
+    sheet.ensure_sheet("Inventario", headers=[], existing_sheets=["Inventario"])
     sheet.clear_tab()
     assert sheet.get_all_rows() == []
     assert mock_values.get.call_count == 1

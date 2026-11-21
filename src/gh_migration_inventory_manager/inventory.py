@@ -304,7 +304,45 @@ def _can_batch_update(sheet: Any) -> bool:
     )
 
 
-class Inventory:
+class _CacheableInventoryMixin:
+    """Shared cache configuration, locking, and invalidation helpers for inventories."""
+
+    spreadsheet: SpreadsheetClient | None
+    sheet_name: str
+    use_cache: bool
+    _lock: threading.RLock
+
+    def _init_cache_state(self, use_cache: bool) -> None:
+        """Initialize cache flag, re-entrant lock, and propagate to injected sheet."""
+        self.use_cache = bool(use_cache)
+        self._lock = threading.RLock()
+        self._propagate_cache_flag()
+
+    def _propagate_cache_flag(self) -> None:
+        """Enable caching on an injected Spreadsheet when use_cache is True."""
+        if (
+            self.use_cache
+            and self.spreadsheet is not None
+            and hasattr(self.spreadsheet, "use_cache")
+        ):
+            self.spreadsheet.use_cache = True
+
+    def _write_lock(self) -> AbstractContextManager[Any]:
+        """Return inventory lock when caching is enabled, otherwise a no-op context."""
+        return self._lock if self.use_cache else nullcontext()
+
+    def invalidate_cache(self) -> None:
+        """Invalidate the underlying spreadsheet row cache for this tab."""
+        with self._lock:
+            if (
+                self.spreadsheet is not None
+                and hasattr(self.spreadsheet, "invalidate_cache")
+                and callable(self.spreadsheet.invalidate_cache)
+            ):
+                self.spreadsheet.invalidate_cache(self.sheet_name)
+
+
+class Inventory(_CacheableInventoryMixin):
     """Core inventory manager backed by a Google Spreadsheet."""
 
     def __init__(
@@ -324,14 +362,7 @@ class Inventory:
         self.credentials_path = credentials_path
         self.sheet_name = sheet_name
         self.credentials = credentials
-        self.use_cache: bool = bool(use_cache)
-        self._lock: threading.RLock = threading.RLock()
-        if (
-            self.use_cache
-            and self.spreadsheet is not None
-            and hasattr(self.spreadsheet, "use_cache")
-        ):
-            self.spreadsheet.use_cache = True
+        self._init_cache_state(use_cache)
         if differ is not None:
             self.differ = differ
         else:
@@ -346,20 +377,6 @@ class Inventory:
             )
 
             self.converter = _RepoConverter()
-
-    def _write_lock(self) -> AbstractContextManager[Any]:
-        """Return inventory lock when caching is enabled, otherwise a no-op context."""
-        return self._lock if self.use_cache else nullcontext()
-
-    def invalidate_cache(self) -> None:
-        """Invalidate the underlying spreadsheet row cache for this tab."""
-        with self._lock:
-            if (
-                self.spreadsheet is not None
-                and hasattr(self.spreadsheet, "invalidate_cache")
-                and callable(self.spreadsheet.invalidate_cache)
-            ):
-                self.spreadsheet.invalidate_cache(self.sheet_name)
 
     def _validate_and_build_credentials(self) -> Any:
         """Validate credentials configuration and build Credentials instance."""
@@ -380,8 +397,7 @@ class Inventory:
         """
         with self._lock:
             if self.spreadsheet is not None:
-                if self.use_cache and hasattr(self.spreadsheet, "use_cache"):
-                    self.spreadsheet.use_cache = True
+                self._propagate_cache_flag()
                 if getattr(self, "_spreadsheet_initialized", False):
                     return self.spreadsheet
                 if self.spreadsheet_id is not None:
@@ -509,10 +525,13 @@ class Inventory:
             self._apply_status_timestamps(record, valid_status)
 
             row = RowConverter.from_inventory_record(record, row_index=row_index)
+            sheet = (
+                self.spreadsheet
+                if self.spreadsheet is not None
+                else self._validate_and_build_spreadsheet()
+            )
             saved_row = (
-                self.spreadsheet.update_row(row)
-                if row_index is not None
-                else self.spreadsheet.add(row)
+                sheet.update_row(row) if row_index is not None else sheet.add(row)
             )
             return RowConverter.to_inventory_record(saved_row)
 
@@ -586,7 +605,12 @@ class Inventory:
                     row = RowConverter.from_inventory_record(
                         existing, row_index=target_row.row_index
                     )
-                    saved_row = self.spreadsheet.update_row(row)
+                    sheet = (
+                        self.spreadsheet
+                        if self.spreadsheet is not None
+                        else self._validate_and_build_spreadsheet()
+                    )
+                    saved_row = sheet.update_row(row)
                     return RowConverter.to_inventory_record(saved_row)
                 return existing
 
@@ -600,7 +624,12 @@ class Inventory:
             )
             self._apply_status_timestamps(new_record, valid_status)
             row = RowConverter.from_inventory_record(new_record)
-            saved_row = self.spreadsheet.add(row)
+            sheet = (
+                self.spreadsheet
+                if self.spreadsheet is not None
+                else self._validate_and_build_spreadsheet()
+            )
+            saved_row = sheet.add(row)
             return RowConverter.to_inventory_record(saved_row)
 
     def compute_diff(
@@ -760,7 +789,7 @@ class Inventory:
         return self.sync_records(records)
 
 
-class PipelineInventory:
+class PipelineInventory(_CacheableInventoryMixin):
     """Workflows and pipelines inventory manager backed by a Google Spreadsheet tab."""
 
     def __init__(
@@ -779,14 +808,7 @@ class PipelineInventory:
         self.credentials_path = credentials_path
         self.sheet_name = sheet_name
         self.credentials = credentials
-        self.use_cache: bool = bool(use_cache)
-        self._lock: threading.RLock = threading.RLock()
-        if (
-            self.use_cache
-            and self.spreadsheet is not None
-            and hasattr(self.spreadsheet, "use_cache")
-        ):
-            self.spreadsheet.use_cache = True
+        self._init_cache_state(use_cache)
         if differ is not None:
             self.differ = differ
         else:
@@ -802,20 +824,6 @@ class PipelineInventory:
 
             self.converter = _PipelineConverter()
 
-    def _write_lock(self) -> AbstractContextManager[Any]:
-        """Return inventory lock when caching is enabled, otherwise a no-op context."""
-        return self._lock if self.use_cache else nullcontext()
-
-    def invalidate_cache(self) -> None:
-        """Invalidate the underlying spreadsheet row cache for this tab."""
-        with self._lock:
-            if (
-                self.spreadsheet is not None
-                and hasattr(self.spreadsheet, "invalidate_cache")
-                and callable(self.spreadsheet.invalidate_cache)
-            ):
-                self.spreadsheet.invalidate_cache(self.sheet_name)
-
     def _validate_and_build_credentials(self) -> Any:
         """Validate credentials configuration and build Credentials instance."""
         self.credentials = _build_credentials(self.credentials, self.credentials_path)
@@ -825,8 +833,9 @@ class PipelineInventory:
         """Validate spreadsheet configuration and build Spreadsheet instance."""
         with self._lock:
             if self.spreadsheet is not None:
-                if self.use_cache and hasattr(self.spreadsheet, "use_cache"):
-                    self.spreadsheet.use_cache = True
+                self._propagate_cache_flag()
+                if getattr(self, "_spreadsheet_initialized", False):
+                    return self.spreadsheet
                 if self.spreadsheet_id is not None:
                     configured_id = getattr(self.spreadsheet, "id", None)
                     if (
@@ -1091,7 +1100,7 @@ class PipelineInventory:
         return synced
 
 
-class TeamInventory:
+class TeamInventory(_CacheableInventoryMixin):
     """Team topology and access inventory manager backed by a Google Spreadsheet tab."""
 
     def __init__(
@@ -1111,34 +1120,13 @@ class TeamInventory:
         self.sheet_name = sheet_name
         self.credentials = credentials
         self.converter = converter
-        self.use_cache: bool = bool(use_cache)
-        self._lock: threading.RLock = threading.RLock()
-        if (
-            self.use_cache
-            and self.spreadsheet is not None
-            and hasattr(self.spreadsheet, "use_cache")
-        ):
-            self.spreadsheet.use_cache = True
+        self._init_cache_state(use_cache)
         if differ is not None:
             self.differ = differ
         else:
             from gh_migration_inventory_manager.scrap_diff import TeamDiffer
 
             self.differ = TeamDiffer()
-
-    def _write_lock(self) -> AbstractContextManager[Any]:
-        """Return inventory lock when caching is enabled, otherwise a no-op context."""
-        return self._lock if self.use_cache else nullcontext()
-
-    def invalidate_cache(self) -> None:
-        """Invalidate the underlying spreadsheet row cache for this tab."""
-        with self._lock:
-            if (
-                self.spreadsheet is not None
-                and hasattr(self.spreadsheet, "invalidate_cache")
-                and callable(self.spreadsheet.invalidate_cache)
-            ):
-                self.spreadsheet.invalidate_cache(self.sheet_name)
 
     def _validate_and_build_credentials(self) -> Any:
         """Validate credentials configuration and build Credentials instance."""
@@ -1149,8 +1137,9 @@ class TeamInventory:
         """Validate spreadsheet configuration and build Spreadsheet instance."""
         with self._lock:
             if self.spreadsheet is not None:
-                if self.use_cache and hasattr(self.spreadsheet, "use_cache"):
-                    self.spreadsheet.use_cache = True
+                self._propagate_cache_flag()
+                if getattr(self, "_spreadsheet_initialized", False):
+                    return self.spreadsheet
                 configured_id = getattr(self.spreadsheet, "id", None)
                 if (
                     self.spreadsheet_id is not None
@@ -1472,7 +1461,7 @@ class TeamInventory:
         return synced
 
 
-class PolicyInventory:
+class PolicyInventory(_CacheableInventoryMixin):
     """Branch governance policy inventory manager backed by a Google Spreadsheet tab."""
 
     def __init__(
@@ -1492,34 +1481,13 @@ class PolicyInventory:
         self.sheet_name = sheet_name
         self.credentials = credentials
         self.converter = converter
-        self.use_cache: bool = bool(use_cache)
-        self._lock: threading.RLock = threading.RLock()
-        if (
-            self.use_cache
-            and self.spreadsheet is not None
-            and hasattr(self.spreadsheet, "use_cache")
-        ):
-            self.spreadsheet.use_cache = True
+        self._init_cache_state(use_cache)
         if differ is not None:
             self.differ = differ
         else:
             from gh_migration_inventory_manager.scrap_diff import PolicyDiffer
 
             self.differ = PolicyDiffer()
-
-    def _write_lock(self) -> AbstractContextManager[Any]:
-        """Return inventory lock when caching is enabled, otherwise a no-op context."""
-        return self._lock if self.use_cache else nullcontext()
-
-    def invalidate_cache(self) -> None:
-        """Invalidate the underlying spreadsheet row cache for this tab."""
-        with self._lock:
-            if (
-                self.spreadsheet is not None
-                and hasattr(self.spreadsheet, "invalidate_cache")
-                and callable(self.spreadsheet.invalidate_cache)
-            ):
-                self.spreadsheet.invalidate_cache(self.sheet_name)
 
     def _validate_and_build_credentials(self) -> Any:
         """Validate credentials configuration and build Credentials instance."""
@@ -1530,8 +1498,9 @@ class PolicyInventory:
         """Validate spreadsheet configuration and build Spreadsheet instance."""
         with self._lock:
             if self.spreadsheet is not None:
-                if self.use_cache and hasattr(self.spreadsheet, "use_cache"):
-                    self.spreadsheet.use_cache = True
+                self._propagate_cache_flag()
+                if getattr(self, "_spreadsheet_initialized", False):
+                    return self.spreadsheet
                 configured_id = getattr(self.spreadsheet, "id", None)
                 if (
                     self.spreadsheet_id is not None

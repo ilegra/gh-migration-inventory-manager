@@ -935,7 +935,7 @@ def test_given_policy_inventory_when_querying_policies_then_filters_correctly() 
 
 
 # ============================================================================
-# In-Memory Read Cache Tests (Issue #59)
+# In-Memory Read Cache Tests
 # ============================================================================
 
 
@@ -1021,7 +1021,7 @@ def test_given_multi_layer_inventories_with_use_cache_true_when_reading_repos_th
 
     repo_sheet = Spreadsheet(id="s1", sheet_name="Inventario", service=repo_service)
     policy_sheet = Spreadsheet(id="s1", sheet_name="Policies", service=policy_service)
-    policy_sheet._ensured_sheets.add("Policies")
+    policy_sheet.ensure_sheet("Policies", headers=[], existing_sheets=["Policies"])
 
     repo_inv = Inventory(spreadsheet=repo_sheet, use_cache=True)
     policy_inv = PolicyInventory(spreadsheet=policy_sheet, use_cache=True)
