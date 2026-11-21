@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import logging
 import re
+import threading
 import time
+from contextlib import AbstractContextManager, nullcontext
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any
@@ -618,6 +620,7 @@ class Spreadsheet:
         service: Any = None,
         max_retries: int = 5,
         backoff_base: float | None = None,
+        use_cache: bool = False,
     ) -> None:
         self.id = id
         self.sheet_name = sheet_name
@@ -628,6 +631,9 @@ class Spreadsheet:
         else:
             self.backoff_base = 0.001 if service is not None else 2.0
         self._ensured_sheets: set[str] = set()
+        self.use_cache: bool = bool(use_cache)
+        self._cache_lock: threading.RLock = threading.RLock()
+        self._row_cache: dict[str, dict[int, list[str]]] = {}
 
         if service is not None:
             self._service = service
@@ -851,6 +857,49 @@ class Spreadsheet:
                 existing_sheets=known_sheets,
             )
 
+    def invalidate_cache(self, sheet_name: str | None = None) -> None:
+        """Invalidate cached rows for a specific sheet tab or all tabs."""
+        with self._cache_lock:
+            if sheet_name is None:
+                self._row_cache.clear()
+                logger.debug("Invalidated row cache for all tabs")
+            else:
+                self._row_cache.pop(sheet_name, None)
+                logger.debug("Invalidated row cache for sheet '%s'", sheet_name)
+
+    def _write_lock(self) -> AbstractContextManager[Any]:
+        """Return cache lock when caching is enabled, otherwise a no-op context."""
+        return self._cache_lock if self.use_cache else nullcontext()
+
+    def _get_cached_rows_locked(self) -> dict[int, list[str]]:
+        """Return cached raw rows for the active sheet, loading from API on miss."""
+        cached = self._row_cache.get(self.sheet_name)
+        if cached is not None:
+            logger.debug(
+                "Cache hit for sheet '%s' (%d cached rows)",
+                self.sheet_name,
+                len(cached),
+            )
+            return cached
+
+        read_range = f"{self.sheet_name}!A2:{self._end_column}"
+        resp = self._execute(
+            self._service.spreadsheets()
+            .values()
+            .get(spreadsheetId=self.id, range=read_range)
+        )
+        raw_rows: list[list[str]] = resp.get("values", []) or []
+        loaded: dict[int, list[str]] = {
+            idx + 2: list(row_vals) for idx, row_vals in enumerate(raw_rows)
+        }
+        self._row_cache[self.sheet_name] = loaded
+        logger.debug(
+            "Cache miss for sheet '%s'; loaded %d rows from API",
+            self.sheet_name,
+            len(loaded),
+        )
+        return loaded
+
     def clear_tab(self, sheet_name: str | None = None) -> None:
         """Clear all data rows in target tab (keeping row 1 headers intact)."""
         target = sheet_name or self.sheet_name
@@ -860,17 +909,28 @@ class Spreadsheet:
         self.ensure_sheet(target)
         end_col = self._end_column_for(target)
         clear_range = f"{target}!A2:{end_col}"
-        try:
-            self._execute(
-                self._service.spreadsheets()
-                .values()
-                .clear(
-                    spreadsheetId=clean_id,
-                    range=clear_range,
+        with self._write_lock():
+            try:
+                self._execute(
+                    self._service.spreadsheets()
+                    .values()
+                    .clear(
+                        spreadsheetId=clean_id,
+                        range=clear_range,
+                    )
                 )
-            )
-        except Exception as err:
-            raise SpreadsheetError(f"Error clearing sheet '{target}': {err}") from err
+            except Exception as err:
+                self._row_cache.pop(target, None)
+                logger.debug(
+                    "Invalidated row cache for sheet '%s' after clear_tab error",
+                    target,
+                )
+                raise SpreadsheetError(
+                    f"Error clearing sheet '{target}': {err}"
+                ) from err
+            if target in self._row_cache:
+                self._row_cache[target] = {}
+                logger.debug("Cleared cached rows for sheet '%s'", target)
 
     def _to_sheet_row(self, row: Row) -> list[str]:
         """Convert row data to an ordered list of cell string values.
@@ -1095,6 +1155,15 @@ class Spreadsheet:
 
     def get_all_rows(self) -> list[Row]:
         """Retrieve all data rows from the active sheet tab without filtering."""
+        if self.use_cache:
+            with self._cache_lock:
+                cached = self._get_cached_rows_locked()
+                return [
+                    self._from_sheet_row(list(row_vals), row_index=row_idx)
+                    for row_idx, row_vals in sorted(cached.items())
+                    if any(str(cell).strip() for cell in row_vals)
+                ]
+
         read_range = f"{self.sheet_name}!A2:{self._end_column}"
         resp = self._execute(
             self._service.spreadsheets()
@@ -1139,6 +1208,21 @@ class Spreadsheet:
         if col_idx is None:
             raise ValueError(f"Unknown column identifier: '{target_col}'")
 
+        target = content.strip().lower()
+
+        if self.use_cache:
+            with self._cache_lock:
+                cached = self._get_cached_rows_locked()
+                matched: list[Row] = []
+                for row_idx, row_vals in sorted(cached.items()):
+                    if col_idx < len(row_vals):
+                        val = row_vals[col_idx].strip().lower()
+                        if val == target:
+                            matched.append(
+                                self._from_sheet_row(list(row_vals), row_index=row_idx)
+                            )
+                return matched
+
         read_range = f"{self.sheet_name}!A2:{self._end_column}"
         resp = self._execute(
             self._service.spreadsheets()
@@ -1147,8 +1231,7 @@ class Spreadsheet:
         )
         raw_rows: list[list[str]] = resp.get("values", [])
 
-        target = content.strip().lower()
-        matched: list[Row] = []
+        matched = []
 
         for idx, row_vals in enumerate(raw_rows):
             actual_row_number = idx + 2  # Row 1 is header
@@ -1167,53 +1250,27 @@ class Spreadsheet:
         append_range = f"{self.sheet_name}!A:{self._end_column}"
         body = {"values": [values]}
 
-        res = self._execute(
-            self._service.spreadsheets()
-            .values()
-            .append(
-                spreadsheetId=self.id,
-                range=append_range,
-                valueInputOption="USER_ENTERED",
-                insertDataOption="INSERT_ROWS",
-                body=body,
-            )
-        )
-
-        updated_range = res.get("updates", {}).get("updatedRange", "")
-        match = _RANGE_PATTERN.search(updated_range)
-        if match:
-            row.row_index = int(match.group(1))
-
-        row.values = values
-        return row
-
-    def batch_add(self, rows: list[Row], chunk_size: int = 500) -> list[Row]:
-        """Append multiple rows in chunks and update their row indices."""
-        if not rows:
-            return []
-        effective_chunk_size = chunk_size if chunk_size > 0 else 500
-        for i in range(0, len(rows), effective_chunk_size):
-            chunk = rows[i : i + effective_chunk_size]
-            matrix = [self._to_sheet_row(r) for r in chunk]
-            append_range = f"{self.sheet_name}!A:{self._end_column}"
-            body = {"values": matrix}
-            logger.info(
-                "Batch appending %d rows to '%s' tab (chunk offset %d)",
-                len(chunk),
-                self.sheet_name,
-                i,
-            )
-            res = self._execute(
-                self._service.spreadsheets()
-                .values()
-                .append(
-                    spreadsheetId=self.id,
-                    range=append_range,
-                    valueInputOption="USER_ENTERED",
-                    insertDataOption="INSERT_ROWS",
-                    body=body,
+        with self._write_lock():
+            try:
+                res = self._execute(
+                    self._service.spreadsheets()
+                    .values()
+                    .append(
+                        spreadsheetId=self.id,
+                        range=append_range,
+                        valueInputOption="USER_ENTERED",
+                        insertDataOption="INSERT_ROWS",
+                        body=body,
+                    )
                 )
-            )
+            except Exception:
+                self._row_cache.pop(self.sheet_name, None)
+                logger.debug(
+                    "Invalidated row cache for sheet '%s' after add error",
+                    self.sheet_name,
+                )
+                raise
+
             updated_range = (
                 res.get("updates", {}).get("updatedRange", "")
                 if isinstance(res, dict)
@@ -1221,19 +1278,100 @@ class Spreadsheet:
             )
             match = _RANGE_PATTERN.search(updated_range)
             if match:
-                start_row = int(match.group(1))
-                logger.debug(
-                    "Batch append allocated row indices %d to %d in '%s'",
-                    start_row,
-                    start_row + len(chunk) - 1,
+                row.row_index = int(match.group(1))
+
+            row.values = values
+
+            if self.sheet_name in self._row_cache:
+                if row.row_index is not None:
+                    self._row_cache[self.sheet_name][row.row_index] = list(values)
+                    logger.debug(
+                        "Cache write-through (add) for sheet '%s' at row_index=%d",
+                        self.sheet_name,
+                        row.row_index,
+                    )
+                else:
+                    self._row_cache.pop(self.sheet_name, None)
+                    logger.debug(
+                        "Invalidated row cache for sheet '%s' "
+                        "(missing row_index after add)",
+                        self.sheet_name,
+                    )
+        return row
+
+    def batch_add(self, rows: list[Row], chunk_size: int = 500) -> list[Row]:
+        """Append multiple rows in chunks and update their row indices."""
+        if not rows:
+            return []
+        effective_chunk_size = chunk_size if chunk_size > 0 else 500
+        with self._write_lock():
+            for i in range(0, len(rows), effective_chunk_size):
+                chunk = rows[i : i + effective_chunk_size]
+                matrix = [self._to_sheet_row(r) for r in chunk]
+                append_range = f"{self.sheet_name}!A:{self._end_column}"
+                body = {"values": matrix}
+                logger.info(
+                    "Batch appending %d rows to '%s' tab (chunk offset %d)",
+                    len(chunk),
                     self.sheet_name,
+                    i,
                 )
-                for offset, r in enumerate(chunk):
-                    r.row_index = start_row + offset
-                    r.values = matrix[offset]
-            else:
-                for offset, r in enumerate(chunk):
-                    r.values = matrix[offset]
+                try:
+                    res = self._execute(
+                        self._service.spreadsheets()
+                        .values()
+                        .append(
+                            spreadsheetId=self.id,
+                            range=append_range,
+                            valueInputOption="USER_ENTERED",
+                            insertDataOption="INSERT_ROWS",
+                            body=body,
+                        )
+                    )
+                except Exception:
+                    self._row_cache.pop(self.sheet_name, None)
+                    logger.debug(
+                        "Invalidated row cache for sheet '%s' after batch_add error",
+                        self.sheet_name,
+                    )
+                    raise
+                updated_range = (
+                    res.get("updates", {}).get("updatedRange", "")
+                    if isinstance(res, dict)
+                    else ""
+                )
+                match = _RANGE_PATTERN.search(updated_range)
+                if match:
+                    start_row = int(match.group(1))
+                    logger.debug(
+                        "Batch append allocated row indices %d to %d in '%s'",
+                        start_row,
+                        start_row + len(chunk) - 1,
+                        self.sheet_name,
+                    )
+                    for offset, r in enumerate(chunk):
+                        r.row_index = start_row + offset
+                        r.values = matrix[offset]
+                    if self.sheet_name in self._row_cache:
+                        tab_cache = self._row_cache[self.sheet_name]
+                        for offset, r in enumerate(chunk):
+                            if r.row_index is not None:
+                                tab_cache[r.row_index] = list(matrix[offset])
+                        logger.debug(
+                            "Cache write-through (batch_add) for sheet '%s' (%d rows)",
+                            self.sheet_name,
+                            len(chunk),
+                        )
+                else:
+                    for offset, r in enumerate(chunk):
+                        r.values = matrix[offset]
+                    if self.sheet_name in self._row_cache:
+                        self._row_cache.pop(self.sheet_name, None)
+                        logger.debug(
+                            "Invalidated row cache for sheet '%s' "
+                            "(missing row_index after batch_add)",
+                            self.sheet_name,
+                        )
         return rows
 
     def update_row(self, row: Row) -> Row:
@@ -1247,18 +1385,34 @@ class Spreadsheet:
         )
         body = {"values": [values]}
 
-        self._execute(
-            self._service.spreadsheets()
-            .values()
-            .update(
-                spreadsheetId=self.id,
-                range=target_range,
-                valueInputOption="USER_ENTERED",
-                body=body,
-            )
-        )
+        with self._write_lock():
+            try:
+                self._execute(
+                    self._service.spreadsheets()
+                    .values()
+                    .update(
+                        spreadsheetId=self.id,
+                        range=target_range,
+                        valueInputOption="USER_ENTERED",
+                        body=body,
+                    )
+                )
+            except Exception:
+                self._row_cache.pop(self.sheet_name, None)
+                logger.debug(
+                    "Invalidated row cache for sheet '%s' after update_row error",
+                    self.sheet_name,
+                )
+                raise
 
-        row.values = values
+            row.values = values
+            if self.sheet_name in self._row_cache:
+                self._row_cache[self.sheet_name][row.row_index] = list(values)
+                logger.debug(
+                    "Cache write-through (update_row) for sheet '%s' at row_index=%d",
+                    self.sheet_name,
+                    row.row_index,
+                )
         return row
 
     def batch_update_rows(self, rows: list[Row], chunk_size: int = 500) -> list[Row]:
@@ -1266,57 +1420,94 @@ class Spreadsheet:
         if not rows:
             return []
         effective_chunk_size = chunk_size if chunk_size > 0 else 500
-        for i in range(0, len(rows), effective_chunk_size):
-            chunk = rows[i : i + effective_chunk_size]
-            data: list[dict[str, Any]] = []
-            for r in chunk:
-                if r.row_index is None:
-                    raise ValueError("Cannot update row without a valid row_index.")
-                values = self._to_sheet_row(r)
-                r.values = values
-                row_idx = r.row_index
-                target_range = (
-                    f"{self.sheet_name}!A{row_idx}:{self._end_column}{row_idx}"
+        with self._write_lock():
+            for i in range(0, len(rows), effective_chunk_size):
+                chunk = rows[i : i + effective_chunk_size]
+                data: list[dict[str, Any]] = []
+                for r in chunk:
+                    if r.row_index is None:
+                        raise ValueError("Cannot update row without a valid row_index.")
+                    values = self._to_sheet_row(r)
+                    r.values = values
+                    row_idx = r.row_index
+                    target_range = (
+                        f"{self.sheet_name}!A{row_idx}:{self._end_column}{row_idx}"
+                    )
+                    data.append(
+                        {
+                            "range": target_range,
+                            "values": [values],
+                        }
+                    )
+                body = {
+                    "valueInputOption": "USER_ENTERED",
+                    "data": data,
+                }
+                logger.info(
+                    "Batch updating %d rows in '%s' tab (chunk offset %d)",
+                    len(chunk),
+                    self.sheet_name,
+                    i,
                 )
-                data.append(
-                    {
-                        "range": target_range,
-                        "values": [values],
-                    }
+                try:
+                    self._execute(
+                        self._service.spreadsheets()
+                        .values()
+                        .batchUpdate(
+                            spreadsheetId=self.id,
+                            body=body,
+                        )
+                    )
+                except Exception:
+                    self._row_cache.pop(self.sheet_name, None)
+                    logger.debug(
+                        "Invalidated row cache for sheet '%s' "
+                        "after batch_update_rows error",
+                        self.sheet_name,
+                    )
+                    raise
+                if self.sheet_name in self._row_cache:
+                    tab_cache = self._row_cache[self.sheet_name]
+                    for r in chunk:
+                        if r.row_index is not None:
+                            tab_cache[r.row_index] = list(r.values)
+                    logger.debug(
+                        "Cache write-through (batch_update_rows) for sheet '%s' "
+                        "(%d rows)",
+                        self.sheet_name,
+                        len(chunk),
+                    )
+                logger.debug(
+                    "Batch update completed for %d rows in '%s'",
+                    len(chunk),
+                    self.sheet_name,
                 )
-            body = {
-                "valueInputOption": "USER_ENTERED",
-                "data": data,
-            }
-            logger.info(
-                "Batch updating %d rows in '%s' tab (chunk offset %d)",
-                len(chunk),
-                self.sheet_name,
-                i,
-            )
-            self._execute(
-                self._service.spreadsheets()
-                .values()
-                .batchUpdate(
-                    spreadsheetId=self.id,
-                    body=body,
-                )
-            )
-            logger.debug(
-                "Batch update completed for %d rows in '%s'",
-                len(chunk),
-                self.sheet_name,
-            )
         return rows
 
     def clear_row(self, row_index: int) -> None:
         """Clear all cell values in the specified row."""
         target_range = f"{self.sheet_name}!A{row_index}:{self._end_column}{row_index}"
-        self._execute(
-            self._service.spreadsheets()
-            .values()
-            .clear(spreadsheetId=self.id, range=target_range, body={})
-        )
+        with self._write_lock():
+            try:
+                self._execute(
+                    self._service.spreadsheets()
+                    .values()
+                    .clear(spreadsheetId=self.id, range=target_range, body={})
+                )
+            except Exception:
+                self._row_cache.pop(self.sheet_name, None)
+                logger.debug(
+                    "Invalidated row cache for sheet '%s' after clear_row error",
+                    self.sheet_name,
+                )
+                raise
+            if self.sheet_name in self._row_cache:
+                self._row_cache[self.sheet_name].pop(row_index, None)
+                logger.debug(
+                    "Cache write-through (clear_row) for sheet '%s' at row_index=%d",
+                    self.sheet_name,
+                    row_index,
+                )
 
 
 Spreadshseet = Spreadsheet

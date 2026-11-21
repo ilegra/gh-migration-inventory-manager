@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import logging
+import threading
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import AbstractContextManager, nullcontext
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from enum import Enum
@@ -315,12 +317,21 @@ class Inventory:
         credentials: Any = None,
         converter: Any = None,
         differ: Any = None,
+        use_cache: bool = False,
     ) -> None:
         self.spreadsheet = spreadsheet if spreadsheet is not None else spredsheet
         self.spreadsheet_id = spreadsheet_id
         self.credentials_path = credentials_path
         self.sheet_name = sheet_name
         self.credentials = credentials
+        self.use_cache: bool = bool(use_cache)
+        self._lock: threading.RLock = threading.RLock()
+        if (
+            self.use_cache
+            and self.spreadsheet is not None
+            and hasattr(self.spreadsheet, "use_cache")
+        ):
+            self.spreadsheet.use_cache = True
         if differ is not None:
             self.differ = differ
         else:
@@ -335,6 +346,20 @@ class Inventory:
             )
 
             self.converter = _RepoConverter()
+
+    def _write_lock(self) -> AbstractContextManager[Any]:
+        """Return inventory lock when caching is enabled, otherwise a no-op context."""
+        return self._lock if self.use_cache else nullcontext()
+
+    def invalidate_cache(self) -> None:
+        """Invalidate the underlying spreadsheet row cache for this tab."""
+        with self._lock:
+            if (
+                self.spreadsheet is not None
+                and hasattr(self.spreadsheet, "invalidate_cache")
+                and callable(self.spreadsheet.invalidate_cache)
+            ):
+                self.spreadsheet.invalidate_cache(self.sheet_name)
 
     def _validate_and_build_credentials(self) -> Any:
         """Validate credentials configuration and build Credentials instance."""
@@ -353,41 +378,50 @@ class Inventory:
                 unauthorized (HTTP 401).
             InventoryError: For general inventory storage errors.
         """
-        if self.spreadsheet is not None:
-            if getattr(self, "_spreadsheet_initialized", False):
+        with self._lock:
+            if self.spreadsheet is not None:
+                if self.use_cache and hasattr(self.spreadsheet, "use_cache"):
+                    self.spreadsheet.use_cache = True
+                if getattr(self, "_spreadsheet_initialized", False):
+                    return self.spreadsheet
+                if self.spreadsheet_id is not None:
+                    configured_id = getattr(self.spreadsheet, "id", None)
+                    if (
+                        configured_id
+                        and configured_id != str(self.spreadsheet_id).strip()
+                    ):
+                        raise ValueError(
+                            "Inconsistent spreadsheet configuration: "
+                            f"spreadsheet.id '{configured_id}' "
+                            f"does not match spreadsheet_id '{self.spreadsheet_id}'."
+                        )
+                if hasattr(self.spreadsheet, "validate") and callable(
+                    self.spreadsheet.validate
+                ):
+                    self.spreadsheet.validate()
+                self._spreadsheet_initialized = True
                 return self.spreadsheet
-            if self.spreadsheet_id is not None:
-                configured_id = getattr(self.spreadsheet, "id", None)
-                if configured_id and configured_id != str(self.spreadsheet_id).strip():
-                    raise ValueError(
-                        "Inconsistent spreadsheet configuration: "
-                        f"spreadsheet.id '{configured_id}' "
-                        f"does not match spreadsheet_id '{self.spreadsheet_id}'."
-                    )
-            if hasattr(self.spreadsheet, "validate") and callable(
-                self.spreadsheet.validate
-            ):
-                self.spreadsheet.validate()
+
+            if not self.spreadsheet_id or not str(self.spreadsheet_id).strip():
+                raise ValueError(
+                    "Missing Google Spreadsheet ID. Pass --spreadsheet-id."
+                )
+
+            clean_id = str(self.spreadsheet_id).strip()
+            creds = self._validate_and_build_credentials()
+
+            from gh_migration_inventory_manager.google import Spreadsheet
+
+            sheet = Spreadsheet(
+                id=clean_id,
+                credentials=creds,
+                sheet_name=self.sheet_name,
+                use_cache=self.use_cache,
+            )
+            sheet.validate()
+            self.spreadsheet = sheet
             self._spreadsheet_initialized = True
             return self.spreadsheet
-
-        if not self.spreadsheet_id or not str(self.spreadsheet_id).strip():
-            raise ValueError("Missing Google Spreadsheet ID. Pass --spreadsheet-id.")
-
-        clean_id = str(self.spreadsheet_id).strip()
-        creds = self._validate_and_build_credentials()
-
-        from gh_migration_inventory_manager.google import Spreadsheet
-
-        sheet = Spreadsheet(
-            id=clean_id,
-            credentials=creds,
-            sheet_name=self.sheet_name,
-        )
-        sheet.validate()
-        self.spreadsheet = sheet
-        self._spreadsheet_initialized = True
-        return self.spreadsheet
 
     _build_spreadsheet = _validate_and_build_spreadsheet
     _get_spreadsheet = _validate_and_build_spreadsheet
@@ -455,31 +489,32 @@ class Inventory:
             raise ValueError("Repository name cannot be empty.")
 
         valid_status = self._validate_status(status)
-        existing_row = self._find_row(repo_name, project)
+        with self._write_lock():
+            existing_row = self._find_row(repo_name, project)
 
-        if not existing_row:
-            record = InventoryRecord(
-                name=repo_name,
-                project=project or "",
-                migration_status=valid_status,
+            if not existing_row:
+                record = InventoryRecord(
+                    name=repo_name,
+                    project=project or "",
+                    migration_status=valid_status,
+                )
+                row_index = None
+            else:
+                record = RowConverter.to_inventory_record(existing_row)
+                if project is not None:
+                    record.project = project
+                record.migration_status = valid_status
+                row_index = existing_row.row_index
+
+            self._apply_status_timestamps(record, valid_status)
+
+            row = RowConverter.from_inventory_record(record, row_index=row_index)
+            saved_row = (
+                self.spreadsheet.update_row(row)
+                if row_index is not None
+                else self.spreadsheet.add(row)
             )
-            row_index = None
-        else:
-            record = RowConverter.to_inventory_record(existing_row)
-            if project is not None:
-                record.project = project
-            record.migration_status = valid_status
-            row_index = existing_row.row_index
-
-        self._apply_status_timestamps(record, valid_status)
-
-        row = RowConverter.from_inventory_record(record, row_index=row_index)
-        saved_row = (
-            self.spreadsheet.update_row(row)
-            if row_index is not None
-            else self.spreadsheet.add(row)
-        )
-        return RowConverter.to_inventory_record(saved_row)
+            return RowConverter.to_inventory_record(saved_row)
 
     def get_repository(
         self,
@@ -528,44 +563,45 @@ class Inventory:
         if not clean_name:
             raise ValueError("Repository name cannot be empty.")
 
-        target_row = self._find_row(clean_name, record.project or None)
+        with self._write_lock():
+            target_row = self._find_row(clean_name, record.project or None)
 
-        if target_row is not None:
-            existing = RowConverter.to_inventory_record(target_row)
-            changed = False
-            if record.project is not None and existing.project != record.project:
-                existing.project = record.project
-                changed = True
-            if record.stack and existing.stack != record.stack:
-                existing.stack = record.stack
-                changed = True
-            if (
-                record.last_commit is not None
-                and existing.last_commit != record.last_commit
-            ):
-                existing.last_commit = record.last_commit
-                changed = True
+            if target_row is not None:
+                existing = RowConverter.to_inventory_record(target_row)
+                changed = False
+                if record.project is not None and existing.project != record.project:
+                    existing.project = record.project
+                    changed = True
+                if record.stack and existing.stack != record.stack:
+                    existing.stack = record.stack
+                    changed = True
+                if (
+                    record.last_commit is not None
+                    and existing.last_commit != record.last_commit
+                ):
+                    existing.last_commit = record.last_commit
+                    changed = True
 
-            if changed:
-                row = RowConverter.from_inventory_record(
-                    existing, row_index=target_row.row_index
-                )
-                saved_row = self.spreadsheet.update_row(row)
-                return RowConverter.to_inventory_record(saved_row)
-            return existing
+                if changed:
+                    row = RowConverter.from_inventory_record(
+                        existing, row_index=target_row.row_index
+                    )
+                    saved_row = self.spreadsheet.update_row(row)
+                    return RowConverter.to_inventory_record(saved_row)
+                return existing
 
-        valid_status = self._validate_status(record.migration_status)
-        new_record = InventoryRecord(
-            name=clean_name,
-            project=record.project or "",
-            stack=record.stack or "",
-            last_commit=record.last_commit,
-            migration_status=valid_status,
-        )
-        self._apply_status_timestamps(new_record, valid_status)
-        row = RowConverter.from_inventory_record(new_record)
-        saved_row = self.spreadsheet.add(row)
-        return RowConverter.to_inventory_record(saved_row)
+            valid_status = self._validate_status(record.migration_status)
+            new_record = InventoryRecord(
+                name=clean_name,
+                project=record.project or "",
+                stack=record.stack or "",
+                last_commit=record.last_commit,
+                migration_status=valid_status,
+            )
+            self._apply_status_timestamps(new_record, valid_status)
+            row = RowConverter.from_inventory_record(new_record)
+            saved_row = self.spreadsheet.add(row)
+            return RowConverter.to_inventory_record(saved_row)
 
     def compute_diff(
         self,
@@ -602,39 +638,46 @@ class Inventory:
         logger.info(
             "Synchronizing %d repository records with inventory", len(records_list)
         )
-        diff = self.compute_diff(records_list)
-        synced: list[InventoryRecord] = []
+        with self._write_lock():
+            diff = self.compute_diff(records_list)
+            synced: list[InventoryRecord] = []
 
-        if diff.to_add:
-            rows_to_add = [RowConverter.from_inventory_record(r) for r in diff.to_add]
-            if _can_batch_add(sheet):
-                sheet.batch_add(rows_to_add)
-            else:
-                logger.debug(
-                    "Batch add unsupported by client; appending %d rows sequentially",
-                    len(rows_to_add),
-                )
-                for r in rows_to_add:
-                    sheet.add(r)
-            synced.extend(diff.to_add)
+            if diff.to_add:
+                rows_to_add = [
+                    RowConverter.from_inventory_record(r) for r in diff.to_add
+                ]
+                if _can_batch_add(sheet):
+                    sheet.batch_add(rows_to_add)
+                else:
+                    logger.debug(
+                        "Batch add unsupported by client; "
+                        "appending %d rows sequentially",
+                        len(rows_to_add),
+                    )
+                    for r in rows_to_add:
+                        sheet.add(r)
+                synced.extend(diff.to_add)
 
-        if diff.to_update:
-            rows_to_update = [
-                RowConverter.from_inventory_record(up.record, row_index=up.row_index)
-                for up in diff.to_update
-            ]
-            if _can_batch_update(sheet):
-                sheet.batch_update_rows(rows_to_update)
-            else:
-                logger.debug(
-                    "Batch update unsupported by client; updating %d rows sequentially",
-                    len(rows_to_update),
-                )
-                for r in rows_to_update:
-                    sheet.update_row(r)
-            synced.extend([up.record for up in diff.to_update])
+            if diff.to_update:
+                rows_to_update = [
+                    RowConverter.from_inventory_record(
+                        up.record, row_index=up.row_index
+                    )
+                    for up in diff.to_update
+                ]
+                if _can_batch_update(sheet):
+                    sheet.batch_update_rows(rows_to_update)
+                else:
+                    logger.debug(
+                        "Batch update unsupported by client; "
+                        "updating %d rows sequentially",
+                        len(rows_to_update),
+                    )
+                    for r in rows_to_update:
+                        sheet.update_row(r)
+                synced.extend([up.record for up in diff.to_update])
 
-        synced.extend(diff.unchanged)
+            synced.extend(diff.unchanged)
         logger.info(
             "Sync complete: %d synced (added=%d, updated=%d, unchanged=%d)",
             len(synced),
@@ -729,12 +772,21 @@ class PipelineInventory:
         credentials: Any = None,
         converter: Any = None,
         differ: Any = None,
+        use_cache: bool = False,
     ) -> None:
         self.spreadsheet = spreadsheet
         self.spreadsheet_id = spreadsheet_id
         self.credentials_path = credentials_path
         self.sheet_name = sheet_name
         self.credentials = credentials
+        self.use_cache: bool = bool(use_cache)
+        self._lock: threading.RLock = threading.RLock()
+        if (
+            self.use_cache
+            and self.spreadsheet is not None
+            and hasattr(self.spreadsheet, "use_cache")
+        ):
+            self.spreadsheet.use_cache = True
         if differ is not None:
             self.differ = differ
         else:
@@ -750,6 +802,20 @@ class PipelineInventory:
 
             self.converter = _PipelineConverter()
 
+    def _write_lock(self) -> AbstractContextManager[Any]:
+        """Return inventory lock when caching is enabled, otherwise a no-op context."""
+        return self._lock if self.use_cache else nullcontext()
+
+    def invalidate_cache(self) -> None:
+        """Invalidate the underlying spreadsheet row cache for this tab."""
+        with self._lock:
+            if (
+                self.spreadsheet is not None
+                and hasattr(self.spreadsheet, "invalidate_cache")
+                and callable(self.spreadsheet.invalidate_cache)
+            ):
+                self.spreadsheet.invalidate_cache(self.sheet_name)
+
     def _validate_and_build_credentials(self) -> Any:
         """Validate credentials configuration and build Credentials instance."""
         self.credentials = _build_credentials(self.credentials, self.credentials_path)
@@ -757,44 +823,53 @@ class PipelineInventory:
 
     def _validate_and_build_spreadsheet(self) -> SpreadsheetClient:
         """Validate spreadsheet configuration and build Spreadsheet instance."""
-        if self.spreadsheet is not None:
-            if self.spreadsheet_id is not None:
-                configured_id = getattr(self.spreadsheet, "id", None)
-                if configured_id and configured_id != str(self.spreadsheet_id).strip():
-                    raise ValueError(
-                        "Inconsistent spreadsheet configuration: "
-                        f"spreadsheet.id '{configured_id}' "
-                        f"does not match spreadsheet_id '{self.spreadsheet_id}'."
-                    )
-            if hasattr(self.spreadsheet, "validate") and callable(
-                self.spreadsheet.validate
-            ):
-                self.spreadsheet.validate()
-            if hasattr(self.spreadsheet, "ensure_sheet") and callable(
-                self.spreadsheet.ensure_sheet
-            ):
-                self.spreadsheet.ensure_sheet(self.sheet_name)
+        with self._lock:
+            if self.spreadsheet is not None:
+                if self.use_cache and hasattr(self.spreadsheet, "use_cache"):
+                    self.spreadsheet.use_cache = True
+                if self.spreadsheet_id is not None:
+                    configured_id = getattr(self.spreadsheet, "id", None)
+                    if (
+                        configured_id
+                        and configured_id != str(self.spreadsheet_id).strip()
+                    ):
+                        raise ValueError(
+                            "Inconsistent spreadsheet configuration: "
+                            f"spreadsheet.id '{configured_id}' "
+                            f"does not match spreadsheet_id '{self.spreadsheet_id}'."
+                        )
+                if hasattr(self.spreadsheet, "validate") and callable(
+                    self.spreadsheet.validate
+                ):
+                    self.spreadsheet.validate()
+                if hasattr(self.spreadsheet, "ensure_sheet") and callable(
+                    self.spreadsheet.ensure_sheet
+                ):
+                    self.spreadsheet.ensure_sheet(self.sheet_name)
+                self._spreadsheet_initialized = True
+                return self.spreadsheet
+
+            if not self.spreadsheet_id or not str(self.spreadsheet_id).strip():
+                raise ValueError(
+                    "Missing Google Spreadsheet ID. Pass --spreadsheet-id."
+                )
+
+            clean_id = str(self.spreadsheet_id).strip()
+            creds = self._validate_and_build_credentials()
+
+            from gh_migration_inventory_manager.google import Spreadsheet
+
+            sheet = Spreadsheet(
+                id=clean_id,
+                credentials=creds,
+                sheet_name=self.sheet_name,
+                use_cache=self.use_cache,
+            )
+            sheet.validate()
+            sheet.ensure_sheet(self.sheet_name)
+            self.spreadsheet = sheet
             self._spreadsheet_initialized = True
             return self.spreadsheet
-
-        if not self.spreadsheet_id or not str(self.spreadsheet_id).strip():
-            raise ValueError("Missing Google Spreadsheet ID. Pass --spreadsheet-id.")
-
-        clean_id = str(self.spreadsheet_id).strip()
-        creds = self._validate_and_build_credentials()
-
-        from gh_migration_inventory_manager.google import Spreadsheet
-
-        sheet = Spreadsheet(
-            id=clean_id,
-            credentials=creds,
-            sheet_name=self.sheet_name,
-        )
-        sheet.validate()
-        sheet.ensure_sheet(self.sheet_name)
-        self.spreadsheet = sheet
-        self._spreadsheet_initialized = True
-        return self.spreadsheet
 
     def _get_spreadsheet(self) -> SpreadsheetClient:
         """Retrieve, validate, and return the underlying Spreadsheet client."""
@@ -831,19 +906,20 @@ class PipelineInventory:
 
         sheet = self._get_spreadsheet()
 
-        existing_row = self._find_row(clean_id)
-        if existing_row is not None:
-            existing_record = WorkflowRowConverter.to_pipeline_record(existing_row)
-            record.migration_status = existing_record.migration_status
-            row = WorkflowRowConverter.from_pipeline_record(
-                record, row_index=existing_row.row_index
-            )
-            saved_row = sheet.update_row(row)
-        else:
-            row = WorkflowRowConverter.from_pipeline_record(record, row_index=None)
-            saved_row = sheet.add(row)
+        with self._write_lock():
+            existing_row = self._find_row(clean_id)
+            if existing_row is not None:
+                existing_record = WorkflowRowConverter.to_pipeline_record(existing_row)
+                record.migration_status = existing_record.migration_status
+                row = WorkflowRowConverter.from_pipeline_record(
+                    record, row_index=existing_row.row_index
+                )
+                saved_row = sheet.update_row(row)
+            else:
+                row = WorkflowRowConverter.from_pipeline_record(record, row_index=None)
+                saved_row = sheet.add(row)
 
-        return WorkflowRowConverter.to_pipeline_record(saved_row)
+            return WorkflowRowConverter.to_pipeline_record(saved_row)
 
     def update_progress(
         self,
@@ -858,23 +934,26 @@ class PipelineInventory:
             raise ValueError("Workflow ID cannot be empty.")
 
         valid_status = validate_migration_status(status)
-        existing_row = self._find_row(clean_id)
+        with self._write_lock():
+            existing_row = self._find_row(clean_id)
 
-        if not existing_row:
-            record = PipelineRecord(
-                workflow_id=clean_id,
-                migration_status=valid_status,
+            if not existing_row:
+                record = PipelineRecord(
+                    workflow_id=clean_id,
+                    migration_status=valid_status,
+                )
+                row_index = None
+            else:
+                record = WorkflowRowConverter.to_pipeline_record(existing_row)
+                record.migration_status = valid_status
+                row_index = existing_row.row_index
+
+            row = WorkflowRowConverter.from_pipeline_record(record, row_index=row_index)
+            sheet = self._get_spreadsheet()
+            saved_row = (
+                sheet.update_row(row) if row_index is not None else sheet.add(row)
             )
-            row_index = None
-        else:
-            record = WorkflowRowConverter.to_pipeline_record(existing_row)
-            record.migration_status = valid_status
-            row_index = existing_row.row_index
-
-        row = WorkflowRowConverter.from_pipeline_record(record, row_index=row_index)
-        sheet = self._get_spreadsheet()
-        saved_row = sheet.update_row(row) if row_index is not None else sheet.add(row)
-        return WorkflowRowConverter.to_pipeline_record(saved_row)
+            return WorkflowRowConverter.to_pipeline_record(saved_row)
 
     def get_pipeline(self, workflow_id: str) -> PipelineRecord | None:
         """Find a pipeline record by workflow ID."""
@@ -961,44 +1040,47 @@ class PipelineInventory:
             "Synchronizing %d pipeline records with workflows inventory",
             len(records_list),
         )
-        diff = self.compute_diff(records_list)
-        synced: list[PipelineRecord] = []
+        with self._write_lock():
+            diff = self.compute_diff(records_list)
+            synced: list[PipelineRecord] = []
 
-        if diff.to_add:
-            rows_to_add = [
-                WorkflowRowConverter.from_pipeline_record(r, row_index=None)
-                for r in diff.to_add
-            ]
-            if _can_batch_add(sheet):
-                sheet.batch_add(rows_to_add)
-            else:
-                logger.debug(
-                    "Batch add unsupported; appending %d pipeline rows sequentially",
-                    len(rows_to_add),
-                )
-                for r in rows_to_add:
-                    sheet.add(r)
-            synced.extend(diff.to_add)
+            if diff.to_add:
+                rows_to_add = [
+                    WorkflowRowConverter.from_pipeline_record(r, row_index=None)
+                    for r in diff.to_add
+                ]
+                if _can_batch_add(sheet):
+                    sheet.batch_add(rows_to_add)
+                else:
+                    logger.debug(
+                        "Batch add unsupported; "
+                        "appending %d pipeline rows sequentially",
+                        len(rows_to_add),
+                    )
+                    for r in rows_to_add:
+                        sheet.add(r)
+                synced.extend(diff.to_add)
 
-        if diff.to_update:
-            rows_to_update = [
-                WorkflowRowConverter.from_pipeline_record(
-                    up.record, row_index=up.row_index
-                )
-                for up in diff.to_update
-            ]
-            if _can_batch_update(sheet):
-                sheet.batch_update_rows(rows_to_update)
-            else:
-                logger.debug(
-                    "Batch update unsupported; updating %d pipeline rows sequentially",
-                    len(rows_to_update),
-                )
-                for r in rows_to_update:
-                    sheet.update_row(r)
-            synced.extend([up.record for up in diff.to_update])
+            if diff.to_update:
+                rows_to_update = [
+                    WorkflowRowConverter.from_pipeline_record(
+                        up.record, row_index=up.row_index
+                    )
+                    for up in diff.to_update
+                ]
+                if _can_batch_update(sheet):
+                    sheet.batch_update_rows(rows_to_update)
+                else:
+                    logger.debug(
+                        "Batch update unsupported; "
+                        "updating %d pipeline rows sequentially",
+                        len(rows_to_update),
+                    )
+                    for r in rows_to_update:
+                        sheet.update_row(r)
+                synced.extend([up.record for up in diff.to_update])
 
-        synced.extend(diff.unchanged)
+            synced.extend(diff.unchanged)
         logger.info(
             "Sync complete: %d synced (added=%d, updated=%d, unchanged=%d)",
             len(synced),
@@ -1021,6 +1103,7 @@ class TeamInventory:
         credentials: Any = None,
         converter: Any = None,
         differ: Any = None,
+        use_cache: bool = False,
     ) -> None:
         self.spreadsheet = spreadsheet
         self.spreadsheet_id = spreadsheet_id
@@ -1028,12 +1111,34 @@ class TeamInventory:
         self.sheet_name = sheet_name
         self.credentials = credentials
         self.converter = converter
+        self.use_cache: bool = bool(use_cache)
+        self._lock: threading.RLock = threading.RLock()
+        if (
+            self.use_cache
+            and self.spreadsheet is not None
+            and hasattr(self.spreadsheet, "use_cache")
+        ):
+            self.spreadsheet.use_cache = True
         if differ is not None:
             self.differ = differ
         else:
             from gh_migration_inventory_manager.scrap_diff import TeamDiffer
 
             self.differ = TeamDiffer()
+
+    def _write_lock(self) -> AbstractContextManager[Any]:
+        """Return inventory lock when caching is enabled, otherwise a no-op context."""
+        return self._lock if self.use_cache else nullcontext()
+
+    def invalidate_cache(self) -> None:
+        """Invalidate the underlying spreadsheet row cache for this tab."""
+        with self._lock:
+            if (
+                self.spreadsheet is not None
+                and hasattr(self.spreadsheet, "invalidate_cache")
+                and callable(self.spreadsheet.invalidate_cache)
+            ):
+                self.spreadsheet.invalidate_cache(self.sheet_name)
 
     def _validate_and_build_credentials(self) -> Any:
         """Validate credentials configuration and build Credentials instance."""
@@ -1042,47 +1147,53 @@ class TeamInventory:
 
     def _validate_and_build_spreadsheet(self) -> SpreadsheetClient:
         """Validate spreadsheet configuration and build Spreadsheet instance."""
-        if self.spreadsheet is not None:
-            configured_id = getattr(self.spreadsheet, "id", None)
-            if (
-                self.spreadsheet_id is not None
-                and configured_id
-                and configured_id != str(self.spreadsheet_id).strip()
-            ):
+        with self._lock:
+            if self.spreadsheet is not None:
+                if self.use_cache and hasattr(self.spreadsheet, "use_cache"):
+                    self.spreadsheet.use_cache = True
+                configured_id = getattr(self.spreadsheet, "id", None)
+                if (
+                    self.spreadsheet_id is not None
+                    and configured_id
+                    and configured_id != str(self.spreadsheet_id).strip()
+                ):
+                    raise ValueError(
+                        "Inconsistent spreadsheet configuration: "
+                        f"spreadsheet.id '{configured_id}' "
+                        f"does not match spreadsheet_id '{self.spreadsheet_id}'."
+                    )
+                if hasattr(self.spreadsheet, "validate") and callable(
+                    self.spreadsheet.validate
+                ):
+                    self.spreadsheet.validate()
+                if hasattr(self.spreadsheet, "ensure_sheet") and callable(
+                    self.spreadsheet.ensure_sheet
+                ):
+                    self.spreadsheet.ensure_sheet(self.sheet_name)
+                self._spreadsheet_initialized = True
+                return self.spreadsheet
+
+            if not self.spreadsheet_id or not str(self.spreadsheet_id).strip():
                 raise ValueError(
-                    "Inconsistent spreadsheet configuration: "
-                    f"spreadsheet.id '{configured_id}' "
-                    f"does not match spreadsheet_id '{self.spreadsheet_id}'."
+                    "Missing Google Spreadsheet ID. Pass --spreadsheet-id."
                 )
-            if hasattr(self.spreadsheet, "validate") and callable(
-                self.spreadsheet.validate
-            ):
-                self.spreadsheet.validate()
-            if hasattr(self.spreadsheet, "ensure_sheet") and callable(
-                self.spreadsheet.ensure_sheet
-            ):
-                self.spreadsheet.ensure_sheet(self.sheet_name)
+
+            clean_id = str(self.spreadsheet_id).strip()
+            creds = self._validate_and_build_credentials()
+
+            from gh_migration_inventory_manager.google import Spreadsheet
+
+            sheet = Spreadsheet(
+                id=clean_id,
+                credentials=creds,
+                sheet_name=self.sheet_name,
+                use_cache=self.use_cache,
+            )
+            sheet.validate()
+            sheet.ensure_sheet(self.sheet_name)
+            self.spreadsheet = sheet
             self._spreadsheet_initialized = True
             return self.spreadsheet
-
-        if not self.spreadsheet_id or not str(self.spreadsheet_id).strip():
-            raise ValueError("Missing Google Spreadsheet ID. Pass --spreadsheet-id.")
-
-        clean_id = str(self.spreadsheet_id).strip()
-        creds = self._validate_and_build_credentials()
-
-        from gh_migration_inventory_manager.google import Spreadsheet
-
-        sheet = Spreadsheet(
-            id=clean_id,
-            credentials=creds,
-            sheet_name=self.sheet_name,
-        )
-        sheet.validate()
-        sheet.ensure_sheet(self.sheet_name)
-        self.spreadsheet = sheet
-        self._spreadsheet_initialized = True
-        return self.spreadsheet
 
     def _get_spreadsheet(self) -> SpreadsheetClient:
         """Retrieve, validate, and return the underlying Spreadsheet client."""
@@ -1142,28 +1253,29 @@ class TeamInventory:
 
         sheet = self._get_spreadsheet()
 
-        existing_row = self._find_row(clean_slug, clean_target)
-        if existing_row is not None:
-            existing_record = TeamRowConverter.to_team_record(existing_row)
-            record.migration_status = existing_record.migration_status
-            changed = (
-                existing_record.team_name != record.team_name
-                or existing_record.member_count != record.member_count
-                or existing_record.normalized_role != record.normalized_role
-                or existing_record.origin_role != record.origin_role
-            )
-            if changed:
-                row = TeamRowConverter.from_team_record(
-                    record, row_index=existing_row.row_index
+        with self._write_lock():
+            existing_row = self._find_row(clean_slug, clean_target)
+            if existing_row is not None:
+                existing_record = TeamRowConverter.to_team_record(existing_row)
+                record.migration_status = existing_record.migration_status
+                changed = (
+                    existing_record.team_name != record.team_name
+                    or existing_record.member_count != record.member_count
+                    or existing_record.normalized_role != record.normalized_role
+                    or existing_record.origin_role != record.origin_role
                 )
-                saved_row = sheet.update_row(row)
+                if changed:
+                    row = TeamRowConverter.from_team_record(
+                        record, row_index=existing_row.row_index
+                    )
+                    saved_row = sheet.update_row(row)
+                else:
+                    saved_row = existing_row
             else:
-                saved_row = existing_row
-        else:
-            row = TeamRowConverter.from_team_record(record, row_index=None)
-            saved_row = sheet.add(row)
+                row = TeamRowConverter.from_team_record(record, row_index=None)
+                saved_row = sheet.add(row)
 
-        return TeamRowConverter.to_team_record(saved_row)
+            return TeamRowConverter.to_team_record(saved_row)
 
     def update_progress(
         self,
@@ -1187,27 +1299,30 @@ class TeamInventory:
             raise ValueError("Target repository or project cannot be empty.")
 
         valid_status = validate_migration_status(status)
-        existing_row = self._find_row(clean_slug, clean_target)
+        with self._write_lock():
+            existing_row = self._find_row(clean_slug, clean_target)
 
-        if not existing_row:
-            record = TeamRecord(
-                team_name=clean_slug,
-                team_slug=clean_slug,
-                target_repo_or_project=clean_target,
-                migration_status=valid_status,
+            if not existing_row:
+                record = TeamRecord(
+                    team_name=clean_slug,
+                    team_slug=clean_slug,
+                    target_repo_or_project=clean_target,
+                    migration_status=valid_status,
+                )
+                row_index = None
+            else:
+                record = TeamRowConverter.to_team_record(existing_row)
+                if record.migration_status == valid_status:
+                    return record
+                record.migration_status = valid_status
+                row_index = existing_row.row_index
+
+            row = TeamRowConverter.from_team_record(record, row_index=row_index)
+            sheet = self._get_spreadsheet()
+            saved_row = (
+                sheet.update_row(row) if row_index is not None else sheet.add(row)
             )
-            row_index = None
-        else:
-            record = TeamRowConverter.to_team_record(existing_row)
-            if record.migration_status == valid_status:
-                return record
-            record.migration_status = valid_status
-            row_index = existing_row.row_index
-
-        row = TeamRowConverter.from_team_record(record, row_index=row_index)
-        sheet = self._get_spreadsheet()
-        saved_row = sheet.update_row(row) if row_index is not None else sheet.add(row)
-        return TeamRowConverter.to_team_record(saved_row)
+            return TeamRowConverter.to_team_record(saved_row)
 
     def get_team_permission(
         self, team_slug: str, target_repo_or_project: str | None = None
@@ -1310,42 +1425,43 @@ class TeamInventory:
         logger.info(
             "Synchronizing %d team records with topology inventory", len(records_list)
         )
-        diff = self.compute_diff(records_list)
-        synced: list[TeamRecord] = []
+        with self._write_lock():
+            diff = self.compute_diff(records_list)
+            synced: list[TeamRecord] = []
 
-        if diff.to_add:
-            rows_to_add = [
-                TeamRowConverter.from_team_record(r, row_index=None)
-                for r in diff.to_add
-            ]
-            if _can_batch_add(sheet):
-                sheet.batch_add(rows_to_add)
-            else:
-                logger.debug(
-                    "Batch add unsupported; appending %d team rows sequentially",
-                    len(rows_to_add),
-                )
-                for r in rows_to_add:
-                    sheet.add(r)
-            synced.extend(diff.to_add)
+            if diff.to_add:
+                rows_to_add = [
+                    TeamRowConverter.from_team_record(r, row_index=None)
+                    for r in diff.to_add
+                ]
+                if _can_batch_add(sheet):
+                    sheet.batch_add(rows_to_add)
+                else:
+                    logger.debug(
+                        "Batch add unsupported; appending %d team rows sequentially",
+                        len(rows_to_add),
+                    )
+                    for r in rows_to_add:
+                        sheet.add(r)
+                synced.extend(diff.to_add)
 
-        if diff.to_update:
-            rows_to_update = [
-                TeamRowConverter.from_team_record(up.record, row_index=up.row_index)
-                for up in diff.to_update
-            ]
-            if _can_batch_update(sheet):
-                sheet.batch_update_rows(rows_to_update)
-            else:
-                logger.debug(
-                    "Batch update unsupported; updating %d team rows sequentially",
-                    len(rows_to_update),
-                )
-                for r in rows_to_update:
-                    sheet.update_row(r)
-            synced.extend([up.record for up in diff.to_update])
+            if diff.to_update:
+                rows_to_update = [
+                    TeamRowConverter.from_team_record(up.record, row_index=up.row_index)
+                    for up in diff.to_update
+                ]
+                if _can_batch_update(sheet):
+                    sheet.batch_update_rows(rows_to_update)
+                else:
+                    logger.debug(
+                        "Batch update unsupported; updating %d team rows sequentially",
+                        len(rows_to_update),
+                    )
+                    for r in rows_to_update:
+                        sheet.update_row(r)
+                synced.extend([up.record for up in diff.to_update])
 
-        synced.extend(diff.unchanged)
+            synced.extend(diff.unchanged)
         logger.info(
             "Sync complete: %d synced (added=%d, updated=%d, unchanged=%d)",
             len(synced),
@@ -1368,6 +1484,7 @@ class PolicyInventory:
         credentials: Any = None,
         converter: Any = None,
         differ: Any = None,
+        use_cache: bool = False,
     ) -> None:
         self.spreadsheet = spreadsheet
         self.spreadsheet_id = spreadsheet_id
@@ -1375,12 +1492,34 @@ class PolicyInventory:
         self.sheet_name = sheet_name
         self.credentials = credentials
         self.converter = converter
+        self.use_cache: bool = bool(use_cache)
+        self._lock: threading.RLock = threading.RLock()
+        if (
+            self.use_cache
+            and self.spreadsheet is not None
+            and hasattr(self.spreadsheet, "use_cache")
+        ):
+            self.spreadsheet.use_cache = True
         if differ is not None:
             self.differ = differ
         else:
             from gh_migration_inventory_manager.scrap_diff import PolicyDiffer
 
             self.differ = PolicyDiffer()
+
+    def _write_lock(self) -> AbstractContextManager[Any]:
+        """Return inventory lock when caching is enabled, otherwise a no-op context."""
+        return self._lock if self.use_cache else nullcontext()
+
+    def invalidate_cache(self) -> None:
+        """Invalidate the underlying spreadsheet row cache for this tab."""
+        with self._lock:
+            if (
+                self.spreadsheet is not None
+                and hasattr(self.spreadsheet, "invalidate_cache")
+                and callable(self.spreadsheet.invalidate_cache)
+            ):
+                self.spreadsheet.invalidate_cache(self.sheet_name)
 
     def _validate_and_build_credentials(self) -> Any:
         """Validate credentials configuration and build Credentials instance."""
@@ -1389,47 +1528,53 @@ class PolicyInventory:
 
     def _validate_and_build_spreadsheet(self) -> SpreadsheetClient:
         """Validate spreadsheet configuration and build Spreadsheet instance."""
-        if self.spreadsheet is not None:
-            configured_id = getattr(self.spreadsheet, "id", None)
-            if (
-                self.spreadsheet_id is not None
-                and configured_id
-                and configured_id != str(self.spreadsheet_id).strip()
-            ):
+        with self._lock:
+            if self.spreadsheet is not None:
+                if self.use_cache and hasattr(self.spreadsheet, "use_cache"):
+                    self.spreadsheet.use_cache = True
+                configured_id = getattr(self.spreadsheet, "id", None)
+                if (
+                    self.spreadsheet_id is not None
+                    and configured_id
+                    and configured_id != str(self.spreadsheet_id).strip()
+                ):
+                    raise ValueError(
+                        "Inconsistent spreadsheet configuration: "
+                        f"spreadsheet.id '{configured_id}' "
+                        f"does not match spreadsheet_id '{self.spreadsheet_id}'."
+                    )
+                if hasattr(self.spreadsheet, "validate") and callable(
+                    self.spreadsheet.validate
+                ):
+                    self.spreadsheet.validate()
+                if hasattr(self.spreadsheet, "ensure_sheet") and callable(
+                    self.spreadsheet.ensure_sheet
+                ):
+                    self.spreadsheet.ensure_sheet(self.sheet_name)
+                self._spreadsheet_initialized = True
+                return self.spreadsheet
+
+            if not self.spreadsheet_id or not str(self.spreadsheet_id).strip():
                 raise ValueError(
-                    "Inconsistent spreadsheet configuration: "
-                    f"spreadsheet.id '{configured_id}' "
-                    f"does not match spreadsheet_id '{self.spreadsheet_id}'."
+                    "Missing Google Spreadsheet ID. Pass --spreadsheet-id."
                 )
-            if hasattr(self.spreadsheet, "validate") and callable(
-                self.spreadsheet.validate
-            ):
-                self.spreadsheet.validate()
-            if hasattr(self.spreadsheet, "ensure_sheet") and callable(
-                self.spreadsheet.ensure_sheet
-            ):
-                self.spreadsheet.ensure_sheet(self.sheet_name)
+
+            clean_id = str(self.spreadsheet_id).strip()
+            creds = self._validate_and_build_credentials()
+
+            from gh_migration_inventory_manager.google import Spreadsheet
+
+            sheet = Spreadsheet(
+                id=clean_id,
+                credentials=creds,
+                sheet_name=self.sheet_name,
+                use_cache=self.use_cache,
+            )
+            sheet.validate()
+            sheet.ensure_sheet(self.sheet_name)
+            self.spreadsheet = sheet
             self._spreadsheet_initialized = True
             return self.spreadsheet
-
-        if not self.spreadsheet_id or not str(self.spreadsheet_id).strip():
-            raise ValueError("Missing Google Spreadsheet ID. Pass --spreadsheet-id.")
-
-        clean_id = str(self.spreadsheet_id).strip()
-        creds = self._validate_and_build_credentials()
-
-        from gh_migration_inventory_manager.google import Spreadsheet
-
-        sheet = Spreadsheet(
-            id=clean_id,
-            credentials=creds,
-            sheet_name=self.sheet_name,
-        )
-        sheet.validate()
-        sheet.ensure_sheet(self.sheet_name)
-        self.spreadsheet = sheet
-        self._spreadsheet_initialized = True
-        return self.spreadsheet
 
     def _get_spreadsheet(self) -> SpreadsheetClient:
         """Retrieve, validate, and return the underlying Spreadsheet client."""
@@ -1517,27 +1662,28 @@ class PolicyInventory:
         )
 
         sheet = self._get_spreadsheet()
-        existing_row = self._find_row(clean_scope, clean_target, clean_rule)
+        with self._write_lock():
+            existing_row = self._find_row(clean_scope, clean_target, clean_rule)
 
-        if existing_row is not None:
-            existing_record = PolicyRowConverter.to_policy_record(existing_row)
-            record.migration_status = existing_record.migration_status
-            changed = (
-                existing_record.rule_parameters != record.rule_parameters
-                or existing_record.bypass_team_slugs != record.bypass_team_slugs
-                or existing_record.origin_raw_policy != record.origin_raw_policy
-            )
-            if not changed:
-                return existing_record
-            row = PolicyRowConverter.from_policy_record(
-                record, row_index=existing_row.row_index
-            )
-            saved_row = sheet.update_row(row)
-        else:
-            row = PolicyRowConverter.from_policy_record(record, row_index=None)
-            saved_row = sheet.add(row)
+            if existing_row is not None:
+                existing_record = PolicyRowConverter.to_policy_record(existing_row)
+                record.migration_status = existing_record.migration_status
+                changed = (
+                    existing_record.rule_parameters != record.rule_parameters
+                    or existing_record.bypass_team_slugs != record.bypass_team_slugs
+                    or existing_record.origin_raw_policy != record.origin_raw_policy
+                )
+                if not changed:
+                    return existing_record
+                row = PolicyRowConverter.from_policy_record(
+                    record, row_index=existing_row.row_index
+                )
+                saved_row = sheet.update_row(row)
+            else:
+                row = PolicyRowConverter.from_policy_record(record, row_index=None)
+                saved_row = sheet.add(row)
 
-        return PolicyRowConverter.to_policy_record(saved_row)
+            return PolicyRowConverter.to_policy_record(saved_row)
 
     def update_progress(
         self,
@@ -1553,27 +1699,30 @@ class PolicyInventory:
             policy_scope, target_ref_pattern, normalized_rule_type
         )
         valid_status = validate_migration_status(status)
-        existing_row = self._find_row(clean_scope, clean_target, clean_rule)
+        with self._write_lock():
+            existing_row = self._find_row(clean_scope, clean_target, clean_rule)
 
-        if not existing_row:
-            record = PolicyRecord(
-                policy_scope=clean_scope,
-                target_ref_pattern=clean_target,
-                normalized_rule_type=clean_rule,
-                migration_status=valid_status,
+            if not existing_row:
+                record = PolicyRecord(
+                    policy_scope=clean_scope,
+                    target_ref_pattern=clean_target,
+                    normalized_rule_type=clean_rule,
+                    migration_status=valid_status,
+                )
+                row_index = None
+            else:
+                record = PolicyRowConverter.to_policy_record(existing_row)
+                if record.migration_status == valid_status:
+                    return record
+                record.migration_status = valid_status
+                row_index = existing_row.row_index
+
+            row = PolicyRowConverter.from_policy_record(record, row_index=row_index)
+            sheet = self._get_spreadsheet()
+            saved_row = (
+                sheet.update_row(row) if row_index is not None else sheet.add(row)
             )
-            row_index = None
-        else:
-            record = PolicyRowConverter.to_policy_record(existing_row)
-            if record.migration_status == valid_status:
-                return record
-            record.migration_status = valid_status
-            row_index = existing_row.row_index
-
-        row = PolicyRowConverter.from_policy_record(record, row_index=row_index)
-        sheet = self._get_spreadsheet()
-        saved_row = sheet.update_row(row) if row_index is not None else sheet.add(row)
-        return PolicyRowConverter.to_policy_record(saved_row)
+            return PolicyRowConverter.to_policy_record(saved_row)
 
     def get_policy(
         self,
@@ -1685,42 +1834,46 @@ class PolicyInventory:
         logger.info(
             "Synchronizing %d policy records with policies inventory", len(records_list)
         )
-        diff = self.compute_diff(records_list)
-        synced: list[PolicyRecord] = []
+        with self._write_lock():
+            diff = self.compute_diff(records_list)
+            synced: list[PolicyRecord] = []
 
-        if diff.to_add:
-            rows_to_add = [
-                PolicyRowConverter.from_policy_record(r, row_index=None)
-                for r in diff.to_add
-            ]
-            if _can_batch_add(sheet):
-                sheet.batch_add(rows_to_add)
-            else:
-                logger.debug(
-                    "Batch add unsupported; appending %d policy rows sequentially",
-                    len(rows_to_add),
-                )
-                for r in rows_to_add:
-                    sheet.add(r)
-            synced.extend(diff.to_add)
+            if diff.to_add:
+                rows_to_add = [
+                    PolicyRowConverter.from_policy_record(r, row_index=None)
+                    for r in diff.to_add
+                ]
+                if _can_batch_add(sheet):
+                    sheet.batch_add(rows_to_add)
+                else:
+                    logger.debug(
+                        "Batch add unsupported; appending %d policy rows sequentially",
+                        len(rows_to_add),
+                    )
+                    for r in rows_to_add:
+                        sheet.add(r)
+                synced.extend(diff.to_add)
 
-        if diff.to_update:
-            rows_to_update = [
-                PolicyRowConverter.from_policy_record(up.record, row_index=up.row_index)
-                for up in diff.to_update
-            ]
-            if _can_batch_update(sheet):
-                sheet.batch_update_rows(rows_to_update)
-            else:
-                logger.debug(
-                    "Batch update unsupported; updating %d policy rows sequentially",
-                    len(rows_to_update),
-                )
-                for r in rows_to_update:
-                    sheet.update_row(r)
-            synced.extend([up.record for up in diff.to_update])
+            if diff.to_update:
+                rows_to_update = [
+                    PolicyRowConverter.from_policy_record(
+                        up.record, row_index=up.row_index
+                    )
+                    for up in diff.to_update
+                ]
+                if _can_batch_update(sheet):
+                    sheet.batch_update_rows(rows_to_update)
+                else:
+                    logger.debug(
+                        "Batch update unsupported; "
+                        "updating %d policy rows sequentially",
+                        len(rows_to_update),
+                    )
+                    for r in rows_to_update:
+                        sheet.update_row(r)
+                synced.extend([up.record for up in diff.to_update])
 
-        synced.extend(diff.unchanged)
+            synced.extend(diff.unchanged)
         logger.info(
             "Sync complete: %d synced (added=%d, updated=%d, unchanged=%d)",
             len(synced),

@@ -932,3 +932,158 @@ def test_given_policy_inventory_when_querying_policies_then_filters_correctly() 
         inv.get_policies_for_repository("", "repo-1")
     with pytest.raises(ValueError, match="Repository slug cannot be empty"):
         inv.get_policies_for_repository("proj-a", "")
+
+
+# ============================================================================
+# In-Memory Read Cache Tests (Issue #59)
+# ============================================================================
+
+
+def test_given_inventory_wave_with_use_cache_true_when_getting_and_updating_then_reads_sheet_once() -> (
+    None
+):
+    """Wave of N get_repository + update_progress calls issues only 1 Google Sheets GET."""
+    mock_service = MagicMock()
+    mock_values = mock_service.spreadsheets.return_value.values.return_value
+    mock_values.get.return_value.execute.return_value = {
+        "values": [
+            ["core", "repo-1", "Python", "", "", "", "Aguardando Migração", ""],
+            ["core", "repo-2", "Go", "", "", "", "Aguardando Migração", ""],
+        ]
+    }
+    mock_values.update.return_value.execute.return_value = {}
+    mock_values.append.return_value.execute.return_value = {
+        "updates": {"updatedRange": "Inventario!A4:H4"}
+    }
+
+    sheet = Spreadsheet(id="sheet-1", service=mock_service, use_cache=True)
+    inv = Inventory(spreadsheet=sheet, use_cache=True)
+
+    # Existing repos: get + update
+    r1 = inv.get_repository("repo-1", project="core")
+    assert r1 is not None
+    assert r1.migration_status == MigrationStatus.WAITTING
+
+    inv.update_progress("repo-1", MigrationStatus.ACTIVE_IN_BOTH, project="core")
+    inv.update_progress("repo-2", MigrationStatus.MIGRATED, project="core")
+    # New repo: appended and cached with row_index=4
+    inv.update_progress("repo-3", MigrationStatus.ACTIVE_IN_BOTH, project="core")
+    # Subsequent update on newly appended repo hits row_index=4 via update_row
+    inv.update_progress("repo-3", MigrationStatus.MIGRATED, project="core")
+
+    assert mock_values.get.call_count == 1
+    assert mock_values.append.call_count == 1
+    assert mock_values.update.call_count == 3
+
+    r3 = inv.get_repository("repo-3", project="core")
+    assert r3 is not None
+    assert r3.migration_status == MigrationStatus.MIGRATED
+    assert mock_values.get.call_count == 1
+
+    # Manual invalidation forces a fresh read
+    inv.invalidate_cache()
+    inv.get_repository("repo-1", project="core")
+    assert mock_values.get.call_count == 2
+
+
+def test_given_multi_layer_inventories_with_use_cache_true_when_reading_repos_then_policies_still_fetch_lazily() -> (
+    None
+):
+    """Reading repositories caches only Inventario; subsequent policy/team/pipeline reads fetch lazily."""
+    from gh_migration_inventory_manager.inventory import (
+        PipelineInventory,
+        PolicyInventory,
+        TeamInventory,
+    )
+
+    repo_service = MagicMock()
+    repo_service.spreadsheets.return_value.values.return_value.get.return_value.execute.return_value = {
+        "values": [
+            ["core", "repo-1", "Python", "", "", "", "Aguardando Migração", ""],
+        ]
+    }
+    policy_service = MagicMock()
+    policy_service.spreadsheets.return_value.values.return_value.get.return_value.execute.return_value = {
+        "values": [
+            [
+                "repo:core/repo-1",
+                "refs/heads/main",
+                "RequirePullRequest",
+                "",
+                "",
+                "",
+                "Aguardando Migração",
+                "core",
+                "repo-1",
+            ]
+        ]
+    }
+
+    repo_sheet = Spreadsheet(id="s1", sheet_name="Inventario", service=repo_service)
+    policy_sheet = Spreadsheet(id="s1", sheet_name="Policies", service=policy_service)
+    policy_sheet._ensured_sheets.add("Policies")
+
+    repo_inv = Inventory(spreadsheet=repo_sheet, use_cache=True)
+    policy_inv = PolicyInventory(spreadsheet=policy_sheet, use_cache=True)
+
+    # Verify default use_cache=False on all four classes
+    assert Inventory().use_cache is False
+    assert PipelineInventory().use_cache is False
+    assert TeamInventory().use_cache is False
+    assert PolicyInventory().use_cache is False
+
+    # 1st call: repositories
+    repo = repo_inv.get_repository("repo-1", project="core")
+    assert repo is not None
+    assert (
+        repo_service.spreadsheets.return_value.values.return_value.get.call_count == 1
+    )
+    assert (
+        policy_service.spreadsheets.return_value.values.return_value.get.call_count == 0
+    )
+
+    # 2nd call: policies for that repo (cold tab -> fetches live, NOT empty)
+    policies = policy_inv.get_policies_for_repository("core", "repo-1")
+    assert len(policies) == 1
+    assert policies[0].normalized_rule_type == "RequirePullRequest"
+    assert (
+        policy_service.spreadsheets.return_value.values.return_value.get.call_count == 1
+    )
+
+    # 3rd call: policies again -> cache hit
+    policies_again = policy_inv.get_policies_for_repository("core", "repo-1")
+    assert len(policies_again) == 1
+    assert (
+        policy_service.spreadsheets.return_value.values.return_value.get.call_count == 1
+    )
+
+
+def test_given_shared_cached_inventory_when_updating_concurrently_then_no_duplicate_rows_are_created() -> (
+    None
+):
+    """Concurrent update_progress calls for the same new repo create only 1 row."""
+    from concurrent.futures import ThreadPoolExecutor
+
+    mock_service = MagicMock()
+    mock_values = mock_service.spreadsheets.return_value.values.return_value
+    mock_values.get.return_value.execute.return_value = {"values": []}
+    mock_values.append.return_value.execute.return_value = {
+        "updates": {"updatedRange": "Inventario!A2:H2"}
+    }
+    mock_values.update.return_value.execute.return_value = {}
+
+    sheet = Spreadsheet(id="sheet-1", service=mock_service, use_cache=True)
+    inv = Inventory(spreadsheet=sheet, use_cache=True)
+
+    def worker(_: int) -> InventoryRecord:
+        return inv.update_progress(
+            "shared-repo", MigrationStatus.ACTIVE_IN_BOTH, project="core"
+        )
+
+    with ThreadPoolExecutor(max_workers=6) as executor:
+        results = list(executor.map(worker, range(6)))
+
+    assert len(results) == 6
+    assert mock_values.get.call_count == 1
+    assert mock_values.append.call_count == 1
+    assert mock_values.update.call_count == 5
