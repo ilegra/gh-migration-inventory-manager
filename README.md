@@ -460,6 +460,51 @@ Each inventory manager supports high-level query methods to inspect records with
 - **[`Spreadsheet`](src/gh_migration_inventory_manager/google.py)**:
   - `ensure_all_tabs() -> None`: Provisions missing tabs and upgrades existing row 1 headers across all four canonical sheets (`Inventario`, `Workflows`, `Topology`, `Policies`).
 
+### In-Memory Read Cache (`use_cache=True`)
+
+By default (`use_cache=False`), every lookup (`get_repository`, `update_progress`, `find_by`, `get_all_rows`) issues a live `spreadsheets().values().get(...)` request to the Google Sheets API. For migration waves or batch workflows that read and update many items in a single run, you can opt in to an in-memory row cache:
+
+```python
+from gh_migration_inventory_manager import (
+    Inventory,
+    MigrationStatus,
+    PolicyInventory,
+)
+
+repo_inv = Inventory(
+    spreadsheet_id="1Z0PAjv8KK6WBrS2356gtR3VE0ulD1-8LM4DPQiG-Nkk",
+    credentials_path="gcp-key.json",
+    use_cache=True,
+)
+policy_inv = PolicyInventory(
+    spreadsheet_id="1Z0PAjv8KK6WBrS2356gtR3VE0ulD1-8LM4DPQiG-Nkk",
+    credentials_path="gcp-key.json",
+    use_cache=True,
+)
+
+# 1st read on Inventario -> 1 API GET (populates Inventario cache)
+repo = repo_inv.get_repository("payment-service", project="CORE")
+
+# 1st read on Policies -> 1 API GET (Policies tab is cold, fetches live data & caches it)
+policies = policy_inv.get_policies_for_repository("CORE", "payment-service")
+
+# Subsequent lookups and write-through updates -> 0 extra API GETs
+repo_inv.update_progress(
+    "payment-service", MigrationStatus.ACTIVE_IN_BOTH, project="CORE"
+)
+updated = repo_inv.get_repository("payment-service", project="CORE")  # cache hit
+
+# Explicitly clear the cache if external edits occurred in the spreadsheet
+repo_inv.invalidate_cache()
+```
+
+**How it works:**
+- **Opt-in by default (`use_cache=False`)**: Available on `Spreadsheet`, `Inventory`, `PipelineInventory`, `TeamInventory`, and `PolicyInventory`. Existing live-read behavior is preserved unless explicitly enabled.
+- **Lazy, per-tab caching (cold vs. empty)**: Each tab (`Inventario`, `Workflows`, `Topology`, `Policies`) is cached independently on its own first read. Reading repositories only caches `Inventario` — subsequent reads on `Policies`, `Topology`, or `Workflows` still fetch their own tab from Google Sheets rather than returning empty results.
+- **Write-through consistency**: `add`, `batch_add`, `update_row`, `batch_update_rows`, `clear_row`, and `clear_tab` update the cache immediately (including tracking newly assigned `row_index` values). If a write fails or returns an unparseable range, the affected tab's cache is automatically invalidated so the next read fetches fresh data.
+- **Thread safety**: Cache access and inventory read-modify-write operations are guarded with re-entrant locks (`threading.RLock`), allowing an inventory instance to be safely shared across worker threads.
+- **Diagnostics (`DEBUG` logging)**: Cache hits, misses, write-through updates, and invalidations are logged at `DEBUG` level under `gh_migration_inventory_manager.google`.
+
 ### Python Library Usage Example
 
 ```python

@@ -687,3 +687,335 @@ def test_given_persistent_http_429_when_executing_request_then_exhausts_retries_
         mock_spreadsheet._execute(mock_req, num_retries=2, backoff_base=0.001)
 
     assert mock_req.execute.call_count == 3
+
+
+# ============================================================================
+# In-Memory Read Cache Tests
+# ============================================================================
+
+
+def test_given_default_use_cache_false_when_reading_repeatedly_then_queries_api_each_time(
+    mock_sheets_service: MagicMock,
+) -> None:
+    """Default use_cache=False preserves live-read behavior on every call."""
+    mock_get = mock_sheets_service.spreadsheets.return_value.values.return_value.get
+    mock_get.return_value.execute.return_value = {
+        "values": [
+            ["core", "repo-a", "Python", "", "", "", "Aguardando Migração", ""],
+        ]
+    }
+    sheet = Spreadsheet(id="sheet-1", service=mock_sheets_service)
+    assert sheet.use_cache is False
+
+    sheet.get_all_rows()
+    sheet.find_by("name", "repo-a")
+    sheet.get_all_rows()
+
+    assert mock_get.call_count == 3
+
+
+def test_given_use_cache_true_when_reading_repeatedly_then_serves_from_cache_and_logs_debug(
+    mock_sheets_service: MagicMock,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """First read populates cache; subsequent reads hit cache, log DEBUG, and isolate mutations."""
+    import logging
+
+    mock_get = mock_sheets_service.spreadsheets.return_value.values.return_value.get
+    mock_get.return_value.execute.return_value = {
+        "values": [
+            ["core", "repo-a", "Python", "", "", "", "Aguardando Migração", ""],
+            ["core", "repo-b", "Go", "", "", "", "Migrados (Somente GitHub)", ""],
+        ]
+    }
+    sheet = Spreadsheet(id="sheet-1", service=mock_sheets_service, use_cache=True)
+
+    with caplog.at_level(logging.DEBUG, logger="gh_migration_inventory_manager.google"):
+        rows1 = sheet.get_all_rows()
+        found = sheet.find_by("name", "repo-b")
+        rows2 = sheet.get_all_rows()
+
+    assert mock_get.call_count == 1
+    assert len(rows1) == 2
+    assert len(found) == 1
+    assert found[0].row_index == 3
+    assert found[0].data["stack"] == "Go"
+    assert len(rows2) == 2
+
+    # Mutating returned Row must not corrupt cached state
+    rows1[0].data["name"] = "mutated"
+    rows1[0].values[1] = "mutated"
+    fresh = sheet.find_by("name", "repo-a")
+    assert len(fresh) == 1
+    assert fresh[0].data["name"] == "repo-a"
+
+    debug_messages = [r.message for r in caplog.records if r.levelno == logging.DEBUG]
+    assert any("Cache miss for sheet 'Inventario'" in m for m in debug_messages)
+    assert any("Cache hit for sheet 'Inventario'" in m for m in debug_messages)
+
+
+def test_given_warm_cache_when_adding_updating_and_clearing_rows_then_writes_through_consistently(
+    mock_sheets_service: MagicMock,
+) -> None:
+    """Write-through keeps cache consistent on add, update_row, clear_row, and clear_tab."""
+    mock_values = mock_sheets_service.spreadsheets.return_value.values.return_value
+    mock_values.get.return_value.execute.return_value = {
+        "values": [
+            ["core", "repo-a", "Python", "", "", "", "Aguardando Migração", ""],
+        ]
+    }
+    mock_values.append.return_value.execute.return_value = {
+        "updates": {"updatedRange": "Inventario!A3:H3"}
+    }
+    mock_values.update.return_value.execute.return_value = {}
+    mock_values.clear.return_value.execute.return_value = {}
+
+    sheet = Spreadsheet(id="sheet-1", service=mock_sheets_service, use_cache=True)
+    # Warm cache
+    assert len(sheet.get_all_rows()) == 1
+    assert mock_values.get.call_count == 1
+
+    # Add row -> write-through with row_index=3
+    new_row = RowConverter.from_inventory_record(
+        InventoryRecord(name="repo-b", project="core", stack="Rust")
+    )
+    added = sheet.add(new_row)
+    assert added.row_index == 3
+
+    found_b = sheet.find_by("name", "repo-b")
+    assert len(found_b) == 1
+    assert found_b[0].row_index == 3
+    assert found_b[0].data["stack"] == "Rust"
+    assert mock_values.get.call_count == 1
+
+    # Update row -> write-through
+    updated_row = RowConverter.from_inventory_record(
+        InventoryRecord(
+            name="repo-b",
+            project="core",
+            stack="Rust",
+            migration_status=MigrationStatus.MIGRATED,
+        ),
+        row_index=3,
+    )
+    sheet.update_row(updated_row)
+    found_b_after = sheet.find_by("name", "repo-b")
+    assert found_b_after[0].data["migration_status"] == MigrationStatus.MIGRATED
+    assert mock_values.get.call_count == 1
+
+    # Clear row -> removed from cache
+    sheet.clear_row(3)
+    assert sheet.find_by("name", "repo-b") == []
+    assert len(sheet.get_all_rows()) == 1
+    assert mock_values.get.call_count == 1
+
+    # Clear tab -> cache becomes empty {} without needing re-read
+    sheet.ensure_sheet("Inventario", headers=[], existing_sheets=["Inventario"])
+    sheet.clear_tab()
+    assert sheet.get_all_rows() == []
+    assert mock_values.get.call_count == 1
+
+
+def test_given_warm_cache_when_batch_adding_and_batch_updating_then_writes_through_all_rows(
+    mock_sheets_service: MagicMock,
+) -> None:
+    """batch_add and batch_update_rows update cached rows with accurate row indices."""
+    mock_values = mock_sheets_service.spreadsheets.return_value.values.return_value
+    mock_values.get.return_value.execute.return_value = {"values": []}
+    mock_values.append.return_value.execute.return_value = {
+        "updates": {"updatedRange": "Inventario!A2:H3"}
+    }
+    mock_values.batchUpdate.return_value.execute.return_value = {}
+
+    sheet = Spreadsheet(id="sheet-1", service=mock_sheets_service, use_cache=True)
+    assert sheet.get_all_rows() == []
+
+    r1 = RowConverter.from_inventory_record(
+        InventoryRecord(name="repo-1", project="p1", stack="Go")
+    )
+    r2 = RowConverter.from_inventory_record(
+        InventoryRecord(name="repo-2", project="p1", stack="Java")
+    )
+    sheet.batch_add([r1, r2])
+    assert len(sheet.get_all_rows()) == 2
+    assert sheet.find_by("name", "repo-2")[0].row_index == 3
+    assert mock_values.get.call_count == 1
+
+    r2_upd = RowConverter.from_inventory_record(
+        InventoryRecord(
+            name="repo-2",
+            project="p1",
+            stack="Java",
+            migration_status=MigrationStatus.ACTIVE_IN_BOTH,
+        ),
+        row_index=3,
+    )
+    sheet.batch_update_rows([r2_upd])
+    assert (
+        sheet.find_by("name", "repo-2")[0].data["migration_status"]
+        == MigrationStatus.ACTIVE_IN_BOTH
+    )
+    assert mock_values.get.call_count == 1
+
+
+def test_given_warm_cache_when_add_lacks_updated_range_or_write_fails_then_invalidates_cache(
+    mock_sheets_service: MagicMock,
+) -> None:
+    """Missing updatedRange or API write error invalidates cache so next read fetches live data."""
+    mock_values = mock_sheets_service.spreadsheets.return_value.values.return_value
+    mock_values.get.return_value.execute.return_value = {
+        "values": [
+            ["core", "repo-a", "Python", "", "", "", "Aguardando Migração", ""],
+        ]
+    }
+    mock_values.append.return_value.execute.return_value = {"updates": {}}
+
+    sheet = Spreadsheet(id="sheet-1", service=mock_sheets_service, use_cache=True)
+    assert len(sheet.get_all_rows()) == 1
+    assert mock_values.get.call_count == 1
+
+    # Missing updatedRange -> cache invalidated
+    sheet.add(
+        RowConverter.from_inventory_record(
+            InventoryRecord(name="repo-b", project="core")
+        )
+    )
+    sheet.get_all_rows()
+    assert mock_values.get.call_count == 2
+
+    # Write failure -> cache invalidated and exception propagated
+    resp_500 = MagicMock()
+    resp_500.status = 500
+    mock_values.update.return_value.execute.side_effect = HttpError(resp_500, b"boom")
+    with pytest.raises(HttpError):
+        sheet.update_row(
+            RowConverter.from_inventory_record(
+                InventoryRecord(name="repo-a", project="core"), row_index=2
+            )
+        )
+    sheet.get_all_rows()
+    assert mock_values.get.call_count == 3
+
+
+def test_given_cold_cache_when_adding_before_reading_then_first_read_still_fetches_full_sheet(
+    mock_sheets_service: MagicMock,
+) -> None:
+    """Writing to a cold cache does not create a partial cache entry."""
+    mock_values = mock_sheets_service.spreadsheets.return_value.values.return_value
+    mock_values.append.return_value.execute.return_value = {
+        "updates": {"updatedRange": "Inventario!A3:H3"}
+    }
+    mock_values.get.return_value.execute.return_value = {
+        "values": [
+            ["core", "existing-repo", "Java", "", "", "", "Aguardando Migração", ""],
+            ["core", "new-repo", "Go", "", "", "", "Aguardando Migração", ""],
+        ]
+    }
+
+    sheet = Spreadsheet(id="sheet-1", service=mock_sheets_service, use_cache=True)
+    sheet.add(
+        RowConverter.from_inventory_record(
+            InventoryRecord(name="new-repo", project="core", stack="Go")
+        )
+    )
+
+    rows = sheet.get_all_rows()
+    assert mock_values.get.call_count == 1
+    assert [r.data["name"] for r in rows] == ["existing-repo", "new-repo"]
+
+
+def test_given_warm_cache_when_invalidating_or_switching_sheet_name_then_fetches_lazily_per_tab(
+    mock_sheets_service: MagicMock,
+) -> None:
+    """Caching one tab never causes another uncached tab to return empty; invalidate_cache resets."""
+    mock_values = mock_sheets_service.spreadsheets.return_value.values.return_value
+    mock_values.get.return_value.execute.side_effect = [
+        {
+            "values": [
+                ["core", "repo-a", "Python", "", "", "", "Aguardando Migração", ""],
+            ]
+        },
+        {
+            "values": [
+                [
+                    "repo:core/repo-a",
+                    "refs/heads/main",
+                    "RequirePullRequest",
+                    "",
+                    "",
+                    "",
+                    "Aguardando Migração",
+                    "core",
+                    "repo-a",
+                ]
+            ]
+        },
+        {
+            "values": [
+                [
+                    "core",
+                    "repo-a",
+                    "Python",
+                    "",
+                    "",
+                    "",
+                    "Migrados (Somente GitHub)",
+                    "",
+                ],
+            ]
+        },
+    ]
+
+    sheet = Spreadsheet(
+        id="sheet-1",
+        sheet_name="Inventario",
+        service=mock_sheets_service,
+        use_cache=True,
+    )
+    assert len(sheet.get_all_rows()) == 1
+    assert mock_values.get.call_count == 1
+
+    # Switch to Policies tab -> cold cache -> fetches live Policies
+    sheet.sheet_name = "Policies"
+    policy_rows = sheet.get_all_rows()
+    assert len(policy_rows) == 1
+    assert policy_rows[0].data["policy_scope"] == "repo:core/repo-a"
+    assert mock_values.get.call_count == 2
+
+    # Switch back to Inventario -> still warm (0 extra API calls)
+    sheet.sheet_name = "Inventario"
+    assert len(sheet.get_all_rows()) == 1
+    assert mock_values.get.call_count == 2
+
+    # Explicit invalidate_cache -> next read fetches live data
+    sheet.invalidate_cache("Inventario")
+    refreshed = sheet.get_all_rows()
+    assert refreshed[0].data["migration_status"] == MigrationStatus.MIGRATED
+    assert mock_values.get.call_count == 3
+
+
+def test_given_concurrent_threads_when_reading_cached_spreadsheet_then_only_one_api_read_occurs(
+    mock_sheets_service: MagicMock,
+) -> None:
+    """Concurrent reads on a cold cache trigger only a single Google Sheets GET request."""
+    from concurrent.futures import ThreadPoolExecutor
+
+    mock_values = mock_sheets_service.spreadsheets.return_value.values.return_value
+    mock_values.get.return_value.execute.return_value = {
+        "values": [
+            ["core", f"repo-{i}", "Python", "", "", "", "Aguardando Migração", ""]
+            for i in range(10)
+        ]
+    }
+    sheet = Spreadsheet(id="sheet-1", service=mock_sheets_service, use_cache=True)
+
+    def worker(idx: int) -> str:
+        found = sheet.find_by("name", f"repo-{idx}")
+        assert len(found) == 1
+        return str(found[0].data["name"])
+
+    with ThreadPoolExecutor(max_workers=8) as executor:
+        results = list(executor.map(worker, range(10)))
+
+    assert results == [f"repo-{i}" for i in range(10)]
+    assert mock_values.get.call_count == 1
