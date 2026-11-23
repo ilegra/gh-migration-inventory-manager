@@ -129,6 +129,7 @@ class NormalizedRuleType(str, Enum):
     REQUIRE_STATUS_CHECKS = "RequireStatusChecks"
     REQUIRE_LINEAR_HISTORY = "RequireLinearHistory"
     REQUIRE_SIGNED_COMMITS = "RequireSignedCommits"
+    UNMAPPED = "Unmapped"
 
 
 _NORMALIZED_RULE_TYPE_LOOKUP: dict[str, NormalizedRuleType] = {
@@ -165,6 +166,12 @@ _NORMALIZED_RULE_TYPE_LOOKUP: dict[str, NormalizedRuleType] = {
     "require_signed_commits": NormalizedRuleType.REQUIRE_SIGNED_COMMITS,
     "require-signed-commits": NormalizedRuleType.REQUIRE_SIGNED_COMMITS,
     "signed_commits": NormalizedRuleType.REQUIRE_SIGNED_COMMITS,
+    "unmapped": NormalizedRuleType.UNMAPPED,
+    "unmapped_policy": NormalizedRuleType.UNMAPPED,
+    "unmapped-policy": NormalizedRuleType.UNMAPPED,
+    "none_mapped": NormalizedRuleType.UNMAPPED,
+    "none-mapped": NormalizedRuleType.UNMAPPED,
+    "not_mapped": NormalizedRuleType.UNMAPPED,
 }
 
 

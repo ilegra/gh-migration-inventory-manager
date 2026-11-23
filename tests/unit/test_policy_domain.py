@@ -64,6 +64,11 @@ from gh_migration_inventory_manager.scrap import (
         ("RequireSignedCommits", NormalizedRuleType.REQUIRE_SIGNED_COMMITS),
         ("require_signed_commits", NormalizedRuleType.REQUIRE_SIGNED_COMMITS),
         ("signed_commits", NormalizedRuleType.REQUIRE_SIGNED_COMMITS),
+        (NormalizedRuleType.UNMAPPED, NormalizedRuleType.UNMAPPED),
+        ("Unmapped", NormalizedRuleType.UNMAPPED),
+        ("unmapped", NormalizedRuleType.UNMAPPED),
+        ("unmapped_policy", NormalizedRuleType.UNMAPPED),
+        ("none_mapped", NormalizedRuleType.UNMAPPED),
     ],
 )
 def test_given_valid_rule_type_when_normalizing_then_returns_canonical_enum(

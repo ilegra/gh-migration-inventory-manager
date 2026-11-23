@@ -7,6 +7,7 @@ import base64
 import json
 import logging
 import posixpath
+from collections.abc import Callable
 from datetime import datetime
 from typing import Any, cast
 
@@ -660,13 +661,38 @@ class BitbucketCloudPolicyScraper(PolicyScraper):
                 slugs.append(slug)
         return sorted(set(slugs))
 
+    _RESTRICTION_KIND_MAP: dict[
+        str, tuple[NormalizedRuleType, Callable[[dict[str, Any]], dict[str, Any]]]
+    ] = {
+        "require_approvals_to_merge": (
+            NormalizedRuleType.REQUIRE_PULL_REQUEST,
+            lambda item: {"min_approvals": int(item.get("value") or 1)},
+        ),
+        "require_default_reviewer_approvals_to_merge": (
+            NormalizedRuleType.REQUIRE_PULL_REQUEST,
+            lambda item: {"min_approvals": int(item.get("value") or 1)},
+        ),
+        "require_no_changes_requested": (
+            NormalizedRuleType.REQUIRE_PULL_REQUEST,
+            lambda _item: {"require_no_changes_requested": True},
+        ),
+        "require_passing_builds_to_merge": (
+            NormalizedRuleType.REQUIRE_STATUS_CHECKS,
+            lambda item: {"min_successful_builds": int(item.get("value") or 1)},
+        ),
+        "push": (NormalizedRuleType.REQUIRE_PULL_REQUEST, lambda _item: {}),
+        "restrict_merges": (NormalizedRuleType.REQUIRE_PULL_REQUEST, lambda _item: {}),
+        "force": (NormalizedRuleType.BLOCK_FORCE_PUSH, lambda _item: {}),
+        "delete": (NormalizedRuleType.PREVENT_BRANCH_DELETION, lambda _item: {}),
+    }
+
     def _map_restriction_to_policy(
         self,
         item: dict[str, Any],
         workspace: str,
         project_key: str,
         repo_slug: str,
-    ) -> BranchPolicy | None:
+    ) -> BranchPolicy:
         """Map Bitbucket Cloud branch restriction to canonical BranchPolicy."""
         kind = str(item.get("kind", "")).lower().strip()
         pattern = self._canonicalize_ref(item.get("pattern"))
@@ -676,67 +702,41 @@ class BitbucketCloudPolicyScraper(PolicyScraper):
         bypass_slugs = self._extract_bypasses(item)
         raw_origin = json.dumps(item, sort_keys=True)
 
-        if kind == "require_approvals_to_merge":
-            min_approvals = int(item.get("value") or 1)
-            return BranchPolicy(
-                policy_scope=scope,
-                target_ref_pattern=pattern,
-                normalized_rule_type=NormalizedRuleType.REQUIRE_PULL_REQUEST,
-                project=project_key,
-                repository=repo_slug,
-                rule_parameters={"min_approvals": min_approvals},
-                bypass_team_slugs=bypass_slugs,
-                origin_raw_policy=raw_origin,
-                platform="bitbucket-cloud",
-            )
-        if kind == "require_passing_builds_to_merge":
-            min_builds = int(item.get("value") or 1)
-            return BranchPolicy(
-                policy_scope=scope,
-                target_ref_pattern=pattern,
-                normalized_rule_type=NormalizedRuleType.REQUIRE_STATUS_CHECKS,
-                project=project_key,
-                repository=repo_slug,
-                rule_parameters={"min_successful_builds": min_builds},
-                bypass_team_slugs=bypass_slugs,
-                origin_raw_policy=raw_origin,
-                platform="bitbucket-cloud",
-            )
-        if kind in ("push", "restrict_merges"):
-            return BranchPolicy(
-                policy_scope=scope,
-                target_ref_pattern=pattern,
-                normalized_rule_type=NormalizedRuleType.REQUIRE_PULL_REQUEST,
-                project=project_key,
-                repository=repo_slug,
-                bypass_team_slugs=bypass_slugs,
-                origin_raw_policy=raw_origin,
-                platform="bitbucket-cloud",
-            )
-        if kind == "force":
-            return BranchPolicy(
-                policy_scope=scope,
-                target_ref_pattern=pattern,
-                normalized_rule_type=NormalizedRuleType.BLOCK_FORCE_PUSH,
-                project=project_key,
-                repository=repo_slug,
-                bypass_team_slugs=bypass_slugs,
-                origin_raw_policy=raw_origin,
-                platform="bitbucket-cloud",
-            )
-        if kind == "delete":
-            return BranchPolicy(
-                policy_scope=scope,
-                target_ref_pattern=pattern,
-                normalized_rule_type=NormalizedRuleType.PREVENT_BRANCH_DELETION,
-                project=project_key,
-                repository=repo_slug,
-                bypass_team_slugs=bypass_slugs,
-                origin_raw_policy=raw_origin,
-                platform="bitbucket-cloud",
-            )
+        mapping = self._RESTRICTION_KIND_MAP.get(kind)
+        if mapping is not None:
+            rule_type, param_extractor = mapping
+            rule_parameters = param_extractor(item)
+            metadata: dict[str, Any] = {}
+        else:
+            unmapped_kind = kind or "unknown"
+            rule_type = NormalizedRuleType.UNMAPPED
+            rule_parameters = {"unmapped_kind": unmapped_kind}
+            if item.get("value") is not None:
+                rule_parameters["value"] = item.get("value")
+            metadata = {
+                "unmapped": True,
+                "origin_platform": "bitbucket-cloud",
+                "origin_kind": unmapped_kind,
+                "reason": (
+                    "No canonical GitHub Ruleset mapping for Bitbucket Cloud "
+                    "restriction kind."
+                ),
+            }
+            if item.get("branch_match_kind") is not None:
+                metadata["branch_match_kind"] = item.get("branch_match_kind")
 
-        return None
+        return BranchPolicy(
+            policy_scope=scope,
+            target_ref_pattern=pattern,
+            normalized_rule_type=rule_type,
+            project=project_key,
+            repository=repo_slug,
+            rule_parameters=rule_parameters,
+            bypass_team_slugs=bypass_slugs,
+            origin_raw_policy=raw_origin,
+            platform="bitbucket-cloud",
+            metadata=metadata,
+        )
 
     def scrape(self) -> list[BranchPolicy]:
         """Discover and return canonical branch policies from Bitbucket Cloud."""
