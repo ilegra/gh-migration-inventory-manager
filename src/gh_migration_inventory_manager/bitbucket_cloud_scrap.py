@@ -666,7 +666,7 @@ class BitbucketCloudPolicyScraper(PolicyScraper):
         workspace: str,
         project_key: str,
         repo_slug: str,
-    ) -> BranchPolicy | None:
+    ) -> BranchPolicy:
         """Map Bitbucket Cloud branch restriction to canonical BranchPolicy."""
         kind = str(item.get("kind", "")).lower().strip()
         pattern = self._canonicalize_ref(item.get("pattern"))
@@ -676,7 +676,10 @@ class BitbucketCloudPolicyScraper(PolicyScraper):
         bypass_slugs = self._extract_bypasses(item)
         raw_origin = json.dumps(item, sort_keys=True)
 
-        if kind == "require_approvals_to_merge":
+        if kind in (
+            "require_approvals_to_merge",
+            "require_default_reviewer_approvals_to_merge",
+        ):
             min_approvals = int(item.get("value") or 1)
             return BranchPolicy(
                 policy_scope=scope,
@@ -685,6 +688,18 @@ class BitbucketCloudPolicyScraper(PolicyScraper):
                 project=project_key,
                 repository=repo_slug,
                 rule_parameters={"min_approvals": min_approvals},
+                bypass_team_slugs=bypass_slugs,
+                origin_raw_policy=raw_origin,
+                platform="bitbucket-cloud",
+            )
+        if kind == "require_no_changes_requested":
+            return BranchPolicy(
+                policy_scope=scope,
+                target_ref_pattern=pattern,
+                normalized_rule_type=NormalizedRuleType.REQUIRE_PULL_REQUEST,
+                project=project_key,
+                repository=repo_slug,
+                rule_parameters={"require_no_changes_requested": True},
                 bypass_team_slugs=bypass_slugs,
                 origin_raw_policy=raw_origin,
                 platform="bitbucket-cloud",
@@ -736,7 +751,34 @@ class BitbucketCloudPolicyScraper(PolicyScraper):
                 platform="bitbucket-cloud",
             )
 
-        return None
+        unmapped_kind = kind or "unknown"
+        unmapped_params: dict[str, Any] = {"unmapped_kind": unmapped_kind}
+        if item.get("value") is not None:
+            unmapped_params["value"] = item.get("value")
+        unmapped_metadata: dict[str, Any] = {
+            "unmapped": True,
+            "origin_platform": "bitbucket-cloud",
+            "origin_kind": unmapped_kind,
+            "reason": (
+                "No canonical GitHub Ruleset mapping for Bitbucket Cloud "
+                "restriction kind."
+            ),
+        }
+        if item.get("branch_match_kind") is not None:
+            unmapped_metadata["branch_match_kind"] = item.get("branch_match_kind")
+
+        return BranchPolicy(
+            policy_scope=scope,
+            target_ref_pattern=pattern,
+            normalized_rule_type=NormalizedRuleType.UNMAPPED,
+            project=project_key,
+            repository=repo_slug,
+            rule_parameters=unmapped_params,
+            bypass_team_slugs=bypass_slugs,
+            origin_raw_policy=raw_origin,
+            platform="bitbucket-cloud",
+            metadata=unmapped_metadata,
+        )
 
     def scrape(self) -> list[BranchPolicy]:
         """Discover and return canonical branch policies from Bitbucket Cloud."""

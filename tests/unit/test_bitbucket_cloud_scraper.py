@@ -330,6 +330,90 @@ class TestBitbucketCloudPolicyScraper:
         assert pr_policy.rule_parameters["min_approvals"] == 2
         assert "core-leads" in pr_policy.bypass_team_slugs
 
+    def test_given_default_reviewer_approvals_restriction_when_scraping_then_maps_to_require_pull_request(
+        self,
+    ) -> None:
+        mock_client = MagicMock(spec=BitbucketCloudClient)
+        mock_client.get_branch_restrictions.return_value = [
+            {
+                "branch_match_kind": "glob",
+                "groups": [],
+                "kind": "require_default_reviewer_approvals_to_merge",
+                "pattern": "*",
+                "type": "branchrestriction",
+                "users": [],
+                "value": 2,
+            },
+            {
+                "branch_match_kind": "glob",
+                "groups": [],
+                "kind": "require_default_reviewer_approvals_to_merge",
+                "pattern": "feature/*",
+                "type": "branchrestriction",
+                "users": [],
+                "value": None,
+            },
+        ]
+
+        scraper = BitbucketCloudPolicyScraper(
+            workspace="corp", project_key="CORE", repo_slug="api", client=mock_client
+        )
+        policies = scraper.scrape()
+
+        assert len(policies) == 2
+        assert policies[0].target_ref_pattern == "*"
+        assert (
+            policies[0].normalized_rule_type == NormalizedRuleType.REQUIRE_PULL_REQUEST
+        )
+        assert policies[0].rule_parameters == {"min_approvals": 2}
+        assert policies[1].target_ref_pattern == "refs/heads/feature/*"
+        assert (
+            policies[1].normalized_rule_type == NormalizedRuleType.REQUIRE_PULL_REQUEST
+        )
+        assert policies[1].rule_parameters == {"min_approvals": 1}
+
+    def test_given_no_changes_requested_restriction_when_scraping_then_maps_to_require_pull_request(
+        self,
+    ) -> None:
+        mock_client = MagicMock(spec=BitbucketCloudClient)
+        mock_client.get_branch_restrictions.return_value = [
+            {
+                "branch_match_kind": "glob",
+                "groups": [],
+                "kind": "require_no_changes_requested",
+                "pattern": "*",
+                "type": "branchrestriction",
+                "users": [],
+                "value": None,
+            },
+            {
+                "branch_match_kind": "glob",
+                "groups": [],
+                "kind": "require_no_changes_requested",
+                "pattern": "feature/*",
+                "type": "branchrestriction",
+                "users": [],
+                "value": None,
+            },
+        ]
+
+        scraper = BitbucketCloudPolicyScraper(
+            workspace="corp", project_key="CORE", repo_slug="api", client=mock_client
+        )
+        policies = scraper.scrape()
+
+        assert len(policies) == 2
+        assert policies[0].target_ref_pattern == "*"
+        assert (
+            policies[0].normalized_rule_type == NormalizedRuleType.REQUIRE_PULL_REQUEST
+        )
+        assert policies[0].rule_parameters == {"require_no_changes_requested": True}
+        assert policies[1].target_ref_pattern == "refs/heads/feature/*"
+        assert (
+            policies[1].normalized_rule_type == NormalizedRuleType.REQUIRE_PULL_REQUEST
+        )
+        assert policies[1].rule_parameters == {"require_no_changes_requested": True}
+
 
 class TestBitbucketCloudTeamScraper:
     """Unit tests for BitbucketCloudTeamScraper group permissions and RBAC."""
@@ -686,14 +770,33 @@ class TestBitbucketCloudCoverageAndBranching:
         client = BitbucketCloudClient(base_url="api.bitbucket.org/2.0")
         assert client.base_url == "https://api.bitbucket.org/2.0"
 
-    def test_given_policy_scraper_with_unrecognized_kind_when_mapping_then_returns_none(
+    def test_given_policy_scraper_with_unrecognized_kind_when_scraping_then_returns_unmapped_policy_with_metadata(
         self,
     ) -> None:
-        scraper = BitbucketCloudPolicyScraper()
-        res = scraper._map_restriction_to_policy(
-            {"kind": "unsupported_rule_type"}, "ws", "proj", "repo"
+        mock_client = MagicMock(spec=BitbucketCloudClient)
+        mock_client.get_branch_restrictions.return_value = [
+            {
+                "kind": "unsupported_rule_type",
+                "pattern": "*",
+                "branch_match_kind": "glob",
+                "value": 3,
+            }
+        ]
+        scraper = BitbucketCloudPolicyScraper(
+            workspace="ws", project_key="proj", repo_slug="repo", client=mock_client
         )
-        assert res is None
+        policies = scraper.scrape()
+        assert len(policies) == 1
+        policy = policies[0]
+        assert policy.normalized_rule_type == NormalizedRuleType.UNMAPPED
+        assert policy.rule_parameters == {
+            "unmapped_kind": "unsupported_rule_type",
+            "value": 3,
+        }
+        assert policy.metadata["unmapped"] is True
+        assert policy.metadata["origin_platform"] == "bitbucket-cloud"
+        assert policy.metadata["origin_kind"] == "unsupported_rule_type"
+        assert policy.metadata["branch_match_kind"] == "glob"
 
     def test_given_policy_scraper_ref_canonicalization_when_given_refs_then_keeps_as_is(
         self,
