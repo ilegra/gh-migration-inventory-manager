@@ -647,6 +647,20 @@ class BitbucketCloudPolicyScraper(PolicyScraper):
             return clean
         return f"refs/heads/{clean}"
 
+    def _resolve_target_ref_pattern(self, item: dict[str, Any]) -> str:
+        """Resolve canonical target ref pattern from glob pattern or branching model."""
+        raw_pattern = str(item.get("pattern") or "").strip()
+        if raw_pattern:
+            return self._canonicalize_ref(raw_pattern)
+
+        match_kind = str(item.get("branch_match_kind") or "").strip().lower()
+        if match_kind == "branching_model":
+            branch_type = str(item.get("branch_type") or "").strip()
+            if branch_type:
+                return self._canonicalize_ref(branch_type)
+
+        return "*"
+
     def _extract_bypasses(self, item: dict[str, Any]) -> list[str]:
         """Extract and slugify group bypass names."""
         slugs: list[str] = []
@@ -676,6 +690,10 @@ class BitbucketCloudPolicyScraper(PolicyScraper):
             NormalizedRuleType.REQUIRE_PULL_REQUEST,
             lambda _item: {"require_no_changes_requested": True},
         ),
+        "reset_pullrequest_approvals_on_change": (
+            NormalizedRuleType.REQUIRE_PULL_REQUEST,
+            lambda _item: {"dismiss_stale_reviews_on_push": True},
+        ),
         "require_passing_builds_to_merge": (
             NormalizedRuleType.REQUIRE_STATUS_CHECKS,
             lambda item: {"min_successful_builds": int(item.get("value") or 1)},
@@ -695,7 +713,7 @@ class BitbucketCloudPolicyScraper(PolicyScraper):
     ) -> BranchPolicy:
         """Map Bitbucket Cloud branch restriction to canonical BranchPolicy."""
         kind = str(item.get("kind", "")).lower().strip()
-        pattern = self._canonicalize_ref(item.get("pattern"))
+        pattern = self._resolve_target_ref_pattern(item)
         scope = (
             f"repo:{project_key}/{repo_slug}" if project_key else f"repo:{repo_slug}"
         )
