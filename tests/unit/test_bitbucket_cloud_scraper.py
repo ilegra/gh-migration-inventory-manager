@@ -617,6 +617,73 @@ class TestBitbucketCloudPolicyScraper:
         assert record.target_ref_pattern == "refs/heads/master"
         assert record.rule_parameters == "required_review_thread_resolution: true"
 
+    def test_given_require_tasks_to_be_completed_restriction_when_scraping_then_maps_to_require_pull_request(
+        self,
+    ) -> None:
+        mock_client = MagicMock(spec=BitbucketCloudClient)
+        mock_client.get_branch_restrictions.return_value = [
+            {
+                "branch_match_kind": "glob",
+                "groups": [],
+                "id": 65862558,
+                "kind": "require_tasks_to_be_completed",
+                "pattern": "*",
+                "pipelines_source_branches": [],
+                "type": "branchrestriction",
+                "users": [],
+                "value": None,
+            },
+            {
+                "branch_match_kind": "glob",
+                "groups": [],
+                "id": 65862559,
+                "kind": "require_tasks_to_be_completed",
+                "pattern": "master",
+                "pipelines_source_branches": [],
+                "type": "branchrestriction",
+                "users": [],
+                "value": None,
+            },
+        ]
+
+        scraper = BitbucketCloudPolicyScraper(
+            workspace="corp", project_key="CORE", repo_slug="api", client=mock_client
+        )
+        policies = scraper.scrape()
+
+        assert len(policies) == 2
+        assert policies[0].target_ref_pattern == "*"
+        assert policies[1].target_ref_pattern == "refs/heads/master"
+        for policy in policies:
+            assert (
+                policy.normalized_rule_type == NormalizedRuleType.REQUIRE_PULL_REQUEST
+            )
+            assert policy.rule_parameters == {"required_review_thread_resolution": True}
+            assert policy.metadata == {}
+
+    def test_given_require_tasks_to_be_completed_policy_when_converted_then_formats_required_review_thread_resolution_parameter(
+        self,
+    ) -> None:
+        mock_client = MagicMock(spec=BitbucketCloudClient)
+        mock_client.get_branch_restrictions.return_value = [
+            {
+                "branch_match_kind": "glob",
+                "kind": "require_tasks_to_be_completed",
+                "pattern": "*",
+                "value": None,
+            }
+        ]
+
+        scraper = BitbucketCloudPolicyScraper(
+            workspace="corp", project_key="CORE", repo_slug="api", client=mock_client
+        )
+        policies = scraper.scrape()
+        record = PolicyConverter().to_policy_record(policies[0])
+
+        assert record.normalized_rule_type == "RequirePullRequest"
+        assert record.target_ref_pattern == "*"
+        assert record.rule_parameters == "required_review_thread_resolution: true"
+
 
 class TestBitbucketCloudTeamScraper:
     """Unit tests for BitbucketCloudTeamScraper group permissions and RBAC."""
