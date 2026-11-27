@@ -694,6 +694,10 @@ class BitbucketCloudPolicyScraper(PolicyScraper):
             NormalizedRuleType.REQUIRE_PULL_REQUEST,
             lambda _item: {"dismiss_stale_reviews_on_push": True},
         ),
+        "smart_reset_pullrequest_approvals": (
+            NormalizedRuleType.REQUIRE_PULL_REQUEST,
+            lambda _item: {"dismiss_stale_reviews_on_push": True},
+        ),
         "reset_pullrequest_changes_requested_on_change": (
             NormalizedRuleType.UNSUPPORTED,
             lambda _item: {
@@ -794,6 +798,16 @@ class BitbucketCloudPolicyScraper(PolicyScraper):
                 }
                 if item.get("branch_match_kind") is not None:
                     metadata["branch_match_kind"] = item.get("branch_match_kind")
+            elif kind == "smart_reset_pullrequest_approvals":
+                metadata = {
+                    "origin_platform": "bitbucket-cloud",
+                    "origin_kind": kind,
+                    "migration_note": (
+                        "Bitbucket smart_reset_pullrequest_approvals resets "
+                        "approvals only on non-trivial diff changes; GitHub "
+                        "dismiss_stale_reviews_on_push resets approvals on every push."
+                    ),
+                }
             else:
                 metadata = {}
         else:
