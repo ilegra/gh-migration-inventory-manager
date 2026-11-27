@@ -734,6 +734,13 @@ class BitbucketCloudPolicyScraper(PolicyScraper):
             NormalizedRuleType.REPOSITORY_SETTING,
             lambda _item: {"allow_auto_merge": True},
         ),
+        "enforce_merge_checks": (
+            NormalizedRuleType.NO_OP,
+            lambda _item: {
+                "enforcement": "active",
+                "origin_kind": "enforce_merge_checks",
+            },
+        ),
     }
 
     def _map_restriction_to_policy(
@@ -794,6 +801,28 @@ class BitbucketCloudPolicyScraper(PolicyScraper):
                         "GitHub Rulesets do not automatically clear 'Changes "
                         "requested' reviews on push; dismiss_stale_reviews_on_push "
                         "only dismisses approvals."
+                    ),
+                }
+                if item.get("branch_match_kind") is not None:
+                    metadata["branch_match_kind"] = item.get("branch_match_kind")
+            elif rule_type == NormalizedRuleType.NO_OP:
+                logger.debug(
+                    "Bitbucket Cloud restriction '%s' on %s/%s (pattern=%s) is "
+                    "handled as NoOp (covered by GitHub Ruleset default "
+                    "enforcement='active').",
+                    kind,
+                    workspace,
+                    repo_slug,
+                    pattern,
+                )
+                metadata = {
+                    "no_op": True,
+                    "origin_platform": "bitbucket-cloud",
+                    "origin_kind": kind,
+                    "reason": (
+                        "Bitbucket Cloud enforce_merge_checks blocks merges when "
+                        "merge checks fail; covered by GitHub Rulesets default "
+                        "enforcement='active' with no separate rule required."
                     ),
                 }
                 if item.get("branch_match_kind") is not None:
