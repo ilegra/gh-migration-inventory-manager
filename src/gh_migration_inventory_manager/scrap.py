@@ -123,12 +123,18 @@ def normalize_role(role: Any) -> NormalizedRole:
 class NormalizedRuleType(str, Enum):
     """Canonical GitHub Ruleset rule archetype.
 
-    Distinguishes between:
+    Distinguishes between three non-rule classifications:
+    - ``NO_OP``: Known source platform restriction kinds already covered by
+      GitHub Ruleset defaults (e.g. ``enforcement: "active"``) that do not
+      require a separate rule entry; downstream consumers should skip cleanly
+      without warning while keeping the row for auditability.
     - ``UNSUPPORTED``: Known source platform restriction kinds that have no
-      1-to-1 equivalent in GitHub Rulesets (emitted with an explicit migration
-      note in ``rule_parameters``).
+      1-to-1 equivalent in GitHub Rulesets (emitted with an explicit
+      ``migration_note`` in ``rule_parameters`` and a ``WARNING`` log for
+      manual follow-up).
     - ``UNMAPPED``: Unknown or unrecognized source platform restriction kinds
-      (or unsupported parameter values) that cannot be mapped yet.
+      (or unsupported parameter values) that cannot be mapped yet and require
+      investigation or new scraper support.
     """
 
     REQUIRE_PULL_REQUEST = "RequirePullRequest"
@@ -138,6 +144,7 @@ class NormalizedRuleType(str, Enum):
     REQUIRE_LINEAR_HISTORY = "RequireLinearHistory"
     REQUIRE_SIGNED_COMMITS = "RequireSignedCommits"
     REPOSITORY_SETTING = "RepositorySetting"
+    NO_OP = "NoOp"
     UNSUPPORTED = "Unsupported"
     UNMAPPED = "Unmapped"
 
@@ -181,6 +188,11 @@ _NORMALIZED_RULE_TYPE_LOOKUP: dict[str, NormalizedRuleType] = {
     "repository-setting": NormalizedRuleType.REPOSITORY_SETTING,
     "repo_setting": NormalizedRuleType.REPOSITORY_SETTING,
     "repo-setting": NormalizedRuleType.REPOSITORY_SETTING,
+    "noop": NormalizedRuleType.NO_OP,
+    "no_op": NormalizedRuleType.NO_OP,
+    "no-op": NormalizedRuleType.NO_OP,
+    "enforce_merge_checks": NormalizedRuleType.NO_OP,
+    "enforce-merge-checks": NormalizedRuleType.NO_OP,
     "unsupported": NormalizedRuleType.UNSUPPORTED,
     "unsupported_policy": NormalizedRuleType.UNSUPPORTED,
     "unsupported-policy": NormalizedRuleType.UNSUPPORTED,

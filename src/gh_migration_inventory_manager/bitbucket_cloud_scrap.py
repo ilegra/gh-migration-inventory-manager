@@ -734,7 +734,32 @@ class BitbucketCloudPolicyScraper(PolicyScraper):
             NormalizedRuleType.REPOSITORY_SETTING,
             lambda _item: {"allow_auto_merge": True},
         ),
+        "enforce_merge_checks": (
+            NormalizedRuleType.NO_OP,
+            lambda _item: {
+                "enforcement": "active",
+                "origin_kind": "enforce_merge_checks",
+            },
+        ),
     }
+
+    @staticmethod
+    def _build_non_rule_metadata(
+        flag: str,
+        origin_kind: str,
+        reason: str,
+        item: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Build standardized metadata for non-rule policy classifications."""
+        metadata: dict[str, Any] = {
+            flag: True,
+            "origin_platform": "bitbucket-cloud",
+            "origin_kind": origin_kind,
+            "reason": reason,
+        }
+        if item.get("branch_match_kind") is not None:
+            metadata["branch_match_kind"] = item.get("branch_match_kind")
+        return metadata
 
     def _map_restriction_to_policy(
         self,
@@ -786,18 +811,36 @@ class BitbucketCloudPolicyScraper(PolicyScraper):
                     repo_slug,
                     pattern,
                 )
-                metadata = {
-                    "unsupported": True,
-                    "origin_platform": "bitbucket-cloud",
-                    "origin_kind": kind,
-                    "reason": (
+                metadata = self._build_non_rule_metadata(
+                    flag="unsupported",
+                    origin_kind=kind,
+                    reason=(
                         "GitHub Rulesets do not automatically clear 'Changes "
                         "requested' reviews on push; dismiss_stale_reviews_on_push "
                         "only dismisses approvals."
                     ),
-                }
-                if item.get("branch_match_kind") is not None:
-                    metadata["branch_match_kind"] = item.get("branch_match_kind")
+                    item=item,
+                )
+            elif rule_type == NormalizedRuleType.NO_OP:
+                logger.debug(
+                    "Bitbucket Cloud restriction '%s' on %s/%s (pattern=%s) is "
+                    "handled as NoOp (covered by GitHub Ruleset default "
+                    "enforcement='active').",
+                    kind,
+                    workspace,
+                    repo_slug,
+                    pattern,
+                )
+                metadata = self._build_non_rule_metadata(
+                    flag="no_op",
+                    origin_kind=kind,
+                    reason=(
+                        "Bitbucket Cloud enforce_merge_checks blocks merges when "
+                        "merge checks fail; covered by GitHub Rulesets default "
+                        "enforcement='active' with no separate rule required."
+                    ),
+                    item=item,
+                )
             elif kind == "smart_reset_pullrequest_approvals":
                 metadata = {
                     "origin_platform": "bitbucket-cloud",
@@ -816,14 +859,12 @@ class BitbucketCloudPolicyScraper(PolicyScraper):
             rule_parameters = {"unmapped_kind": unmapped_kind}
             if item.get("value") is not None:
                 rule_parameters["value"] = item.get("value")
-            metadata = {
-                "unmapped": True,
-                "origin_platform": "bitbucket-cloud",
-                "origin_kind": unmapped_kind,
-                "reason": unmapped_reason,
-            }
-            if item.get("branch_match_kind") is not None:
-                metadata["branch_match_kind"] = item.get("branch_match_kind")
+            metadata = self._build_non_rule_metadata(
+                flag="unmapped",
+                origin_kind=unmapped_kind,
+                reason=unmapped_reason,
+                item=item,
+            )
 
         return BranchPolicy(
             policy_scope=scope,

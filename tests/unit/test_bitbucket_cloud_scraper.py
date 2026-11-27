@@ -1673,3 +1673,123 @@ class TestBitbucketCloudCoverageAndBranching:
             in record.rule_parameters
         )
         assert "migration_note:" in record.rule_parameters
+
+    def test_given_enforce_merge_checks_glob_restriction_when_scraping_then_maps_to_no_op_with_active_enforcement(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        mock_client = MagicMock(spec=BitbucketCloudClient)
+        mock_client.get_branch_restrictions.return_value = [
+            {
+                "branch_match_kind": "glob",
+                "groups": [],
+                "id": 73084486,
+                "kind": "enforce_merge_checks",
+                "links": {
+                    "self": {
+                        "href": "https://api.bitbucket.org/2.0/repositories/ws/demo-repo/branch-restrictions/73084486"
+                    }
+                },
+                "pattern": "master",
+                "pipelines_source_branches": [],
+                "type": "branchrestriction",
+                "users": [],
+                "value": None,
+            }
+        ]
+        scraper = BitbucketCloudPolicyScraper(
+            workspace="ws",
+            project_key="PRJ",
+            repo_slug="demo-repo",
+            client=mock_client,
+        )
+        with caplog.at_level("WARNING"):
+            policies = scraper.scrape()
+
+        assert len(policies) == 1
+        policy = policies[0]
+        assert policy.normalized_rule_type == NormalizedRuleType.NO_OP
+        assert policy.target_ref_pattern == "refs/heads/master"
+        assert policy.policy_scope == "repo:PRJ/demo-repo"
+        assert policy.rule_parameters == {
+            "enforcement": "active",
+            "origin_kind": "enforce_merge_checks",
+        }
+        assert policy.metadata["no_op"] is True
+        assert policy.metadata["origin_platform"] == "bitbucket-cloud"
+        assert policy.metadata["origin_kind"] == "enforce_merge_checks"
+        assert policy.metadata["branch_match_kind"] == "glob"
+        assert "enforcement='active'" in policy.metadata["reason"]
+        assert caplog.text == ""
+
+    def test_given_enforce_merge_checks_wildcard_and_branching_model_when_scraping_then_resolves_target_refs(
+        self,
+    ) -> None:
+        mock_client = MagicMock(spec=BitbucketCloudClient)
+        mock_client.get_branch_restrictions.return_value = [
+            {
+                "branch_match_kind": "glob",
+                "groups": [],
+                "id": 73084487,
+                "kind": "enforce_merge_checks",
+                "pattern": "*",
+                "type": "branchrestriction",
+                "users": [],
+                "value": None,
+            },
+            {
+                "branch_match_kind": "branching_model",
+                "branch_type": "production",
+                "groups": [],
+                "id": 73084488,
+                "kind": "enforce_merge_checks",
+                "pattern": "",
+                "type": "branchrestriction",
+                "users": [],
+                "value": None,
+            },
+        ]
+        scraper = BitbucketCloudPolicyScraper(
+            workspace="ws",
+            project_key="PRJ",
+            repo_slug="demo-repo",
+            client=mock_client,
+        )
+        policies = scraper.scrape()
+
+        assert len(policies) == 2
+        assert policies[0].target_ref_pattern == "*"
+        assert policies[1].target_ref_pattern == "refs/heads/production"
+        for policy in policies:
+            assert policy.normalized_rule_type == NormalizedRuleType.NO_OP
+            assert policy.rule_parameters == {
+                "enforcement": "active",
+                "origin_kind": "enforce_merge_checks",
+            }
+
+    def test_given_enforce_merge_checks_policy_when_converting_then_formats_no_op_and_parameters(
+        self,
+    ) -> None:
+        mock_client = MagicMock(spec=BitbucketCloudClient)
+        mock_client.get_branch_restrictions.return_value = [
+            {
+                "branch_match_kind": "glob",
+                "kind": "enforce_merge_checks",
+                "pattern": "master",
+                "value": None,
+            }
+        ]
+        scraper = BitbucketCloudPolicyScraper(
+            workspace="ws",
+            project_key="PRJ",
+            repo_slug="demo-repo",
+            client=mock_client,
+        )
+        policies = scraper.scrape()
+        record = PolicyConverter().to_policy_record(policies[0])
+
+        assert record.normalized_rule_type == "NoOp"
+        assert record.target_ref_pattern == "refs/heads/master"
+        assert (
+            record.rule_parameters
+            == "enforcement: active; origin_kind: enforce_merge_checks"
+        )

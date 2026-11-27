@@ -166,9 +166,15 @@ Populated by `scrape svn-teams` and `scrape bitbucket-teams`:
 Populated by `scrape bitbucket-policies`:
 - `Escopo da Política`: Canonical scope identifier: `project:<KEY>` for project-wide governance or canonical `repo:<KEY>/<SLUG>` for repository-specific rules (with backwards-compatible fallback support for legacy un-namespaced `repo:<SLUG>` or `global`).
 - `Padrão de Ref / Branch`: Target branch pattern (e.g., `refs/heads/main`, `release/*`).
-- `Tipo de Regra (GitHub)`: Normalized rule archetype (`RequirePullRequest`, `RequireStatusChecks`, `PreventBranchDeletion`, `BlockForcePush`, `RequireLinearHistory`, `RequireSignedCommits`, `RepositorySetting`, `Unsupported`, `Unmapped`).
-  - **`Unsupported`**: Known source platform restriction kinds that have **no 1-to-1 equivalent in GitHub Rulesets** (e.g., Bitbucket Cloud `reset_pullrequest_changes_requested_on_change`), emitted with actionable `migration_note` guidance in `Parâmetros da Regra`.
-  - **`Unmapped`**: Unknown or unrecognized source platform restriction kinds (or unsupported parameter values such as `require_commits_behind` with `value > 0`) that cannot be mapped automatically.
+- `Tipo de Regra (GitHub)`: Normalized rule archetype (`RequirePullRequest`, `RequireStatusChecks`, `PreventBranchDeletion`, `BlockForcePush`, `RequireLinearHistory`, `RequireSignedCommits`, `RepositorySetting`, `NoOp`, `Unsupported`, `Unmapped`).
+
+  Non-rule classification behavior:
+
+  | Rule Type | Meaning | Scraper Logging | `Parâmetros da Regra` | Expected Downstream Behavior |
+  | :--- | :--- | :--- | :--- | :--- |
+  | **`NoOp`** | Known source platform restriction already covered by GitHub defaults (e.g., Bitbucket Cloud `enforce_merge_checks`, covered by GitHub Rulesets' default `enforcement: "active"`). | `DEBUG` (no warning noise) | Structured context (e.g., `enforcement: active; origin_kind: enforce_merge_checks`). | Skip cleanly without creating an extra ruleset rule or warning; row remains in `Policies` for auditability. |
+  | **`Unsupported`** | Known source platform restriction with **no 1-to-1 equivalent in GitHub Rulesets** (e.g., Bitbucket Cloud `reset_pullrequest_changes_requested_on_change`). | `WARNING` | `origin_kind`, `github_equivalent: none`, and actionable `migration_note`. | Cannot be automated; surface the `migration_note` for manual follow-up or review. |
+  | **`Unmapped`** | Unknown/unrecognized source platform restriction kind or unsupported parameter value (e.g., `require_commits_behind` with `value > 0`). | `WARNING` (for unsupported values) / silent fallback | `unmapped_kind` (and `value` when present). | Signals a mapping gap requiring investigation or new scraper support. |
 - `Parâmetros da Regra`: JSON or formatted rule parameters (e.g., `{"min_approvals": 2, "require_builds": true}`).
 - `Slugs de Times de Bypass`: Comma-separated list of GitHub team slugs exempted from restrictions.
 - `Política de Origem (Raw)`: Raw Bitbucket restriction or merge check payload.
@@ -314,7 +320,7 @@ poetry run gh-migration-inventory scrape bitbucket-cloud \
 ```
 
 #### B. Bitbucket Cloud Branch Governance (`scrape bitbucket-cloud-policies`)
-Discovers branch restrictions via `/2.0/.../branch-restrictions` and maps to canonical GitHub Rulesets (`RequirePullRequest`, `RequireStatusChecks`, `PreventBranchDeletion`, `BlockForcePush`, `RepositorySetting`). Known restrictions without a GitHub Ruleset equivalent (such as `reset_pullrequest_changes_requested_on_change`) are emitted as `Unsupported` with a `migration_note` in `Parâmetros da Regra`, while unknown restriction kinds or unsupported parameter values fall back to `Unmapped`.
+Discovers branch restrictions via `/2.0/.../branch-restrictions` and maps to canonical GitHub Rulesets (`RequirePullRequest`, `RequireStatusChecks`, `PreventBranchDeletion`, `BlockForcePush`, `RepositorySetting`). Known restrictions already covered by GitHub defaults (such as `enforce_merge_checks`, covered by default `enforcement: "active"`) are emitted as `NoOp`; known restrictions without a GitHub Ruleset equivalent (such as `reset_pullrequest_changes_requested_on_change`) are emitted as `Unsupported` with a `migration_note` in `Parâmetros da Regra`; unknown restriction kinds or unsupported parameter values fall back to `Unmapped`.
 ```bash
 poetry run gh-migration-inventory scrape bitbucket-cloud-policies \
   --workspace "my-corp-workspace" \
