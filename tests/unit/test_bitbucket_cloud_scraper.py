@@ -561,6 +561,95 @@ class TestBitbucketCloudPolicyScraper:
         assert record.target_ref_pattern == "refs/heads/master"
         assert record.rule_parameters == "dismiss_stale_reviews_on_push: true"
 
+    def test_given_smart_reset_approvals_restriction_when_scraping_then_maps_to_require_pull_request(
+        self,
+    ) -> None:
+        mock_client = MagicMock(spec=BitbucketCloudClient)
+        mock_client.get_branch_restrictions.return_value = [
+            {
+                "branch_match_kind": "glob",
+                "groups": [],
+                "id": 73084485,
+                "kind": "smart_reset_pullrequest_approvals",
+                "pattern": "master",
+                "pipelines_source_branches": [],
+                "type": "branchrestriction",
+                "users": [],
+                "value": None,
+            }
+        ]
+
+        scraper = BitbucketCloudPolicyScraper(
+            workspace="corp", project_key="CORE", repo_slug="api", client=mock_client
+        )
+        policies = scraper.scrape()
+
+        assert len(policies) == 1
+        assert policies[0].target_ref_pattern == "refs/heads/master"
+        assert (
+            policies[0].normalized_rule_type == NormalizedRuleType.REQUIRE_PULL_REQUEST
+        )
+        assert policies[0].rule_parameters == {"dismiss_stale_reviews_on_push": True}
+        assert policies[0].metadata["origin_platform"] == "bitbucket-cloud"
+        assert (
+            policies[0].metadata["origin_kind"] == "smart_reset_pullrequest_approvals"
+        )
+        assert "non-trivial" in policies[0].metadata["migration_note"]
+
+    def test_given_smart_reset_approvals_branching_model_when_scraping_then_resolves_branch_type(
+        self,
+    ) -> None:
+        mock_client = MagicMock(spec=BitbucketCloudClient)
+        mock_client.get_branch_restrictions.return_value = [
+            {
+                "branch_match_kind": "branching_model",
+                "branch_type": "development",
+                "groups": [],
+                "id": 73084486,
+                "kind": "smart_reset_pullrequest_approvals",
+                "pattern": "",
+                "pipelines_source_branches": [],
+                "type": "branchrestriction",
+                "users": [],
+                "value": None,
+            }
+        ]
+
+        scraper = BitbucketCloudPolicyScraper(
+            workspace="corp", project_key="CORE", repo_slug="api", client=mock_client
+        )
+        policies = scraper.scrape()
+
+        assert len(policies) == 1
+        assert policies[0].target_ref_pattern == "refs/heads/development"
+        assert (
+            policies[0].normalized_rule_type == NormalizedRuleType.REQUIRE_PULL_REQUEST
+        )
+        assert policies[0].rule_parameters == {"dismiss_stale_reviews_on_push": True}
+
+    def test_given_smart_reset_approvals_policy_when_converted_then_formats_dismiss_stale_reviews_parameter(
+        self,
+    ) -> None:
+        mock_client = MagicMock(spec=BitbucketCloudClient)
+        mock_client.get_branch_restrictions.return_value = [
+            {
+                "branch_match_kind": "glob",
+                "kind": "smart_reset_pullrequest_approvals",
+                "pattern": "master",
+                "value": None,
+            }
+        ]
+
+        scraper = BitbucketCloudPolicyScraper(
+            workspace="corp", project_key="CORE", repo_slug="api", client=mock_client
+        )
+        policies = scraper.scrape()
+        record = PolicyConverter().to_policy_record(policies[0])
+
+        assert record.normalized_rule_type == "RequirePullRequest"
+        assert record.target_ref_pattern == "refs/heads/master"
+        assert record.rule_parameters == "dismiss_stale_reviews_on_push: true"
+
     def test_given_require_all_comments_resolved_restriction_when_scraping_then_maps_to_require_pull_request(
         self,
     ) -> None:
