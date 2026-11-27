@@ -1454,3 +1454,65 @@ class TestBitbucketCloudCoverageAndBranching:
         }
         assert policy.metadata["unmapped"] is True
         assert "require_commits_behind" in caplog.text
+
+    def test_given_reset_changes_requested_restriction_when_scraping_then_maps_to_unsupported_with_migration_note(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        mock_client = MagicMock(spec=BitbucketCloudClient)
+        mock_client.get_branch_restrictions.return_value = [
+            {
+                "branch_match_kind": "glob",
+                "groups": [],
+                "id": 65840506,
+                "kind": "reset_pullrequest_changes_requested_on_change",
+                "links": {
+                    "self": {
+                        "href": "https://api.bitbucket.org/2.0/repositories/ws/demo-repo/branch-restrictions/65840506"
+                    }
+                },
+                "pattern": "*",
+                "pipelines_source_branches": [],
+                "type": "branchrestriction",
+                "users": [],
+                "value": None,
+            }
+        ]
+        scraper = BitbucketCloudPolicyScraper(
+            workspace="ws",
+            project_key="PRJ",
+            repo_slug="demo-repo",
+            client=mock_client,
+        )
+        with caplog.at_level("WARNING"):
+            policies = scraper.scrape()
+
+        assert len(policies) == 1
+        policy = policies[0]
+        assert policy.normalized_rule_type == NormalizedRuleType.UNSUPPORTED
+        assert policy.target_ref_pattern == "*"
+        assert (
+            policy.rule_parameters["origin_kind"]
+            == "reset_pullrequest_changes_requested_on_change"
+        )
+        assert policy.rule_parameters["github_equivalent"] == "none"
+        assert (
+            "dismiss_stale_reviews_on_push" in policy.rule_parameters["migration_note"]
+        )
+        assert policy.metadata["unsupported"] is True
+        assert policy.metadata["origin_platform"] == "bitbucket-cloud"
+        assert (
+            policy.metadata["origin_kind"]
+            == "reset_pullrequest_changes_requested_on_change"
+        )
+        assert policy.metadata["branch_match_kind"] == "glob"
+        assert "dismiss_stale_reviews_on_push" in policy.metadata["reason"]
+        assert "reset_pullrequest_changes_requested_on_change" in caplog.text
+
+        record = PolicyConverter().to_policy_record(policy)
+        assert record.normalized_rule_type == "Unsupported"
+        assert "github_equivalent: none" in record.rule_parameters
+        assert (
+            "origin_kind: reset_pullrequest_changes_requested_on_change"
+            in record.rule_parameters
+        )
+        assert "migration_note:" in record.rule_parameters
