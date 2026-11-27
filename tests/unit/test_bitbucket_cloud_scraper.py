@@ -1686,7 +1686,7 @@ class TestBitbucketCloudCoverageAndBranching:
                 "kind": "enforce_merge_checks",
                 "links": {
                     "self": {
-                        "href": "https://api.bitbucket.org/2.0/repositories/naturapay/financial-services-payment-checkout-element/branch-restrictions/73084486"
+                        "href": "https://api.bitbucket.org/2.0/repositories/ws/demo-repo/branch-restrictions/73084486"
                     }
                 },
                 "pattern": "master",
@@ -1697,9 +1697,9 @@ class TestBitbucketCloudCoverageAndBranching:
             }
         ]
         scraper = BitbucketCloudPolicyScraper(
-            workspace="naturapay",
-            project_key="FIN",
-            repo_slug="financial-services-payment-checkout-element",
+            workspace="ws",
+            project_key="PRJ",
+            repo_slug="demo-repo",
             client=mock_client,
         )
         with caplog.at_level("WARNING"):
@@ -1709,10 +1709,7 @@ class TestBitbucketCloudCoverageAndBranching:
         policy = policies[0]
         assert policy.normalized_rule_type == NormalizedRuleType.NO_OP
         assert policy.target_ref_pattern == "refs/heads/master"
-        assert (
-            policy.policy_scope
-            == "repo:FIN/financial-services-payment-checkout-element"
-        )
+        assert policy.policy_scope == "repo:PRJ/demo-repo"
         assert policy.rule_parameters == {
             "enforcement": "active",
             "origin_kind": "enforce_merge_checks",
