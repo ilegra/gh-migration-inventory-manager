@@ -1490,6 +1490,7 @@ class TestBitbucketCloudCoverageAndBranching:
         policy = policies[0]
         assert policy.normalized_rule_type == NormalizedRuleType.UNSUPPORTED
         assert policy.target_ref_pattern == "*"
+        assert isinstance(policy.rule_parameters, dict)
         assert (
             policy.rule_parameters["origin_kind"]
             == "reset_pullrequest_changes_requested_on_change"
