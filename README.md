@@ -175,7 +175,24 @@ Populated by `scrape bitbucket-policies`:
   | **`NoOp`** | Known source platform restriction already covered by GitHub defaults (e.g., Bitbucket Cloud `enforce_merge_checks`, covered by GitHub Rulesets' default `enforcement: "active"`). | `DEBUG` (no warning noise) | Structured context (e.g., `enforcement: active; origin_kind: enforce_merge_checks`). | Skip cleanly without creating an extra ruleset rule or warning; row remains in `Policies` for auditability. |
   | **`Unsupported`** | Known source platform restriction with **no 1-to-1 equivalent in GitHub Rulesets** (e.g., Bitbucket Cloud `reset_pullrequest_changes_requested_on_change`). | `WARNING` | `origin_kind`, `github_equivalent: none`, and actionable `migration_note`. | Cannot be automated; surface the `migration_note` for manual follow-up or review. |
   | **`Unmapped`** | Unknown/unrecognized source platform restriction kind or unsupported parameter value (e.g., `require_commits_behind` with `value > 0`). | `WARNING` (for unsupported values) / silent fallback | `unmapped_kind` (and `value` when present). | Signals a mapping gap requiring investigation or new scraper support. |
-- `Parâmetros da Regra`: JSON or formatted rule parameters (e.g., `{"min_approvals": 2, "require_builds": true}`).
+- `Parâmetros da Regra`: Canonical sorted semicolon-delimited `key: value` parameters (e.g., `contexts: ci/build, ci/test; min_successful_builds: 1; strict_required_status_checks_policy: true`).
+
+  **`RequireStatusChecks` Job/Context Mapping**:
+
+  GitHub Repository Rulesets require at least one status check `context` name inside `parameters.required_status_checks`. Because source platforms such as Bitbucket Cloud (`require_passing_builds_to_merge`, `require_commits_behind`) do not expose specific check names in branch restriction payloads, job/context names are mapped using the following canonical schema and precedence:
+
+  | Parameter Key | Format | Description |
+  | :--- | :--- | :--- |
+  | `contexts` | Comma-separated strings (e.g. `ci/build, ci/test`) | Canonical list of required status check context/job names. Sequence values (`list`, `tuple`, `set`) passed to `format_rule_parameters()` are serialized into this format automatically. (`required_status_checks` is also accepted as a backwards-compatible read alias by `extract_status_check_contexts()`.) |
+  | `min_successful_builds` | Integer (e.g. `1`) | Minimum passing builds required from the source platform. |
+  | `strict_required_status_checks_policy` | Boolean (`true`/`false`) | Strict up-to-date branch requirement (e.g. Bitbucket Cloud `require_commits_behind == 0`). |
+
+  Resolution precedence when correlating jobs via `InventoryGraph.enrich_status_check_policies(project_slug, repo_slug)`:
+  1. **Manual spreadsheet curation (or explicit scraper output)**: If `contexts` (or `required_status_checks`) is already populated in `Parâmetros da Regra`, it is always preserved as-is.
+  2. **Automatic `Workflows` tab correlation**: If `contexts` is missing on a `RequireStatusChecks` policy, `enrich_status_check_policies()` collects all `PipelineRecord.workflow_id` values correlated to the repository, deduplicates and sorts them, and merges them into `contexts` on a new `PolicyRecord` copy (without mutating the original record).
+  3. **No correlated pipelines**: If no pipelines are linked to the repository, `rule_parameters` is left unchanged so downstream consumers can skip or log a warning.
+
+  Downstream migration tools can use `parse_rule_parameters(policy.rule_parameters)` and `extract_status_check_contexts(policy.rule_parameters)` to reliably translate `RequireStatusChecks` rows into GitHub Ruleset `required_status_checks` payloads.
 - `Slugs de Times de Bypass`: Comma-separated list of GitHub team slugs exempted from restrictions.
 - `Política de Origem (Raw)`: Raw Bitbucket restriction or merge check payload.
 - `Status da Migração`: Current lifecycle state.
@@ -603,6 +620,17 @@ print(
     f"Effective Policies (repo + project + global): {len(profile.effective_policies)}"
 )
 print(f"Associated Teams: {len(profile.teams)}")
+
+# Enrich RequireStatusChecks policies with correlated workflow IDs as status check contexts
+from gh_migration_inventory_manager import extract_status_check_contexts
+
+enriched_policies = graph.enrich_status_check_policies(
+    project_slug="CORE", repo_slug="payment-service"
+)
+for policy in enriched_policies:
+    contexts = extract_status_check_contexts(policy.rule_parameters)
+    if contexts:
+        print(f"Required status checks for {policy.target_ref_pattern}: {contexts}")
 ```
 
 > [!NOTE]

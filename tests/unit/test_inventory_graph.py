@@ -408,3 +408,123 @@ def test_given_empty_project_slug_when_getting_project_profile_then_raises_value
     graph = InventoryGraph()
     with pytest.raises(ValueError, match="Project slug cannot be empty"):
         graph.get_project_profile("")
+
+
+# ============================================================================
+# Scenario 5: Status Check Context Enrichment
+# ============================================================================
+
+
+def test_given_status_check_policy_and_correlated_pipelines_when_enriching_then_populates_contexts() -> (
+    None
+):
+    """Verify enrich_status_check_policies populates contexts from correlated pipelines without mutating originals."""
+    original_policy = PolicyRecord(
+        policy_scope="repo:commerce/order-api",
+        target_ref_pattern="refs/heads/main",
+        normalized_rule_type="RequireStatusChecks",
+        rule_parameters="min_successful_builds: 1; strict_required_status_checks_policy: true",
+        project="commerce",
+        repository="order-api",
+    )
+    pr_policy = PolicyRecord(
+        policy_scope="repo:commerce/order-api",
+        target_ref_pattern="refs/heads/main",
+        normalized_rule_type="RequirePullRequest",
+        rule_parameters="min_approvals: 2",
+        project="commerce",
+        repository="order-api",
+    )
+    pipelines = [
+        PipelineRecord(
+            workflow_id="commerce/order-api/test",
+            project="commerce",
+            repository="order-api",
+        ),
+        PipelineRecord(
+            workflow_id="commerce/order-api/build",
+            project="commerce",
+            repository="order-api",
+        ),
+    ]
+    graph = InventoryGraph.from_records(
+        pipelines=pipelines,
+        policies=[original_policy, pr_policy],
+    )
+
+    enriched = graph.enrich_status_check_policies("commerce", "order-api")
+
+    assert len(enriched) == 2
+    assert enriched[0].rule_parameters == (
+        "contexts: commerce/order-api/build, commerce/order-api/test; "
+        "min_successful_builds: 1; "
+        "strict_required_status_checks_policy: true"
+    )
+    assert original_policy.rule_parameters == (
+        "min_successful_builds: 1; strict_required_status_checks_policy: true"
+    )
+    assert enriched[1] is pr_policy
+
+
+def test_given_manually_curated_contexts_when_enriching_status_check_policies_then_preserves_curated() -> (
+    None
+):
+    """Verify enrich_status_check_policies does not overwrite manually curated contexts."""
+    curated_policy = PolicyRecord(
+        policy_scope="repo:commerce/order-api",
+        target_ref_pattern="refs/heads/main",
+        normalized_rule_type="RequireStatusChecks",
+        rule_parameters="contexts: custom/check; min_successful_builds: 1",
+        project="commerce",
+        repository="order-api",
+    )
+    pipelines = [
+        PipelineRecord(
+            workflow_id="commerce/order-api/build",
+            project="commerce",
+            repository="order-api",
+        )
+    ]
+    graph = InventoryGraph.from_records(
+        pipelines=pipelines,
+        policies=[curated_policy],
+    )
+
+    enriched = graph.enrich_status_check_policies("commerce", "order-api")
+
+    assert len(enriched) == 1
+    assert (
+        enriched[0].rule_parameters
+        == "contexts: custom/check; min_successful_builds: 1"
+    )
+
+
+def test_given_no_correlated_pipelines_when_enriching_status_check_policies_then_leaves_unchanged() -> (
+    None
+):
+    """Verify enrich_status_check_policies leaves rule_parameters unchanged when no pipelines exist."""
+    policy = PolicyRecord(
+        policy_scope="repo:commerce/order-api",
+        target_ref_pattern="refs/heads/main",
+        normalized_rule_type="RequireStatusChecks",
+        rule_parameters="min_successful_builds: 1",
+        project="commerce",
+        repository="order-api",
+    )
+    graph = InventoryGraph.from_records(policies=[policy])
+
+    enriched = graph.enrich_status_check_policies("commerce", "order-api")
+
+    assert len(enriched) == 1
+    assert enriched[0].rule_parameters == "min_successful_builds: 1"
+
+
+def test_given_empty_slugs_when_enriching_status_check_policies_then_raises_value_error() -> (
+    None
+):
+    """Verify enrich_status_check_policies validates project_slug and repo_slug."""
+    graph = InventoryGraph()
+    with pytest.raises(ValueError, match="Project slug cannot be empty"):
+        graph.enrich_status_check_policies("", "order-api")
+    with pytest.raises(ValueError, match="Repository slug cannot be empty"):
+        graph.enrich_status_check_policies("commerce", "")
