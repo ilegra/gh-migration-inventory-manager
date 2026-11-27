@@ -233,7 +233,17 @@ def normalize_rule_type(rule: Any) -> NormalizedRuleType:
 
 
 def format_rule_parameters(params: dict[str, Any] | str | None) -> str:
-    """Format rule parameters into a canonical sorted semicolon-delimited string."""
+    """Format rule parameters into a canonical sorted semicolon-delimited string.
+
+    Sequence values (``list``, ``tuple``, ``set``) are formatted as
+    comma-separated strings (order-preserving for lists/tuples, sorted for
+    sets). For ``RequireStatusChecks`` policies, the canonical parameters are:
+
+    - ``contexts``: comma-separated status check context/job names
+      (e.g. ``contexts: ci/build, ci/test``).
+    - ``min_successful_builds``: minimum number of passing builds.
+    - ``strict_required_status_checks_policy``: boolean (``true``/``false``).
+    """
     if params is None:
         return ""
     if isinstance(params, str):
@@ -247,10 +257,86 @@ def format_rule_parameters(params: dict[str, Any] | str | None) -> str:
             val_str = "true" if v else "false"
         elif v is None:
             val_str = ""
+        elif isinstance(v, list | tuple | set):
+            raw_elems = sorted(v, key=str) if isinstance(v, set) else v
+            cleaned = [str(elem).strip() for elem in raw_elems if str(elem).strip()]
+            val_str = ", ".join(cleaned)
         else:
             val_str = str(v).strip()
         items.append(f"{clean_k}: {val_str}")
     return "; ".join(items)
+
+
+def parse_rule_parameters(params: dict[str, Any] | str | None) -> dict[str, str]:
+    """Parse a canonical semicolon-delimited rule_parameters string into a dict.
+
+    Args:
+        params: Serialized ``key: value; ...`` string, dict, or ``None``.
+
+    Returns:
+        Dictionary mapping trimmed parameter keys to trimmed string values.
+    """
+    if params is None:
+        return {}
+    if isinstance(params, dict):
+        parsed: dict[str, str] = {}
+        for k, v in params.items():
+            clean_k = str(k).strip()
+            if not clean_k:
+                continue
+            if isinstance(v, bool):
+                parsed[clean_k] = "true" if v else "false"
+            elif v is None:
+                parsed[clean_k] = ""
+            elif isinstance(v, list | tuple | set):
+                raw_elems = sorted(v, key=str) if isinstance(v, set) else v
+                cleaned = [str(elem).strip() for elem in raw_elems if str(elem).strip()]
+                parsed[clean_k] = ", ".join(cleaned)
+            else:
+                parsed[clean_k] = str(v).strip()
+        return parsed
+    if not isinstance(params, str) or not params.strip():
+        return {}
+
+    result: dict[str, str] = {}
+    for segment in params.split(";"):
+        part = segment.strip()
+        if not part or ":" not in part:
+            continue
+        key, value = part.split(":", 1)
+        clean_key = key.strip()
+        if clean_key:
+            result[clean_key] = value.strip()
+    return result
+
+
+def extract_status_check_contexts(params: dict[str, Any] | str | None) -> list[str]:
+    """Extract deduplicated status check context names from rule_parameters.
+
+    Reads the canonical ``contexts`` key and also accepts
+    ``required_status_checks`` as a backwards-compatible alias. Values may be
+    provided as a comma-separated string (spreadsheet format) or a sequence of
+    strings (dictionary format).
+
+    Args:
+        params: ``rule_parameters`` string, dictionary, or ``None``.
+
+    Returns:
+        Order-preserving list of unique non-empty status check context names.
+    """
+    parsed = parse_rule_parameters(params)
+    raw_value = parsed.get("contexts") or parsed.get("required_status_checks") or ""
+    if not raw_value:
+        return []
+
+    seen: set[str] = set()
+    contexts: list[str] = []
+    for item in raw_value.split(","):
+        clean = item.strip()
+        if clean and clean not in seen:
+            seen.add(clean)
+            contexts.append(clean)
+    return contexts
 
 
 _SLUGIFY_NON_WORD = re.compile(r"[^\w\s-]")
@@ -592,9 +678,11 @@ __all__ = [
     "TeamScraper",
     "TokenAuthenticator",
     "default_scraper_registry",
+    "extract_status_check_contexts",
     "format_rule_parameters",
     "format_stacks",
     "normalize_role",
     "normalize_rule_type",
+    "parse_rule_parameters",
     "slugify",
 ]

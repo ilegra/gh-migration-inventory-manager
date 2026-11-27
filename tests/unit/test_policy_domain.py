@@ -6,8 +6,10 @@ import pytest
 
 from gh_migration_inventory_manager.scrap import (
     NormalizedRuleType,
+    extract_status_check_contexts,
     format_rule_parameters,
     normalize_rule_type,
+    parse_rule_parameters,
 )
 
 
@@ -141,3 +143,70 @@ def test_given_none_or_empty_parameters_when_formatting_then_returns_empty_strin
     """Verify format_rule_parameters handles None and empty dict correctly."""
     assert format_rule_parameters(None) == ""
     assert format_rule_parameters({}) == ""
+
+
+def test_given_sequence_values_in_parameters_when_formatting_then_serializes_comma_delimited() -> (
+    None
+):
+    """Verify format_rule_parameters serializes lists, tuples, and sets as comma-separated strings."""
+    params = {
+        "contexts": ["ci/build", "ci/test", "  "],
+        "min_successful_builds": 1,
+        "strict_required_status_checks_policy": True,
+        "tags": {"b", "a"},
+    }
+    expected = (
+        "contexts: ci/build, ci/test; "
+        "min_successful_builds: 1; "
+        "strict_required_status_checks_policy: true; "
+        "tags: a, b"
+    )
+    assert format_rule_parameters(params) == expected
+
+
+def test_given_canonical_parameter_string_when_parsing_then_returns_key_value_dict() -> (
+    None
+):
+    """Verify parse_rule_parameters parses semicolon-delimited strings into a dict."""
+    raw = "contexts: ci/build, ci/test; min_successful_builds: 1; strict_required_status_checks_policy: true"
+    assert parse_rule_parameters(raw) == {
+        "contexts": "ci/build, ci/test",
+        "min_successful_builds": "1",
+        "strict_required_status_checks_policy": "true",
+    }
+
+
+def test_given_dict_or_empty_or_malformed_parameters_when_parsing_then_handles_gracefully() -> (
+    None
+):
+    """Verify parse_rule_parameters handles dicts, None, empty, and malformed segments."""
+    assert parse_rule_parameters(None) == {}
+    assert parse_rule_parameters("") == {}
+    assert parse_rule_parameters("   ") == {}
+    assert parse_rule_parameters("invalid_segment; key: value; :empty_key") == {
+        "key": "value"
+    }
+    assert parse_rule_parameters(
+        {"contexts": ["ci/build", "ci/lint"], "strict": True, "empty": None}
+    ) == {
+        "contexts": "ci/build, ci/lint",
+        "strict": "true",
+        "empty": "",
+    }
+
+
+def test_given_status_check_parameters_when_extracting_contexts_then_returns_deduplicated_list() -> (
+    None
+):
+    """Verify extract_status_check_contexts supports canonical key, alias, strings, and dicts."""
+    assert extract_status_check_contexts(
+        "contexts: ci/build, ci/test, ci/build; min_successful_builds: 1"
+    ) == ["ci/build", "ci/test"]
+    assert extract_status_check_contexts(
+        "required_status_checks: jenkins/pr, sonar/gate"
+    ) == ["jenkins/pr", "sonar/gate"]
+    assert extract_status_check_contexts(
+        {"contexts": ["ci/build", "ci/test"], "min_successful_builds": 2}
+    ) == ["ci/build", "ci/test"]
+    assert extract_status_check_contexts("min_successful_builds: 1") == []
+    assert extract_status_check_contexts(None) == []

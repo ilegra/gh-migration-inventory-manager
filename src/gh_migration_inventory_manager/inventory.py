@@ -6,7 +6,7 @@ import logging
 import threading
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import AbstractContextManager, nullcontext
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
 from enum import Enum
 from pathlib import Path
@@ -226,7 +226,13 @@ class TeamRecord:
 
 @dataclass
 class PolicyRecord:
-    """Represents a branch governance policy record in the inventory."""
+    """Represents a branch governance policy record in the inventory.
+
+    For ``RequireStatusChecks`` policies, ``rule_parameters`` uses the canonical
+    semicolon-delimited ``key: value`` format where ``contexts`` holds a
+    comma-separated list of required status check context/job names
+    (e.g. ``contexts: ci/build, ci/test; min_successful_builds: 1``).
+    """
 
     policy_scope: str
     target_ref_pattern: str
@@ -2127,6 +2133,70 @@ class InventoryGraph:
             if not (pl.repository or "").strip()
             and not (pl.repository_association or "").strip()
         ]
+
+    def enrich_status_check_policies(
+        self, project_slug: str, repo_slug: str
+    ) -> list[PolicyRecord]:
+        """Return effective policies with status check contexts populated.
+
+        For ``RequireStatusChecks`` policies that do not already declare status
+        check contexts in ``rule_parameters``, populates the canonical
+        ``contexts`` parameter from the repository's correlated
+        ``PipelineRecord.workflow_id`` values (sorted and deduplicated).
+        Manually curated ``contexts`` and non-``RequireStatusChecks`` policies
+        are preserved unchanged. Original ``PolicyRecord`` instances are never
+        mutated in-place.
+
+        Args:
+            project_slug: Project identifier.
+            repo_slug: Repository identifier.
+
+        Returns:
+            List of effective ``PolicyRecord`` instances for the repository.
+
+        Raises:
+            ValueError: If ``project_slug`` or ``repo_slug`` is empty.
+        """
+        from gh_migration_inventory_manager.scrap import (
+            NormalizedRuleType,
+            extract_status_check_contexts,
+            format_rule_parameters,
+            parse_rule_parameters,
+        )
+
+        profile = self.get_repository_profile(project_slug, repo_slug)
+        inferred_contexts = sorted(
+            {
+                pl.workflow_id.strip()
+                for pl in profile.pipelines
+                if pl.workflow_id and pl.workflow_id.strip()
+            }
+        )
+
+        enriched: list[PolicyRecord] = []
+        for policy in profile.effective_policies:
+            if (
+                policy.normalized_rule_type
+                != NormalizedRuleType.REQUIRE_STATUS_CHECKS.value
+            ):
+                enriched.append(policy)
+                continue
+
+            existing_contexts = extract_status_check_contexts(policy.rule_parameters)
+            if existing_contexts or not inferred_contexts:
+                enriched.append(policy)
+                continue
+
+            parsed_params = parse_rule_parameters(policy.rule_parameters)
+            merged_params: dict[str, Any] = dict(parsed_params)
+            merged_params["contexts"] = inferred_contexts
+            enriched.append(
+                replace(
+                    policy,
+                    rule_parameters=format_rule_parameters(merged_params),
+                )
+            )
+        return enriched
 
 
 def __getattr__(name: str) -> Any:

@@ -93,10 +93,12 @@ from gh_migration_inventory_manager.scrap import (
     TeamScraper,
     TokenAuthenticator,
     default_scraper_registry,
+    extract_status_check_contexts,
     format_rule_parameters,
     format_stacks,
     normalize_role,
     normalize_rule_type,
+    parse_rule_parameters,
     slugify,
 )
 from gh_migration_inventory_manager.svn_scrap import (
@@ -200,9 +202,11 @@ __all__ = [
     "TokenAuthenticator",
     "WorkflowRowConverter",
     "default_scraper_registry",
+    "extract_status_check_contexts",
     "format_rule_parameters",
     "format_stacks",
     "normalize_role",
     "normalize_rule_type",
+    "parse_rule_parameters",
     "slugify",
 ]
