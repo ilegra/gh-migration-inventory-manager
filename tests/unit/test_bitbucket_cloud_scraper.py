@@ -1280,3 +1280,68 @@ class TestBitbucketCloudCoverageAndBranching:
             "Bitbucket Cloud credentials lack permission to read repository groups"
             in caplog.text
         )
+
+    def test_given_allow_auto_merge_when_builds_pass_restriction_when_scraping_then_maps_to_repository_setting(
+        self,
+    ) -> None:
+        mock_client = MagicMock(spec=BitbucketCloudClient)
+        mock_client.get_branch_restrictions.return_value = [
+            {
+                "branch_match_kind": "glob",
+                "groups": [],
+                "id": 65840268,
+                "kind": "allow_auto_merge_when_builds_pass",
+                "pattern": "*",
+                "pipelines_source_branches": [],
+                "type": "branchrestriction",
+                "users": [],
+                "value": None,
+            }
+        ]
+        scraper = BitbucketCloudPolicyScraper(
+            workspace="naturapay",
+            project_key="FIN",
+            repo_slug="financial-services-banking-app-natura-plugin",
+            client=mock_client,
+        )
+        policies = scraper.scrape()
+        assert len(policies) == 1
+        policy = policies[0]
+        assert policy.normalized_rule_type == NormalizedRuleType.REPOSITORY_SETTING
+        assert policy.rule_parameters == {"allow_auto_merge": True}
+        assert policy.target_ref_pattern == "*"
+        assert (
+            policy.policy_scope
+            == "repo:FIN/financial-services-banking-app-natura-plugin"
+        )
+        assert policy.metadata == {}
+
+    def test_given_allow_auto_merge_policy_when_converting_then_formats_repository_setting_and_parameter(
+        self,
+    ) -> None:
+        from gh_migration_inventory_manager.converter import PolicyConverter
+
+        mock_client = MagicMock(spec=BitbucketCloudClient)
+        mock_client.get_branch_restrictions.return_value = [
+            {
+                "branch_match_kind": "glob",
+                "groups": [],
+                "id": 65840268,
+                "kind": "allow_auto_merge_when_builds_pass",
+                "pattern": "*",
+                "type": "branchrestriction",
+                "users": [],
+                "value": None,
+            }
+        ]
+        scraper = BitbucketCloudPolicyScraper(
+            workspace="ws",
+            project_key="PRJ",
+            repo_slug="demo-repo",
+            client=mock_client,
+        )
+        policies = scraper.scrape()
+        record = PolicyConverter().to_policy_record(policies[0])
+        assert record.normalized_rule_type == "RepositorySetting"
+        assert record.rule_parameters == "allow_auto_merge: true"
+        assert record.target_ref_pattern == "*"

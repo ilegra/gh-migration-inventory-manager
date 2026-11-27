@@ -706,6 +706,10 @@ class BitbucketCloudPolicyScraper(PolicyScraper):
         "restrict_merges": (NormalizedRuleType.REQUIRE_PULL_REQUEST, lambda _item: {}),
         "force": (NormalizedRuleType.BLOCK_FORCE_PUSH, lambda _item: {}),
         "delete": (NormalizedRuleType.PREVENT_BRANCH_DELETION, lambda _item: {}),
+        "allow_auto_merge_when_builds_pass": (
+            NormalizedRuleType.REPOSITORY_SETTING,
+            lambda _item: {"allow_auto_merge": True},
+        ),
     }
 
     def _map_restriction_to_policy(
