@@ -694,6 +694,10 @@ class BitbucketCloudPolicyScraper(PolicyScraper):
             NormalizedRuleType.REQUIRE_PULL_REQUEST,
             lambda _item: {"dismiss_stale_reviews_on_push": True},
         ),
+        "require_all_comments_resolved": (
+            NormalizedRuleType.REQUIRE_PULL_REQUEST,
+            lambda _item: {"required_review_thread_resolution": True},
+        ),
         "require_passing_builds_to_merge": (
             NormalizedRuleType.REQUIRE_STATUS_CHECKS,
             lambda item: {"min_successful_builds": int(item.get("value") or 1)},
