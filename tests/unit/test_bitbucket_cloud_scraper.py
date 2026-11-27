@@ -1345,3 +1345,112 @@ class TestBitbucketCloudCoverageAndBranching:
         assert record.normalized_rule_type == "RepositorySetting"
         assert record.rule_parameters == "allow_auto_merge: true"
         assert record.target_ref_pattern == "*"
+
+    def test_given_require_commits_behind_zero_restriction_when_scraping_then_maps_to_strict_status_checks(
+        self,
+    ) -> None:
+        from gh_migration_inventory_manager.converter import PolicyConverter
+
+        mock_client = MagicMock(spec=BitbucketCloudClient)
+        mock_client.get_branch_restrictions.return_value = [
+            {
+                "branch_match_kind": "glob",
+                "groups": [],
+                "id": 66514627,
+                "kind": "require_commits_behind",
+                "pattern": "master",
+                "pipelines_source_branches": [],
+                "type": "branchrestriction",
+                "users": [],
+                "value": 0,
+            }
+        ]
+        scraper = BitbucketCloudPolicyScraper(
+            workspace="naturapay",
+            project_key="DATA",
+            repo_slug="ndata-cross-analytics-dbt-dw",
+            client=mock_client,
+        )
+        policies = scraper.scrape()
+        assert len(policies) == 1
+        policy = policies[0]
+        assert policy.normalized_rule_type == NormalizedRuleType.REQUIRE_STATUS_CHECKS
+        assert policy.rule_parameters == {"strict_required_status_checks_policy": True}
+        assert policy.target_ref_pattern == "refs/heads/master"
+        assert policy.policy_scope == "repo:DATA/ndata-cross-analytics-dbt-dw"
+        assert policy.metadata == {}
+
+        record = PolicyConverter().to_policy_record(policy)
+        assert record.normalized_rule_type == "RequireStatusChecks"
+        assert record.rule_parameters == "strict_required_status_checks_policy: true"
+
+    def test_given_require_commits_behind_positive_value_when_scraping_then_warns_and_falls_back_to_unmapped(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        mock_client = MagicMock(spec=BitbucketCloudClient)
+        mock_client.get_branch_restrictions.return_value = [
+            {
+                "branch_match_kind": "glob",
+                "groups": [],
+                "id": 66514628,
+                "kind": "require_commits_behind",
+                "pattern": "master",
+                "type": "branchrestriction",
+                "users": [],
+                "value": 3,
+            }
+        ]
+        scraper = BitbucketCloudPolicyScraper(
+            workspace="ws",
+            project_key="PRJ",
+            repo_slug="demo-repo",
+            client=mock_client,
+        )
+        with caplog.at_level("WARNING"):
+            policies = scraper.scrape()
+
+        assert len(policies) == 1
+        policy = policies[0]
+        assert policy.normalized_rule_type == NormalizedRuleType.UNMAPPED
+        assert policy.rule_parameters == {
+            "unmapped_kind": "require_commits_behind",
+            "value": 3,
+        }
+        assert policy.metadata["unmapped"] is True
+        assert policy.metadata["origin_kind"] == "require_commits_behind"
+        assert "value == 0" in policy.metadata["reason"]
+        assert "require_commits_behind" in caplog.text
+
+    def test_given_require_commits_behind_missing_value_when_scraping_then_falls_back_to_unmapped(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        mock_client = MagicMock(spec=BitbucketCloudClient)
+        mock_client.get_branch_restrictions.return_value = [
+            {
+                "branch_match_kind": "glob",
+                "groups": [],
+                "id": 66514629,
+                "kind": "require_commits_behind",
+                "pattern": "main",
+                "type": "branchrestriction",
+                "users": [],
+                "value": None,
+            }
+        ]
+        scraper = BitbucketCloudPolicyScraper(
+            workspace="ws",
+            project_key="PRJ",
+            repo_slug="demo-repo",
+            client=mock_client,
+        )
+        with caplog.at_level("WARNING"):
+            policies = scraper.scrape()
+
+        assert len(policies) == 1
+        policy = policies[0]
+        assert policy.normalized_rule_type == NormalizedRuleType.UNMAPPED
+        assert policy.rule_parameters == {
+            "unmapped_kind": "require_commits_behind",
+        }
+        assert policy.metadata["unmapped"] is True
+        assert "require_commits_behind" in caplog.text
