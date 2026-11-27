@@ -702,6 +702,10 @@ class BitbucketCloudPolicyScraper(PolicyScraper):
             NormalizedRuleType.REQUIRE_STATUS_CHECKS,
             lambda item: {"min_successful_builds": int(item.get("value") or 1)},
         ),
+        "require_commits_behind": (
+            NormalizedRuleType.REQUIRE_STATUS_CHECKS,
+            lambda _item: {"strict_required_status_checks_policy": True},
+        ),
         "push": (NormalizedRuleType.REQUIRE_PULL_REQUEST, lambda _item: {}),
         "restrict_merges": (NormalizedRuleType.REQUIRE_PULL_REQUEST, lambda _item: {}),
         "force": (NormalizedRuleType.BLOCK_FORCE_PUSH, lambda _item: {}),
@@ -729,6 +733,27 @@ class BitbucketCloudPolicyScraper(PolicyScraper):
         raw_origin = json.dumps(item, sort_keys=True)
 
         mapping = self._RESTRICTION_KIND_MAP.get(kind)
+        unmapped_reason = (
+            "No canonical GitHub Ruleset mapping for Bitbucket Cloud restriction kind."
+        )
+        if kind == "require_commits_behind":
+            raw_value = item.get("value")
+            if isinstance(raw_value, bool) or raw_value != 0:
+                logger.warning(
+                    "Bitbucket Cloud restriction 'require_commits_behind' on %s/%s "
+                    "(pattern=%s) has unsupported value=%r; only value=0 maps to "
+                    "strict_required_status_checks_policy. Falling back to Unmapped.",
+                    workspace,
+                    repo_slug,
+                    pattern,
+                    raw_value,
+                )
+                mapping = None
+                unmapped_reason = (
+                    "GitHub Rulesets only supports strict up-to-date branch checks "
+                    "(value == 0) and has no N-commits-behind threshold."
+                )
+
         if mapping is not None:
             rule_type, param_extractor = mapping
             rule_parameters = param_extractor(item)
@@ -743,10 +768,7 @@ class BitbucketCloudPolicyScraper(PolicyScraper):
                 "unmapped": True,
                 "origin_platform": "bitbucket-cloud",
                 "origin_kind": unmapped_kind,
-                "reason": (
-                    "No canonical GitHub Ruleset mapping for Bitbucket Cloud "
-                    "restriction kind."
-                ),
+                "reason": unmapped_reason,
             }
             if item.get("branch_match_kind") is not None:
                 metadata["branch_match_kind"] = item.get("branch_match_kind")
