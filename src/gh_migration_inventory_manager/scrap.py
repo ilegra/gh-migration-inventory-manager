@@ -121,7 +121,15 @@ def normalize_role(role: Any) -> NormalizedRole:
 
 
 class NormalizedRuleType(str, Enum):
-    """Canonical GitHub Ruleset rule archetype."""
+    """Canonical GitHub Ruleset rule archetype.
+
+    Distinguishes between:
+    - ``UNSUPPORTED``: Known source platform restriction kinds that have no
+      1-to-1 equivalent in GitHub Rulesets (emitted with an explicit migration
+      note in ``rule_parameters``).
+    - ``UNMAPPED``: Unknown or unrecognized source platform restriction kinds
+      (or unsupported parameter values) that cannot be mapped yet.
+    """
 
     REQUIRE_PULL_REQUEST = "RequirePullRequest"
     BLOCK_FORCE_PUSH = "BlockForcePush"
@@ -130,6 +138,7 @@ class NormalizedRuleType(str, Enum):
     REQUIRE_LINEAR_HISTORY = "RequireLinearHistory"
     REQUIRE_SIGNED_COMMITS = "RequireSignedCommits"
     REPOSITORY_SETTING = "RepositorySetting"
+    UNSUPPORTED = "Unsupported"
     UNMAPPED = "Unmapped"
 
 
@@ -172,6 +181,11 @@ _NORMALIZED_RULE_TYPE_LOOKUP: dict[str, NormalizedRuleType] = {
     "repository-setting": NormalizedRuleType.REPOSITORY_SETTING,
     "repo_setting": NormalizedRuleType.REPOSITORY_SETTING,
     "repo-setting": NormalizedRuleType.REPOSITORY_SETTING,
+    "unsupported": NormalizedRuleType.UNSUPPORTED,
+    "unsupported_policy": NormalizedRuleType.UNSUPPORTED,
+    "unsupported-policy": NormalizedRuleType.UNSUPPORTED,
+    "not_supported": NormalizedRuleType.UNSUPPORTED,
+    "not-supported": NormalizedRuleType.UNSUPPORTED,
     "unmapped": NormalizedRuleType.UNMAPPED,
     "unmapped_policy": NormalizedRuleType.UNMAPPED,
     "unmapped-policy": NormalizedRuleType.UNMAPPED,

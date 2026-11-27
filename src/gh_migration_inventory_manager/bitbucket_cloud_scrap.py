@@ -694,6 +694,18 @@ class BitbucketCloudPolicyScraper(PolicyScraper):
             NormalizedRuleType.REQUIRE_PULL_REQUEST,
             lambda _item: {"dismiss_stale_reviews_on_push": True},
         ),
+        "reset_pullrequest_changes_requested_on_change": (
+            NormalizedRuleType.UNSUPPORTED,
+            lambda _item: {
+                "origin_kind": "reset_pullrequest_changes_requested_on_change",
+                "github_equivalent": "none",
+                "migration_note": (
+                    "GitHub Rulesets do not automatically clear 'Changes requested' "
+                    "reviews on push (dismiss_stale_reviews_on_push only dismisses "
+                    "approvals); reviewers must re-review or manually dismiss."
+                ),
+            },
+        ),
         "require_all_comments_resolved": (
             NormalizedRuleType.REQUIRE_PULL_REQUEST,
             lambda _item: {"required_review_thread_resolution": True},
@@ -757,7 +769,29 @@ class BitbucketCloudPolicyScraper(PolicyScraper):
         if mapping is not None:
             rule_type, param_extractor = mapping
             rule_parameters = param_extractor(item)
-            metadata: dict[str, Any] = {}
+            if rule_type == NormalizedRuleType.UNSUPPORTED:
+                logger.warning(
+                    "Bitbucket Cloud restriction '%s' on %s/%s (pattern=%s) has no "
+                    "1-to-1 GitHub Ruleset equivalent; emitting as Unsupported.",
+                    kind,
+                    workspace,
+                    repo_slug,
+                    pattern,
+                )
+                metadata = {
+                    "unsupported": True,
+                    "origin_platform": "bitbucket-cloud",
+                    "origin_kind": kind,
+                    "reason": (
+                        "GitHub Rulesets do not automatically clear 'Changes "
+                        "requested' reviews on push; dismiss_stale_reviews_on_push "
+                        "only dismisses approvals."
+                    ),
+                }
+                if item.get("branch_match_kind") is not None:
+                    metadata["branch_match_kind"] = item.get("branch_match_kind")
+            else:
+                metadata = {}
         else:
             unmapped_kind = kind or "unknown"
             rule_type = NormalizedRuleType.UNMAPPED
